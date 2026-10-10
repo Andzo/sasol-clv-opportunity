@@ -101,13 +101,28 @@ def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
     class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y)
     logger.info("Fitted class weights (max factor=%.2f, min factor=%.2f)", class_weights.max(), class_weights.min())
 
+    # Fit soft active shrinkage powers on calibration fold
+    inact_idx = label_to_idx["Inactivity"]
+    p_active_cal = 1.0 - cal_probs_masked[:, inact_idx]
+    fuel_shrinkage_power = calibration.fit_shrinkage_power(
+        cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features), p_active_cal
+    )
+    nonfuel_shrinkage_power = calibration.fit_shrinkage_power(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(), nonfuel_model.predict(cal_snap.features), p_active_cal
+    )
+    logger.info("Fitted shrinkage powers: fuel=%.2f, nonfuel=%.2f", fuel_shrinkage_power, nonfuel_shrinkage_power)
+
     # Score on Evaluation Snapshot (2025-09-01)
-    eval_fuel_pred = fuel_model.predict(eval_snap.features)
-    eval_nonfuel_pred = nonfuel_model.predict(eval_snap.features)
+    eval_fuel_raw = fuel_model.predict(eval_snap.features)
+    eval_nonfuel_raw = nonfuel_model.predict(eval_snap.features)
     eval_probs = opp_model.predict_proba(eval_snap.features)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs, eval_snap.mask)
     eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
     eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
+
+    p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
+    eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_raw, p_active_eval, fuel_shrinkage_power)
+    eval_nonfuel_pred = calibration.apply_shrinkage(eval_nonfuel_raw, p_active_eval, nonfuel_shrinkage_power)
 
     eval_scores = metrics.score(
         eval_snap.labels,
@@ -167,12 +182,16 @@ def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
     test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
     aligned_mask = test_snap.mask[test_mask_rows]
 
-    test_pred_fuel = final_fuel_model.predict(test_feats)
-    test_pred_nonfuel = final_nonfuel_model.predict(test_feats)
+    test_pred_fuel_raw = final_fuel_model.predict(test_feats)
+    test_pred_nonfuel_raw = final_nonfuel_model.predict(test_feats)
     test_probs = final_opp_model.predict_proba(test_feats)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs, aligned_mask)
     test_opp_decisions = calibration.decide(test_probs_masked, class_weights)
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
+
+    p_active_test = 1.0 - test_probs_masked[:, inact_idx]
+    test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, fuel_shrinkage_power)
+    test_pred_nonfuel = calibration.apply_shrinkage(test_pred_nonfuel_raw, p_active_test, nonfuel_shrinkage_power)
 
     # 6. Submission Build & Strict Validation
     logger.info("--- Phase 4: Submission Build & Validation ---")
@@ -199,6 +218,10 @@ def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
         "class_distribution_submission": sub_df["Opportunity"].value_counts().to_dict(),
         "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),
         "nonfuel_mean": round(float(sub_df["CLV_nonfuel"].mean()), 4),
+        "shrinkage_powers": {
+            "fuel": round(float(fuel_shrinkage_power), 3),
+            "nonfuel": round(float(nonfuel_shrinkage_power), 3),
+        },
     }
 
     cfg.paths.reports_dir.mkdir(parents=True, exist_ok=True)

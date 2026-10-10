@@ -23,19 +23,19 @@ def make_regressor(name: str, seed: int, n_jobs: int) -> Any:
     """Squared-error regressor (the metric is RMSE on the transformed target)."""
     if name == "lgbm":
         return LGBMRegressor(
-            n_estimators=700, learning_rate=0.03, num_leaves=31, min_child_samples=50,
-            subsample=0.8, subsample_freq=1, colsample_bytree=0.6, reg_lambda=1.0,
+            n_estimators=800, learning_rate=0.02, num_leaves=31, min_child_samples=50,
+            subsample=0.8, subsample_freq=1, colsample_bytree=0.5, reg_lambda=10.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
     if name == "catboost":
         return CatBoostRegressor(
-            iterations=1000, learning_rate=0.05, depth=6, l2_leaf_reg=3.0, loss_function="RMSE",
+            iterations=1000, learning_rate=0.04, depth=6, l2_leaf_reg=5.0, loss_function="RMSE",
             random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
         )
     if name == "xgb":
         return XGBRegressor(
-            n_estimators=700, learning_rate=0.03, max_depth=6, min_child_weight=5.0,
-            subsample=0.8, colsample_bytree=0.6, reg_lambda=1.0, tree_method="hist",
+            n_estimators=700, learning_rate=0.02, max_depth=5, min_child_weight=5.0,
+            subsample=0.8, colsample_bytree=0.5, reg_lambda=10.0, tree_method="hist",
             random_state=seed, n_jobs=n_jobs,
         )
     raise ValueError(f"Unknown regressor {name!r}")
@@ -45,19 +45,19 @@ def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
     """Multiclass probabilistic classifier."""
     if name == "lgbm":
         return LGBMClassifier(
-            objective="multiclass", n_estimators=400, learning_rate=0.03, num_leaves=31,
-            min_child_samples=30, subsample=0.8, subsample_freq=1, colsample_bytree=0.6,
-            reg_lambda=1.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
+            objective="multiclass", n_estimators=500, learning_rate=0.02, num_leaves=31,
+            min_child_samples=40, subsample=0.8, subsample_freq=1, colsample_bytree=0.6,
+            reg_lambda=5.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
             force_col_wise=True, verbose=-1,
         )
     if name == "catboost":
         return CatBoostClassifier(
-            iterations=700, learning_rate=0.06, depth=6, loss_function="MultiClass",
+            iterations=800, learning_rate=0.05, depth=6, loss_function="MultiClass",
             random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
         )
     if name == "xgb":
         return XGBClassifier(
-            objective="multi:softprob", n_estimators=300, learning_rate=0.05, max_depth=5,
+            objective="multi:softprob", n_estimators=400, learning_rate=0.04, max_depth=5,
             subsample=0.8, colsample_bytree=0.6, tree_method="hist", random_state=seed, n_jobs=n_jobs,
         )
     raise ValueError(f"Unknown classifier {name!r}")

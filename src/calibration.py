@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import nnls
 
-DEFAULT_GRID: np.ndarray = np.geomspace(0.25, 6.0, 23)
+DEFAULT_GRID: np.ndarray = np.geomspace(0.6, 1.8, 13)
 
 
 def apply_eligibility_mask(probs: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -76,3 +76,33 @@ def fit_blend_weights(member_preds: np.ndarray, y_true: np.ndarray) -> np.ndarra
     if weights.sum() <= 0:
         return np.full(member_preds.shape[1], 1.0 / member_preds.shape[1])
     return weights / weights.sum()
+
+
+def fit_shrinkage_power(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    p_active: np.ndarray,
+    powers: Sequence[float] = tuple(np.linspace(0.0, 0.7, 15)),
+) -> float:
+    """Fit optimal soft shrinkage power alpha minimizing RMSE on calibration fold."""
+    y_true = np.asarray(y_true, dtype="float64")
+    y_pred = np.asarray(y_pred, dtype="float64")
+    p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
+    best_power = 0.0
+    best_rmse = float("inf")
+    for p in powers:
+        adjusted = y_pred * (p_active ** p)
+        score = float(np.sqrt(np.mean((y_true - adjusted) ** 2)))
+        if score < best_rmse:
+            best_rmse = score
+            best_power = float(p)
+    return best_power
+
+
+def apply_shrinkage(y_pred: np.ndarray, p_active: np.ndarray, power: float) -> np.ndarray:
+    """Scale continuous regression predictions by p_active^power."""
+    if power <= 0:
+        return np.asarray(y_pred, dtype="float64")
+    p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
+    return np.asarray(y_pred, dtype="float64") * (p_active ** power)
+

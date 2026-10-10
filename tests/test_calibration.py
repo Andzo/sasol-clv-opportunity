@@ -60,3 +60,19 @@ def test_fit_blend_weights():
     assert (w >= 0).all()
     # Member 2 (zeros) should receive near-zero weight
     assert w[2] < 0.1
+
+
+def test_shrinkage_calibration():
+    from src.calibration import fit_shrinkage_power, apply_shrinkage
+
+    y_true = np.array([2.0, 1.5, 0.0, 0.0, 0.0])
+    y_pred = np.array([2.1, 1.4, 0.8, 0.7, 0.9])
+    p_active = np.array([0.95, 0.90, 0.10, 0.05, 0.15])
+
+    power = fit_shrinkage_power(y_true, y_pred, p_active)
+    assert power > 0.0  # Should learn positive shrinkage to penalize inactive false positives
+
+    shrunk = apply_shrinkage(y_pred, p_active, power)
+    init_rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    shrunk_rmse = np.sqrt(np.mean((y_true - shrunk) ** 2))
+    assert shrunk_rmse < init_rmse

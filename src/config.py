@@ -56,7 +56,7 @@ class ModelConfig:
     """Model-family selection and determinism controls."""
 
     regression_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
-    classification_members: tuple[str, ...] = ("lgbm", "catboost")
+    classification_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
     seed: int = 42
     n_jobs: int = -1
 
