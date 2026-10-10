@@ -1,0 +1,62 @@
+"""Unit tests for calibration and post-processing algorithms."""
+import numpy as np
+from src.calibration import (
+    apply_eligibility_mask,
+    decide,
+    fit_blend_weights,
+    fit_class_weights,
+    weighted_f1,
+)
+
+
+def test_apply_eligibility_mask():
+    probs = np.array([
+        [0.4, 0.4, 0.2],
+        [0.1, 0.8, 0.1],
+    ])
+    mask = np.array([
+        [True, False, True],  # class 1 masked
+        [False, False, False], # all masked -> fallback uniform
+    ])
+    masked = apply_eligibility_mask(probs, mask)
+    
+    # Row 0: class 1 zeroed, remaining renormalized
+    assert masked[0, 1] == 0.0
+    assert np.isclose(masked[0, 0], 0.4 / 0.6)
+    assert np.isclose(masked[0, 2], 0.2 / 0.6)
+    assert np.isclose(masked[0].sum(), 1.0)
+
+    # Row 1: fallback uniform over mask (all false -> uniform)
+    assert np.isclose(masked[1].sum(), 1.0)
+
+
+def test_fit_class_weights_improves_or_maintains_f1():
+    rng = np.random.default_rng(42)
+    n_samples, n_classes = 500, 5
+    probs = rng.dirichlet(np.ones(n_classes), size=n_samples)
+    y_true = rng.integers(0, n_classes, size=n_samples)
+
+    init_preds = decide(probs)
+    init_f1 = weighted_f1(y_true, init_preds, n_classes)
+
+    weights = fit_class_weights(probs, y_true, n_passes=2)
+    cal_preds = decide(probs, weights)
+    cal_f1 = weighted_f1(y_true, cal_preds, n_classes)
+
+    assert cal_f1 >= init_f1 - 1e-9
+
+
+def test_fit_blend_weights():
+    # Synthetic member predictions
+    y_true = np.array([1.0, 2.0, 3.0, 4.0])
+    member_preds = np.column_stack([
+        y_true + 0.1,
+        y_true - 0.2,
+        np.zeros(4)
+    ])
+    w = fit_blend_weights(member_preds, y_true)
+    assert len(w) == 3
+    assert np.isclose(w.sum(), 1.0)
+    assert (w >= 0).all()
+    # Member 2 (zeros) should receive near-zero weight
+    assert w[2] < 0.1

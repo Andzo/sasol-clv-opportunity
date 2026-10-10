@@ -1,125 +1,134 @@
-"""Model trainers and ensembling for Sasol CLV & Opportunity challenge."""
+"""Gradient-boosting model factories and ensembles.
+
+Fixes vs. the legacy implementation:
+* Class probabilities are scattered into the full label space using the classes
+  actually seen in training (legacy right-padding silently shifted labels when a
+  rare class was absent from a training fold).
+* LightGBM bagging is actually enabled (``subsample`` is ignored unless
+  ``subsample_freq > 0``).
+* CatBoost no longer writes ``catboost_info/`` into the working directory.
+"""
+from __future__ import annotations
+
+from typing import Any, Sequence
+
 import numpy as np
-from lightgbm import LGBMRegressor, LGBMClassifier
-from xgboost import XGBRegressor, XGBClassifier
-from catboost import CatBoostRegressor, CatBoostClassifier
-from sklearn.metrics import root_mean_squared_error, f1_score
+import pandas as pd
+from catboost import CatBoostClassifier, CatBoostRegressor
+from lightgbm import LGBMClassifier, LGBMRegressor
+from xgboost import XGBClassifier, XGBRegressor
 
 
-class CLVRegressionEnsemble:
-    """Ensemble of LightGBM, XGBoost, and CatBoost for CLV regression."""
-    def __init__(self, target_name='CLV_fuel'):
-        self.target_name = target_name
-        self.lgb = LGBMRegressor(
-            n_estimators=450,
-            learning_rate=0.03,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1
+def make_regressor(name: str, seed: int, n_jobs: int) -> Any:
+    """Squared-error regressor (the metric is RMSE on the transformed target)."""
+    if name == "lgbm":
+        return LGBMRegressor(
+            n_estimators=700, learning_rate=0.03, num_leaves=31, min_child_samples=50,
+            subsample=0.8, subsample_freq=1, colsample_bytree=0.6, reg_lambda=1.0,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
-        self.xgb = XGBRegressor(
-            n_estimators=400,
-            learning_rate=0.03,
-            max_depth=6,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            tree_method='hist'
+    if name == "catboost":
+        return CatBoostRegressor(
+            iterations=1000, learning_rate=0.05, depth=6, l2_leaf_reg=3.0, loss_function="RMSE",
+            random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
         )
-        self.cat = CatBoostRegressor(
-            iterations=500,
-            learning_rate=0.04,
-            depth=6,
-            random_seed=42,
-            verbose=0,
-            thread_count=-1
+    if name == "xgb":
+        return XGBRegressor(
+            n_estimators=700, learning_rate=0.03, max_depth=6, min_child_weight=5.0,
+            subsample=0.8, colsample_bytree=0.6, reg_lambda=1.0, tree_method="hist",
+            random_state=seed, n_jobs=n_jobs,
         )
-        self.weights = [0.4, 0.3, 0.3]
+    raise ValueError(f"Unknown regressor {name!r}")
 
-    def fit(self, X_train, y_train):
-        self.lgb.fit(X_train, y_train)
-        self.xgb.fit(X_train, y_train)
-        self.cat.fit(X_train, y_train)
+
+def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
+    """Multiclass probabilistic classifier."""
+    if name == "lgbm":
+        return LGBMClassifier(
+            objective="multiclass", n_estimators=400, learning_rate=0.03, num_leaves=31,
+            min_child_samples=30, subsample=0.8, subsample_freq=1, colsample_bytree=0.6,
+            reg_lambda=1.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
+            force_col_wise=True, verbose=-1,
+        )
+    if name == "catboost":
+        return CatBoostClassifier(
+            iterations=700, learning_rate=0.06, depth=6, loss_function="MultiClass",
+            random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
+        )
+    if name == "xgb":
+        return XGBClassifier(
+            objective="multi:softprob", n_estimators=300, learning_rate=0.05, max_depth=5,
+            subsample=0.8, colsample_bytree=0.6, tree_method="hist", random_state=seed, n_jobs=n_jobs,
+        )
+    raise ValueError(f"Unknown classifier {name!r}")
+
+
+class RegressorEnsemble:
+    """Weighted average of non-negative regressor predictions."""
+
+    def __init__(self, members: Sequence[str], seed: int = 42, n_jobs: int = -1) -> None:
+        self.members = tuple(members)
+        self.models = [make_regressor(m, seed, n_jobs) for m in self.members]
+        self.weights = np.full(len(self.members), 1.0 / len(self.members))
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "RegressorEnsemble":
+        for model in self.models:
+            model.fit(X, y)
         return self
 
-    def predict(self, X):
-        p_lgb = np.clip(self.lgb.predict(X), 0, None)
-        p_xgb = np.clip(self.xgb.predict(X), 0, None)
-        p_cat = np.clip(self.cat.predict(X), 0, None)
-        
-        preds = (
-            self.weights[0] * p_lgb +
-            self.weights[1] * p_xgb +
-            self.weights[2] * p_cat
-        )
-        return np.clip(preds, 0, None)
+    def predict_members(self, X: pd.DataFrame) -> np.ndarray:
+        """(n_samples, n_members) matrix of clipped member predictions."""
+        return np.column_stack([np.clip(m.predict(X), 0.0, None) for m in self.models])
+
+    def set_weights(self, weights: np.ndarray) -> None:
+        weights = np.asarray(weights, dtype="float64")
+        if weights.shape != (len(self.members),) or weights.sum() <= 0:
+            raise ValueError("Blend weights must be non-negative, one per member, with positive sum")
+        self.weights = weights / weights.sum()
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        return self.predict_members(X) @ self.weights
 
 
-class OpportunityClassificationEnsemble:
-    """Ensemble of LightGBM, CatBoost, and XGBoost for Opportunity multiclass classification."""
-    def __init__(self, num_classes=17):
-        self.num_classes = num_classes
-        self.lgb = LGBMClassifier(
-            n_estimators=400,
-            learning_rate=0.03,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1
-        )
-        self.cat = CatBoostClassifier(
-            iterations=450,
-            learning_rate=0.04,
-            depth=6,
-            random_seed=42,
-            verbose=0,
-            thread_count=-1
-        )
-        self.xgb = XGBClassifier(
-            n_estimators=350,
-            learning_rate=0.03,
-            max_depth=5,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            tree_method='hist'
-        )
-        self.weights = [0.4, 0.35, 0.25]
+class ClassifierEnsemble:
+    """Probability-averaging ensemble over a fixed label space ``0..n_classes-1``."""
 
-    def fit(self, X_train, y_train):
-        self.lgb.fit(X_train, y_train)
-        self.cat.fit(X_train, y_train)
-        self.xgb.fit(X_train, y_train)
+    def __init__(self, members: Sequence[str], n_classes: int, seed: int = 42, n_jobs: int = -1) -> None:
+        self.members = tuple(members)
+        self.n_classes = n_classes
+        self.models = [make_classifier(m, seed, n_jobs) for m in self.members]
+        self.classes_: np.ndarray | None = None
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "ClassifierEnsemble":
+        y = np.asarray(y, dtype=int)
+        if y.min() < 0 or y.max() >= self.n_classes:
+            raise ValueError("Class indices out of range")
+        self.classes_ = np.unique(y)
+        encoded = np.searchsorted(self.classes_, y)  # contiguous 0..P-1 (required by XGBoost)
+        for model in self.models:
+            model.fit(X, encoded)
         return self
 
-    def predict_proba(self, X):
-        prob_lgb = self.lgb.predict_proba(X)
-        prob_cat = self.cat.predict_proba(X)
-        prob_xgb = self.xgb.predict_proba(X)
+    def predict_member_proba(self, X: pd.DataFrame) -> list[np.ndarray]:
+        """Per-member probabilities aligned to the full label space."""
+        if self.classes_ is None:
+            raise RuntimeError("Ensemble is not fitted")
+        out = []
+        for model in self.models:
+            p = np.asarray(model.predict_proba(X), dtype="float64")
+            full = np.zeros((len(X), self.n_classes))
+            full[:, self.classes_] = p
+            out.append(full)
+        return out
 
-        # Handle any possible class dimension mismatches if a rare class had 0 examples in a subset
-        def ensure_shape(p):
-            if p.shape[1] < self.num_classes:
-                full = np.zeros((p.shape[0], self.num_classes))
-                full[:, :p.shape[1]] = p
-                return full
-            return p
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        probs = np.mean(self.predict_member_proba(X), axis=0)
+        return probs / probs.sum(axis=1, keepdims=True)
 
-        prob_lgb = ensure_shape(prob_lgb)
-        prob_cat = ensure_shape(prob_cat)
-        prob_xgb = ensure_shape(prob_xgb)
 
-        blended = (
-            self.weights[0] * prob_lgb +
-            self.weights[1] * prob_cat +
-            self.weights[2] * prob_xgb
-        )
-        # Renormalize rows
-        return blended / blended.sum(axis=1, keepdims=True)
+def lgbm_importance(model: Any, feature_names: Sequence[str]) -> pd.Series:
+    """Gain importance of a fitted LightGBM model (empty if not LightGBM)."""
+    booster = getattr(model, "booster_", None)
+    if booster is None:
+        return pd.Series(dtype="float64")
+    return pd.Series(booster.feature_importance("gain"), index=list(feature_names)).sort_values(ascending=False)

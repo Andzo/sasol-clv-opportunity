@@ -1,0 +1,210 @@
+"""End-to-end pipeline runner for the Sasol CLV & Opportunity challenge.
+
+Orchestrates:
+1. Transaction loading and snapshot assembly with content-addressed caching.
+2. Temporal cross-validation with an embargo to avoid label leakage.
+3. Model training (LightGBM, CatBoost, XGBoost) for regression and classification.
+4. Post-processing: feasibility masking, NNLS blend weights, coordinate-ascent class weights.
+5. Out-of-time evaluation on holdout cutoff (2025-09-01).
+6. Final model retraining, test inference, format validation, and submission generation.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from src import calibration, dataset, metrics, submission
+from src.config import PipelineConfig
+from src.data import load_test_ids, load_transactions
+from src.dataset import SnapshotBuilder, stack
+from src.models import ClassifierEnsemble, RegressorEnsemble
+
+logger = logging.getLogger(__name__)
+
+
+def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
+    """Execute the full end-to-end training, validation, and submission pipeline."""
+    start_time = time.time()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logger.info("Initializing Sasol CLV Pipeline (Seed=%d)", cfg.models.seed)
+
+    label_cfg = cfg.label_config
+    opp_labels = label_cfg["opportunity_labels"]
+    n_classes = len(opp_labels)
+    label_to_idx = {l: i for i, l in enumerate(opp_labels)}
+    idx_to_label = {i: l for i, l in enumerate(opp_labels)}
+
+    # 1. Load annotated transactions
+    tx = load_transactions(cfg)
+    builder = SnapshotBuilder(cfg, tx)
+
+    # 2. Assemble snapshots
+    logger.info("Building snapshots with strict embargoes...")
+    eval_cutoff = pd.Timestamp(cfg.evaluation_cutoff)
+    cal_cutoff = pd.Timestamp(cfg.calibration_cutoff)
+    test_cutoff = pd.Timestamp(cfg.test_cutoff)
+
+    # Training snapshots for validation model (must finish strictly before calibration/evaluation)
+    train_cutoffs = cfg.training_cutoffs(boundary=cal_cutoff)
+    logger.info("Training cutoffs for validation: %s", [str(c.date()) for c in train_cutoffs])
+    train_snaps = [builder.build(c, with_labels=True) for c in train_cutoffs]
+    cal_snap = builder.build(cal_cutoff, with_labels=True)
+    eval_snap = builder.build(eval_cutoff, with_labels=True)
+
+    # Stack training panel
+    train_panel = stack(train_snaps)
+    feature_cols = list(train_panel.X.columns)
+    logger.info("Stacked training panel: %d instances x %d features", len(train_panel.X), len(feature_cols))
+
+    # 3. Validation Model Training
+    logger.info("--- Phase 1: Out-of-Time Model Validation ---")
+    fuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
+
+    nonfuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+
+    opp_model = ClassifierEnsemble(
+        members=cfg.models.classification_members,
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
+    # Fit blend weights on calibration fold
+    cal_fuel_m = fuel_model.predict_members(cal_snap.features)
+    fuel_blend_weights = calibration.fit_blend_weights(cal_fuel_m, cal_snap.labels["CLV_fuel"].to_numpy())
+    fuel_model.set_weights(fuel_blend_weights)
+    logger.info("Fuel blend weights: %s", np.round(fuel_blend_weights, 3))
+
+    cal_nonfuel_m = nonfuel_model.predict_members(cal_snap.features)
+    nonfuel_blend_weights = calibration.fit_blend_weights(cal_nonfuel_m, cal_snap.labels["CLV_nonfuel"].to_numpy())
+    nonfuel_model.set_weights(nonfuel_blend_weights)
+    logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
+
+    # Fit class weights on calibration fold
+    cal_probs = opp_model.predict_proba(cal_snap.features)
+    cal_probs_masked = calibration.apply_eligibility_mask(cal_probs, cal_snap.mask)
+    cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
+    class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y)
+    logger.info("Fitted class weights (max factor=%.2f, min factor=%.2f)", class_weights.max(), class_weights.min())
+
+    # Score on Evaluation Snapshot (2025-09-01)
+    eval_fuel_pred = fuel_model.predict(eval_snap.features)
+    eval_nonfuel_pred = nonfuel_model.predict(eval_snap.features)
+    eval_probs = opp_model.predict_proba(eval_snap.features)
+    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs, eval_snap.mask)
+    eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
+    eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
+
+    eval_scores = metrics.score(
+        eval_snap.labels,
+        eval_fuel_pred,
+        eval_nonfuel_pred,
+        np.array(eval_opp_labels)
+    )
+    baseline_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
+    x_max_fuel = baseline_dict["sample_submission_zero"]["rmse_fuel"]
+    x_max_nonfuel = baseline_dict["sample_submission_zero"]["rmse_nonfuel"]
+    composite_score = eval_scores.composite(x_max_fuel, x_max_nonfuel)
+
+    logger.info("=== Out-of-Time Evaluation (%s) ===", eval_cutoff.date())
+    logger.info("CLV_fuel RMSE:    %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_fuel, x_max_fuel)
+    logger.info("CLV_nonfuel RMSE: %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_nonfuel, x_max_nonfuel)
+    logger.info("Weighted F1:      %.4f (Majority baseline:  %.4f)", eval_scores.weighted_f1, baseline_dict["sample_submission_zero"]["weighted_f1"])
+    logger.info("Proxy Composite:  %.4f", composite_score)
+
+    # 4. Final Retraining across All Historical Snapshots
+    logger.info("--- Phase 2: Full Historical Retraining ---")
+    full_train_cutoffs = cfg.training_cutoffs(boundary=test_cutoff)
+    logger.info("Full retraining cutoffs: %s", [str(c.date()) for c in full_train_cutoffs])
+    full_snaps = [builder.build(c, with_labels=True) for c in full_train_cutoffs]
+    full_panel = stack(full_snaps)
+    logger.info("Full panel size: %d instances", len(full_panel.X))
+
+    final_fuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+    final_fuel_model.set_weights(fuel_blend_weights)
+
+    final_nonfuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+    final_nonfuel_model.set_weights(nonfuel_blend_weights)
+
+    final_opp_model = ClassifierEnsemble(
+        members=cfg.models.classification_members,
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
+    # 5. Test Inference (2025-12-01)
+    logger.info("--- Phase 3: Test Customer Inference (%s) ---", test_cutoff.date())
+    test_snap = builder.build(test_cutoff, with_labels=False)
+    test_ids = load_test_ids(cfg)
+
+    # Ensure exact index alignment with test.csv
+    test_feats = test_snap.features.reindex(pd.Index(test_ids, name="ID"))
+    # Reindex mask
+    test_id_to_row = {cid: idx for idx, cid in enumerate(test_snap.ids)}
+    test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
+    aligned_mask = test_snap.mask[test_mask_rows]
+
+    test_pred_fuel = final_fuel_model.predict(test_feats)
+    test_pred_nonfuel = final_nonfuel_model.predict(test_feats)
+    test_probs = final_opp_model.predict_proba(test_feats)
+    test_probs_masked = calibration.apply_eligibility_mask(test_probs, aligned_mask)
+    test_opp_decisions = calibration.decide(test_probs_masked, class_weights)
+    test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
+
+    # 6. Submission Build & Strict Validation
+    logger.info("--- Phase 4: Submission Build & Validation ---")
+    sub_df = submission.build_submission(
+        ids=test_ids,
+        fuel=test_pred_fuel,
+        nonfuel=test_pred_nonfuel,
+        opportunity=test_opp_labels
+    )
+    sample_df = pd.read_csv(cfg.paths.sample_submission)
+    submission.validate_submission(sub_df, sample_df, opp_labels)
+    submission.write_submission(sub_df, cfg.paths.submission)
+    logger.info("Submission successfully written to %s (%d rows)", cfg.paths.submission.name, len(sub_df))
+
+    # Save evaluation summary
+    elapsed = time.time() - start_time
+    summary: dict[str, Any] = {
+        "status": "SUCCESS",
+        "elapsed_seconds": round(elapsed, 2),
+        "evaluation_cutoff": str(eval_cutoff.date()),
+        "metrics": eval_scores.as_dict(),
+        "proxy_composite_score": round(composite_score, 4),
+        "baselines": baseline_dict,
+        "class_distribution_submission": sub_df["Opportunity"].value_counts().to_dict(),
+        "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),
+        "nonfuel_mean": round(float(sub_df["CLV_nonfuel"].mean()), 4),
+    }
+
+    cfg.paths.reports_dir.mkdir(parents=True, exist_ok=True)
+    report_path = cfg.paths.reports_dir / "evaluation_report.json"
+    report_path.write_text(json.dumps(summary, indent=2))
+    logger.info("Pipeline report written to %s", report_path)
+    logger.info("Completed in %.2f minutes", elapsed / 60.0)
+
+    return summary
