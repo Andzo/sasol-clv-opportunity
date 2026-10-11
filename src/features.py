@@ -22,7 +22,7 @@ import pandas as pd
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.0.0"
+FEATURE_VERSION = "2.1.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -48,7 +48,8 @@ def _months_before(t: pd.Timestamp, months: int) -> pd.Timestamp:
 
 
 def _days_since(t: pd.Timestamp, times: pd.Series) -> pd.Series:
-    return (t - times) / DAY
+    times_dt = pd.to_datetime(times, errors="coerce")
+    return (t - times_dt) / DAY
 
 
 def _window_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start: pd.Timestamp) -> pd.DataFrame:
@@ -86,6 +87,17 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     spend = win["m3_fuel_rand"] + win["m3_nonfuel_rand"]
     out["basket_value_m3"] = spend / win["m3_baskets"].where(win["m3_baskets"] > 0)
     out["fuel_share_m3"] = win["m3_fuel_rand"] / spend.where(spend > 0)
+    out["fuel_m1_m3_ratio"] = (win["m1_fuel_rand"] + 1.0) / (win["m3_fuel_rand"] / 3.0 + 1.0)
+    out["fuel_litres_m1_m3_ratio"] = (win["m1_fuel_litres"] + 1.0) / (win["m3_fuel_litres"] / 3.0 + 1.0)
+    out["nonfuel_m1_m3_ratio"] = (win["m1_nonfuel_rand"] + 1.0) / (win["m3_nonfuel_rand"] / 3.0 + 1.0)
+    out["fuel_reversion_ratio"] = (win["m3_fuel_rand"] / 3.0 + 1.0) / (win["m6_fuel_rand"] / 6.0 + 1.0)
+    out["nonfuel_reversion_ratio"] = (win["m3_nonfuel_rand"] / 3.0 + 1.0) / (win["m6_nonfuel_rand"] / 6.0 + 1.0)
+    out["fuel_growth_hurdle_rand"] = np.maximum(20.0, 0.25 * win["m3_fuel_rand"])
+    out["fuel_hurdle_ratio"] = out["fuel_growth_hurdle_rand"] / (win["m3_fuel_rand"] + 1.0)
+    out["store_attachment_rate"] = win["m3_nonfuel_baskets"] / (win["m3_baskets"] + 1.0)
+    out["forecourt_only"] = (win["m3_nonfuel_baskets"] == 0).astype("float64")
+    out["has_visited_m1"] = (win["m1_baskets"] > 0).astype("float64")
+    out["has_visited_fuel_m1"] = (win["m1_fuel_baskets"] > 0).astype("float64")
     return pd.DataFrame(out)
 
 
@@ -116,6 +128,11 @@ def _recency_block(
     out["gap_std"] = g["gap"].std()
     out["gap_last"] = g["gap"].last()
     out["overdue_ratio"] = out["days_since_last_purchase"] / out["gap_median"].clip(lower=1.0)
+    out["exp_churn_hazard"] = 1.0 - np.exp(-out["days_since_last_purchase"] / out["gap_mean"].clip(lower=1.0))
+    out["fuel_overdue_ratio"] = out["days_since_last_fuel"] / out["gap_median"].clip(lower=1.0)
+    out["fuel_dormant_in_m3"] = (
+        (q[q["is_fuel_cat"]].groupby("ID").size().reindex(ids).fillna(0) > 0) & (out["days_since_last_fuel"] > 90)
+    ).astype("float64")
     out["baskets_per_month_life"] = g.size().reindex(ids).fillna(0) / observed_months
     out["fuel_litres_per_month_life"] = (
         s[s["is_fuel_sale"]].groupby("ID")["qty"].sum().reindex(ids).fillna(0) / observed_months
@@ -127,19 +144,32 @@ def _recency_block(
 
 
 def _trend_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start: pd.Timestamp) -> pd.DataFrame:
-    """Monthly qualifying-basket counts for the last 6 months plus their OLS slope."""
+    """Monthly qualifying-basket counts, spend & volumes for the last 6 months plus OLS slopes."""
     q = hist[hist["is_qualifying"]]
+    s = hist[hist["in_scope"]]
     out = pd.DataFrame(index=ids)
     for lag in range(1, TREND_MONTHS + 1):
         lo, hi = _months_before(t, lag), _months_before(t, lag - 1)
-        m = q[(q["_time"] >= lo) & (q["_time"] < hi)]
-        col = m.groupby("ID")["TransactionId"].nunique().reindex(ids).fillna(0.0)
-        out[f"baskets_lag{lag}"] = np.nan if lo < data_start else col
-    lags = out[[f"baskets_lag{k}" for k in range(TREND_MONTHS, 0, -1)]].to_numpy(dtype="float64")
+        m_q = q[(q["_time"] >= lo) & (q["_time"] < hi)]
+        m_s = s[(s["_time"] >= lo) & (s["_time"] < hi)]
+        b_col = m_q.groupby("ID")["TransactionId"].nunique().reindex(ids).fillna(0.0)
+        f_rand = m_s[m_s["is_fuel_cat"]].groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+        f_lit = m_s[m_s["is_fuel_sale"]].groupby("ID")["qty"].sum().reindex(ids).fillna(0.0)
+        nf_rand = m_s[m_s["is_nonfuel"]].groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+        out[f"baskets_lag{lag}"] = np.nan if lo < data_start else b_col
+        out[f"fuel_rand_lag{lag}"] = np.nan if lo < data_start else f_rand
+        out[f"fuel_litres_lag{lag}"] = np.nan if lo < data_start else f_lit
+        out[f"nonfuel_rand_lag{lag}"] = np.nan if lo < data_start else nf_rand
+
     x = np.arange(TREND_MONTHS, dtype="float64") - (TREND_MONTHS - 1) / 2.0
-    out["baskets_trend_slope"] = ((lags - lags.mean(axis=1, keepdims=True)) * x).sum(axis=1) / (x**2).sum()
-    out["active_months_6"] = (lags > 0).sum(axis=1).astype("float64")
-    out.loc[np.isnan(lags).any(axis=1), ["baskets_trend_slope", "active_months_6"]] = np.nan
+    denom = float((x**2).sum())
+    for prefix in ("baskets", "fuel_rand", "fuel_litres", "nonfuel_rand"):
+        lags = out[[f"{prefix}_lag{k}" for k in range(TREND_MONTHS, 0, -1)]].to_numpy(dtype="float64")
+        out[f"{prefix}_trend_slope"] = ((lags - lags.mean(axis=1, keepdims=True)) * x).sum(axis=1) / denom
+        out.loc[np.isnan(lags).any(axis=1), f"{prefix}_trend_slope"] = np.nan
+
+    out["active_months_6"] = (out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].to_numpy() > 0).sum(axis=1).astype("float64")
+    out.loc[out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].isna().any(axis=1), "active_months_6"] = np.nan
     return out
 
 

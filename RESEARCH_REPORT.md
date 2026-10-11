@@ -115,13 +115,14 @@ All experiments were evaluated strictly on the embargoed out-of-time holdout sna
 | **Refactored Modular Baseline** | 0.6174 | 0.7617 | 0.4999 | 0.5123 | Baseline |
 | **+ Constrained Class-Weight Grid** | 0.6174 | 0.7617 | 0.5066 | 0.5150 | +0.0027 |
 | **+ Soft Active Shrinkage ($\alpha^*$)** | 0.6074 | 0.7561 | 0.5066 | 0.5180 | +0.0057 |
-| **+ Tuned Tri-Ensemble (Current Main)** | **0.6039** | **0.7515** | **0.5051** | **0.5191** | **+0.0068** |
+| **+ Tuned Tri-Ensemble (209 Feats)** | 0.6039 | 0.7515 | 0.5051 | 0.5191 | +0.0068 |
+| **+ Integrated Features (244 Feats, Production)** | **0.6030** | **0.7516** | **0.5071** | **0.5200** | **+0.0077** |
 
 ### Per-Component Metric Progression
-* **CLV Fuel:** $0.6698 \to 0.6174 \to \mathbf{0.6039}$
-* **CLV Non-Fuel:** $0.7712 \to 0.7617 \to \mathbf{0.7515}$
-* **Opportunity F1:** $0.4421 \to 0.4999 \to \mathbf{0.5051}$
-* **Composite Score:** $0.4743 \to 0.5123 \to \mathbf{0.5191}$
+* **CLV Fuel:** $0.6698 \to 0.6174 \to 0.6039 \to \mathbf{0.6030}$
+* **CLV Non-Fuel:** $0.7712 \to 0.7617 \to \mathbf{0.7516}$
+* **Opportunity F1:** $0.4421 \to 0.4999 \to 0.5051 \to \mathbf{0.5071}$
+* **Composite Score:** $0.4743 \to 0.5123 \to 0.5191 \to \mathbf{0.5200}$
 
 ---
 
