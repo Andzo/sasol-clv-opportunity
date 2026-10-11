@@ -19,10 +19,12 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+import scipy.special as sp
+from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.2.0"
+FEATURE_VERSION = "2.3.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -270,6 +272,183 @@ def _behaviour_block(
     return out
 
 
+def _extract_rfm(
+    sub_df: pd.DataFrame, ids: pd.Index, t: pd.Timestamp
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Point-in-time RFM extraction for a transaction subset."""
+    n = len(ids)
+    if sub_df.empty:
+        return np.zeros(n), np.zeros(n), np.ones(n), np.zeros(n), np.zeros(n, dtype=bool)
+
+    baskets = sub_df.groupby(["ID", "TransactionId"]).agg(
+        time=("_time", "min"),
+        amount=("amount", "sum"),
+    ).reset_index().sort_values(["ID", "time"])
+
+    first_time = baskets.groupby("ID")["time"].min().reindex(ids)
+    last_time = baskets.groupby("ID")["time"].max().reindex(ids)
+    n_baskets = baskets.groupby("ID").size().reindex(ids).fillna(0)
+
+    has_baskets = (n_baskets > 0).to_numpy(dtype=bool)
+    x = (n_baskets - 1).clip(lower=0).to_numpy(dtype=float)
+    t_x = np.where(has_baskets, (last_time - first_time) / DAY / DAYS_PER_MONTH, 0.0)
+    T = np.where(has_baskets, (t - first_time) / DAY / DAYS_PER_MONTH, 1.0)
+    T = np.clip(T, 0.01, None)
+
+    total_spend = baskets.groupby("ID")["amount"].sum().reindex(ids).fillna(0)
+    first_spend = baskets.groupby("ID").first()["amount"].reindex(ids).fillna(0)
+    repeat_spend = (total_spend - first_spend).to_numpy(dtype=float)
+    m_x = np.where(x > 0, repeat_spend / np.maximum(x, 1.0), 0.0)
+    return x, t_x, T, m_x, has_baskets
+
+
+def _fit_bgnbd(
+    x: np.ndarray, t_x: np.ndarray, T: np.ndarray, penalizer: float = 0.001
+) -> tuple[float, float, float, float]:
+    """Fit BG/NBD parameters (r, alpha, a, b) via log-space L-BFGS-B optimization."""
+    mask = T > 0
+    if mask.sum() < 20:
+        return 1.0, 1.0, 1.0, 10.0
+    x_sub, tx_sub, T_sub = x[mask], t_x[mask], T[mask]
+
+    def neg_ll(log_params: np.ndarray) -> float:
+        r, alpha, a, b = np.exp(log_params)
+        ln_A1 = sp.gammaln(r + x_sub) - sp.gammaln(r) + r * np.log(alpha)
+        ln_B1 = sp.betaln(a, b + x_sub) - sp.betaln(a, b) - (r + x_sub) * np.log(alpha + T_sub)
+        has_repeat = x_sub > 0
+        ln_B2 = np.zeros_like(x_sub)
+        if np.any(has_repeat):
+            ln_B2[has_repeat] = (
+                sp.betaln(a + 1, b + x_sub[has_repeat] - 1)
+                - sp.betaln(a, b)
+                - (r + x_sub[has_repeat]) * np.log(alpha + tx_sub[has_repeat])
+            )
+        max_B = np.maximum(ln_B1, np.where(has_repeat, ln_B2, -np.inf))
+        sum_exp = np.exp(ln_B1 - max_B) + np.where(has_repeat, np.exp(ln_B2 - max_B), 0.0)
+        log_sum = max_B + np.log(np.maximum(sum_exp, 1e-15))
+        ll = ln_A1 + log_sum
+        pen = penalizer * (r**2 + alpha**2 + a**2 + b**2)
+        return float(-np.sum(ll) + pen)
+
+    try:
+        res = minimize(
+            neg_ll,
+            [0.0, 0.0, 0.0, 1.0],
+            method="L-BFGS-B",
+            bounds=[(-4.0, 4.0)] * 4,
+            options={"maxiter": 80, "ftol": 1e-5},
+        )
+        params = np.exp(res.x)
+        return float(params[0]), float(params[1]), float(params[2]), float(params[3])
+    except Exception:
+        return 1.0, 1.0, 1.0, 10.0
+
+
+def _predict_bgnbd_stats(
+    r: float,
+    alpha: float,
+    a: float,
+    b: float,
+    x: np.ndarray,
+    t_x: np.ndarray,
+    T: np.ndarray,
+    has_baskets: np.ndarray,
+    t_future: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute P(Alive), latent velocity lambda, and expected repeat purchases."""
+    log_div = (r + x) * np.log((alpha + T) / (alpha + t_x)) + np.log(
+        a / (b + np.maximum(x, 1.0) - 1.0)
+    )
+    p_alive = np.where(x == 0, 1.0, sp.expit(-log_div))
+    p_alive = np.where(has_baskets, np.clip(p_alive, 0.0, 1.0), 0.0)
+    lam = np.where(has_baskets, (r + x) / (alpha + T), 0.0)
+    exp_purchases = p_alive * lam * t_future
+    return p_alive, lam, exp_purchases
+
+
+def _fit_gamma_gamma(x: np.ndarray, m_x: np.ndarray) -> tuple[float, float, float]:
+    """Fit Gamma-Gamma monetary model parameters (p, q, v)."""
+    mask = (x > 0) & (m_x > 0)
+    if mask.sum() < 20:
+        return 1.0, 2.5, 200.0
+    x_sub, m_sub = x[mask], m_x[mask]
+
+    def gg_neg_ll(params: np.ndarray) -> float:
+        p, q, v = params
+        ll = (
+            sp.gammaln(p * x_sub + q)
+            - sp.gammaln(p * x_sub)
+            - sp.gammaln(q)
+            + q * np.log(v)
+            + (p * x_sub - 1.0) * np.log(m_sub)
+            + p * x_sub * np.log(x_sub)
+            - (p * x_sub + q) * np.log(x_sub * m_sub + v)
+        )
+        return float(-np.sum(ll))
+
+    try:
+        res = minimize(
+            gg_neg_ll,
+            [1.0, 2.5, 200.0],
+            bounds=[(0.01, 20.0), (1.01, 20.0), (0.1, 2000.0)],
+            method="L-BFGS-B",
+            options={"maxiter": 60, "ftol": 1e-5},
+        )
+        return float(res.x[0]), float(res.x[1]), float(res.x[2])
+    except Exception:
+        return 1.0, 2.5, 200.0
+
+
+def _predict_gamma_gamma_spend(
+    p: float, q: float, v: float, x: np.ndarray, m_x: np.ndarray, has_baskets: np.ndarray
+) -> np.ndarray:
+    """Compute empirical Bayes expected spend per basket E[M]."""
+    pop_mean = (v * p) / max(q - 1.0, 1e-4)
+    weight = (p * x) / (p * x + max(q - 1.0, 1e-4))
+    exp_spend = weight * m_x + (1.0 - weight) * pop_mean
+    return np.where(has_baskets, exp_spend, 0.0)
+
+
+def _btyd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFrame:
+    """Buy-Till-You-Die (BG/NBD & Gamma-Gamma) probabilistic customer base priors."""
+    # 1. Overall qualifying transactions
+    q = hist[hist["is_qualifying"]]
+    x_all, tx_all, T_all, m_all, has_all = _extract_rfm(q, ids, t)
+    r_all, a_all, a_p_all, b_all = _fit_bgnbd(x_all, tx_all, T_all)
+    p_alive_all, lam_all, exp_b_all = _predict_bgnbd_stats(
+        r_all, a_all, a_p_all, b_all, x_all, tx_all, T_all, has_all
+    )
+
+    # 2. Fuel forecourt transactions
+    q_fuel = q[q["is_fuel_cat"]]
+    x_f, tx_f, T_f, _, has_f = _extract_rfm(q_fuel, ids, t)
+    r_f, a_f, a_p_f, b_f = _fit_bgnbd(x_f, tx_f, T_f)
+    p_alive_f, _, exp_b_f = _predict_bgnbd_stats(r_f, a_f, a_p_f, b_f, x_f, tx_f, T_f, has_f)
+
+    # 3. Nonfuel (store) transactions
+    q_nf = q[q["is_nonfuel"]]
+    x_nf, tx_nf, T_nf, _, has_nf = _extract_rfm(q_nf, ids, t)
+    r_nf, a_nf, a_p_nf, b_nf = _fit_bgnbd(x_nf, tx_nf, T_nf)
+    p_alive_nf, _, exp_b_nf = _predict_bgnbd_stats(r_nf, a_nf, a_p_nf, b_nf, x_nf, tx_nf, T_nf, has_nf)
+
+    # 4. Gamma-Gamma spend model
+    p_gg, q_gg, v_gg = _fit_gamma_gamma(x_all, m_all)
+    exp_basket_spend = _predict_gamma_gamma_spend(p_gg, q_gg, v_gg, x_all, m_all, has_all)
+    exp_clv_m3 = exp_b_all * exp_basket_spend
+
+    out = pd.DataFrame(index=ids)
+    out["btyd_overall_p_alive"] = p_alive_all
+    out["btyd_overall_lambda"] = lam_all
+    out["btyd_overall_exp_baskets_m3"] = exp_b_all
+    out["btyd_fuel_p_alive"] = p_alive_f
+    out["btyd_fuel_exp_baskets_m3"] = exp_b_f
+    out["btyd_nonfuel_p_alive"] = p_alive_nf
+    out["btyd_nonfuel_exp_baskets_m3"] = exp_b_nf
+    out["btyd_exp_monetary_spend"] = exp_basket_spend
+    out["btyd_exp_clv_spend_m3"] = exp_clv_m3
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -303,6 +482,7 @@ def build_features(
         _trend_block(hist, ids, t, data_start),
         _category_block(hist, ids, t, cats, observed_months),
         _behaviour_block(hist, ids, t, label_config),
+        _btyd_block(hist, ids, t),
     ]
     feats = pd.concat(blocks, axis=1)
     feats["cutoff_month_sin"] = np.sin(2 * np.pi * t.month / 12.0)
