@@ -1,13 +1,13 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 2342.49,
+  "elapsed_seconds": 1345.09,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
     "rmse_fuel": 0.603037913600157,
-    "rmse_nonfuel": 0.7515598302481092,
+    "rmse_nonfuel": 0.7507886501842361,
     "weighted_f1": 0.5071281128727799
   },
-  "proxy_composite_score": 0.52,
+  "proxy_composite_score": 0.5202,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -33,9 +33,10 @@
     "New category adoption: Beverages": 1
   },
   "fuel_mean": 1.4121,
-  "nonfuel_mean": 0.6582,
+  "nonfuel_mean": 0.6534,
   "shrinkage_powers": {
     "fuel": 0.15,
-    "nonfuel": 0.35
+    "nonfuel_alpha": 0.15,
+    "nonfuel_beta": 0.05
   }
 }

@@ -76,3 +76,49 @@ def test_shrinkage_calibration():
     init_rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
     shrunk_rmse = np.sqrt(np.mean((y_true - shrunk) ** 2))
     assert shrunk_rmse < init_rmse
+
+
+def test_dual_shrinkage_calibration():
+    from src.calibration import fit_dual_shrinkage_powers, apply_dual_shrinkage
+
+    y_true = np.array([2.0, 1.5, 0.0, 0.0, 0.0])
+    y_pred = np.array([2.1, 1.4, 0.8, 0.7, 0.9])
+    p_active = np.array([0.95, 0.90, 0.10, 0.05, 0.15])
+    p_store = np.array([0.90, 0.85, 0.15, 0.10, 0.20])
+
+    alpha, beta = fit_dual_shrinkage_powers(y_true, y_pred, p_active, p_store)
+    assert alpha >= 0.0
+    assert beta >= 0.0
+    assert (alpha + beta) > 0.0
+
+    shrunk = apply_dual_shrinkage(y_pred, p_active, p_store, alpha, beta)
+    init_rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    shrunk_rmse = np.sqrt(np.mean((y_true - shrunk) ** 2))
+    assert shrunk_rmse < init_rmse
+
+    # Anchored alpha
+    a_anchored, b_anchored = fit_dual_shrinkage_powers(
+        y_true, y_pred, p_active, p_store, base_active_power=0.15
+    )
+    assert np.isclose(a_anchored, 0.15)
+    assert b_anchored >= 0.0
+
+
+
+def test_store_attachment_classifier():
+    import pandas as pd
+    from src.models import StoreAttachmentClassifier
+
+    rng = np.random.default_rng(42)
+    X = pd.DataFrame(rng.normal(size=(100, 5)), columns=[f"f{i}" for i in range(5)])
+    # Continuous nonfuel labels with zeros
+    y = np.clip(rng.normal(loc=0.0, scale=1.0, size=100), 0.0, None)
+
+    clf = StoreAttachmentClassifier(seed=42, n_jobs=1)
+    clf.fit(X, y)
+    probs = clf.predict_proba(X)
+
+    assert probs.shape == (100,)
+    assert (probs >= 0.0).all() and (probs <= 1.0).all()
+
+

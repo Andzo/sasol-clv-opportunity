@@ -23,7 +23,7 @@ from src import calibration, dataset, metrics, submission
 from src.config import PipelineConfig
 from src.data import load_test_ids, load_transactions
 from src.dataset import SnapshotBuilder, stack
-from src.models import ClassifierEnsemble, RegressorEnsemble
+from src.models import ClassifierEnsemble, RegressorEnsemble, StoreAttachmentClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,12 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
+    logger.info("Training StoreAttachmentClassifier for nonfuel zero-inflation hurdle...")
+    store_model = StoreAttachmentClassifier(
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+
     # Fit blend weights on calibration fold
     cal_fuel_m = fuel_model.predict_members(cal_snap.features)
     fuel_blend_weights = calibration.fit_blend_weights(cal_fuel_m, cal_snap.labels["CLV_fuel"].to_numpy())
@@ -101,16 +107,27 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y)
     logger.info("Fitted class weights (max factor=%.2f, min factor=%.2f)", class_weights.max(), class_weights.min())
 
-    # Fit soft active shrinkage powers on calibration fold
+    # Fit soft active shrinkage (fuel) and dual soft hurdle shrinkage (nonfuel) on calibration fold
     inact_idx = label_to_idx["Inactivity"]
     p_active_cal = 1.0 - cal_probs_masked[:, inact_idx]
+    p_store_cal = store_model.predict_proba(cal_snap.features)
+
     fuel_shrinkage_power = calibration.fit_shrinkage_power(
         cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features), p_active_cal
     )
-    nonfuel_shrinkage_power = calibration.fit_shrinkage_power(
-        cal_snap.labels["CLV_nonfuel"].to_numpy(), nonfuel_model.predict(cal_snap.features), p_active_cal
+    nonfuel_alpha, nonfuel_beta = calibration.fit_dual_shrinkage_powers(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(),
+        nonfuel_model.predict(cal_snap.features),
+        p_active_cal,
+        p_store_cal,
+        base_active_power=fuel_shrinkage_power,
     )
-    logger.info("Fitted shrinkage powers: fuel=%.2f, nonfuel=%.2f", fuel_shrinkage_power, nonfuel_shrinkage_power)
+    logger.info(
+        "Fitted shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f)",
+        fuel_shrinkage_power,
+        nonfuel_alpha,
+        nonfuel_beta,
+    )
 
     # Score on Evaluation Snapshot (2025-09-01)
     eval_fuel_raw = fuel_model.predict(eval_snap.features)
@@ -121,8 +138,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
 
     p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
+    p_store_eval = store_model.predict_proba(eval_snap.features)
     eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_raw, p_active_eval, fuel_shrinkage_power)
-    eval_nonfuel_pred = calibration.apply_shrinkage(eval_nonfuel_raw, p_active_eval, nonfuel_shrinkage_power)
+    eval_nonfuel_pred = calibration.apply_dual_shrinkage(
+        eval_nonfuel_raw, p_active_eval, p_store_eval, nonfuel_alpha, nonfuel_beta
+    )
 
     eval_scores = metrics.score(
         eval_snap.labels,
@@ -150,6 +170,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
             "pred_nonfuel_final": eval_nonfuel_pred,
             "pred_opportunity": eval_opp_labels,
             "p_active": p_active_eval,
+            "p_store": p_store_eval,
             "true_fuel": eval_snap.labels["CLV_fuel"].to_numpy(),
             "true_nonfuel": eval_snap.labels["CLV_nonfuel"].to_numpy(),
             "true_opportunity": eval_snap.labels["Opportunity"].to_numpy(),
@@ -188,6 +209,12 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
+    logger.info("Retraining final StoreAttachmentClassifier on full historical panel...")
+    final_store_model = StoreAttachmentClassifier(
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs
+    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+
     # 5. Test Inference (2025-12-01)
     logger.info("--- Phase 3: Test Customer Inference (%s) ---", test_cutoff.date())
     test_snap = builder.build(test_cutoff, with_labels=False)
@@ -208,8 +235,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
+    p_store_test = final_store_model.predict_proba(test_feats)
     test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, fuel_shrinkage_power)
-    test_pred_nonfuel = calibration.apply_shrinkage(test_pred_nonfuel_raw, p_active_test, nonfuel_shrinkage_power)
+    test_pred_nonfuel = calibration.apply_dual_shrinkage(
+        test_pred_nonfuel_raw, p_active_test, p_store_test, nonfuel_alpha, nonfuel_beta
+    )
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -221,6 +251,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
             "pred_nonfuel_final": test_pred_nonfuel,
             "pred_opportunity": test_opp_labels,
             "p_active": p_active_test,
+            "p_store": p_store_test,
         }, index=pd.Index(test_ids, name="ID"))
         for i, l in enumerate(opp_labels):
             test_df[f"prob_{l}"] = test_probs_masked[:, i]
@@ -254,7 +285,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         "nonfuel_mean": round(float(sub_df["CLV_nonfuel"].mean()), 4),
         "shrinkage_powers": {
             "fuel": round(float(fuel_shrinkage_power), 3),
-            "nonfuel": round(float(nonfuel_shrinkage_power), 3),
+            "nonfuel_alpha": round(float(nonfuel_alpha), 3),
+            "nonfuel_beta": round(float(nonfuel_beta), 3),
         },
     }
 

@@ -7,6 +7,8 @@ used instead and is guaranteed never to decrease the in-sample objective.
 """
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 from scipy.optimize import nnls
 
@@ -105,4 +107,59 @@ def apply_shrinkage(y_pred: np.ndarray, p_active: np.ndarray, power: float) -> n
         return np.asarray(y_pred, dtype="float64")
     p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
     return np.asarray(y_pred, dtype="float64") * (p_active ** power)
+
+
+def fit_dual_shrinkage_powers(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    p_active: np.ndarray,
+    p_store: np.ndarray,
+    base_active_power: float | None = None,
+    alpha_grid: Sequence[float] = (0.05, 0.10, 0.15, 0.20),
+    beta_grid: Sequence[float] = (0.05, 0.08, 0.10, 0.12, 0.15, 0.20),
+) -> tuple[float, float]:
+    """Fit optimal dual soft shrinkage powers (alpha, beta) minimizing RMSE on calibration fold.
+
+    If base_active_power is provided (e.g. churn shrinkage fitted on fuel), alpha is anchored
+    to this physically derived churn discount and beta is fitted over beta_grid. This prevents
+    co-linearity between p_active and p_store from choking out store attachment hurdle shrinkage.
+    """
+    y_true = np.asarray(y_true, dtype="float64")
+    y_pred = np.asarray(y_pred, dtype="float64")
+    p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
+    p_store = np.clip(np.asarray(p_store, dtype="float64"), 0.0, 1.0)
+
+    best_alpha, best_beta = 0.0, 0.0
+    best_rmse = float("inf")
+
+    alphas = (base_active_power,) if base_active_power is not None else alpha_grid
+
+    for a in alphas:
+        for b in beta_grid:
+            adjusted = y_pred * (p_active ** a) * (p_store ** b)
+            score = float(np.sqrt(np.mean((y_true - adjusted) ** 2)))
+            if score < best_rmse:
+                best_rmse = score
+                best_alpha = float(a)
+                best_beta = float(b)
+
+    return best_alpha, best_beta
+
+
+def apply_dual_shrinkage(
+    y_pred: np.ndarray,
+    p_active: np.ndarray,
+    p_store: np.ndarray,
+    alpha: float,
+    beta: float,
+) -> np.ndarray:
+    """Scale continuous regression predictions by (p_active^alpha) * (p_store^beta)."""
+    p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
+    p_store = np.clip(np.asarray(p_store, dtype="float64"), 0.0, 1.0)
+    res = np.asarray(y_pred, dtype="float64")
+    if alpha > 0:
+        res = res * (p_active ** alpha)
+    if beta > 0:
+        res = res * (p_store ** beta)
+    return res
 

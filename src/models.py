@@ -132,3 +132,33 @@ def lgbm_importance(model: Any, feature_names: Sequence[str]) -> pd.Series:
     if booster is None:
         return pd.Series(dtype="float64")
     return pd.Series(booster.feature_importance("gain"), index=list(feature_names)).sort_values(ascending=False)
+
+
+class StoreAttachmentClassifier:
+    """Predicts binary convenience store visitation P(CLV_nonfuel > 0 | X)."""
+
+    def __init__(self, seed: int = 42, n_jobs: int = -1) -> None:
+        self.model = LGBMClassifier(
+            objective="binary",
+            n_estimators=400,
+            learning_rate=0.03,
+            num_leaves=31,
+            subsample=0.8,
+            subsample_freq=1,
+            colsample_bytree=0.6,
+            reg_lambda=5.0,
+            random_state=seed,
+            n_jobs=n_jobs,
+            deterministic=True,
+            force_col_wise=True,
+            verbose=-1,
+        )
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "StoreAttachmentClassifier":
+        y_binary = (np.asarray(y) > 0).astype(int)
+        self.model.fit(X, y_binary)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        return np.asarray(self.model.predict_proba(X)[:, 1], dtype="float64")
+
