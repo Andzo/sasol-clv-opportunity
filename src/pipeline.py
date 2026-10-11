@@ -218,6 +218,50 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
 
+    # Multi-Cutoff Pooled Calibration for Final Retrained Models (2025-06-01 + 2025-09-01)
+    logger.info("Calibrating final models on pooled recent snapshots (%s + %s)...", cal_cutoff.date(), eval_cutoff.date())
+    pool_snaps = [cal_snap, eval_snap]
+    pool_feats = pd.concat([s.features for s in pool_snaps], axis=0)
+    pool_masks = np.vstack([s.mask for s in pool_snaps])
+    pool_y_fuel = np.concatenate([s.labels["CLV_fuel"].to_numpy() for s in pool_snaps])
+    pool_y_nonfuel = np.concatenate([s.labels["CLV_nonfuel"].to_numpy() for s in pool_snaps])
+    pool_y_opp = np.concatenate([s.labels["Opportunity"].map(label_to_idx).to_numpy() for s in pool_snaps])
+
+    # Blend weights on pooled predictions
+    pool_fuel_m = np.vstack([final_fuel_model.predict_members(s.features) for s in pool_snaps])
+    final_fuel_blend = calibration.fit_blend_weights(pool_fuel_m, pool_y_fuel)
+    final_fuel_model.set_weights(final_fuel_blend)
+    logger.info("Final retrained fuel blend weights: %s", np.round(final_fuel_blend, 3))
+
+    pool_nonfuel_m = np.vstack([final_nonfuel_model.predict_members(s.features) for s in pool_snaps])
+    final_nonfuel_blend = calibration.fit_blend_weights(pool_nonfuel_m, pool_y_nonfuel)
+    final_nonfuel_model.set_weights(final_nonfuel_blend)
+    logger.info("Final retrained nonfuel blend weights: %s", np.round(final_nonfuel_blend, 3))
+
+    # Class decision multipliers on 10,199 pooled instances
+    pool_probs = final_opp_model.predict_proba(pool_feats)
+    pool_probs_masked = calibration.apply_eligibility_mask(pool_probs, pool_masks)
+    final_class_weights = calibration.fit_class_weights(pool_probs_masked, pool_y_opp, dominant_classes=dom_classes)
+    logger.info(
+        "Final retrained class weights on %d pooled instances (max factor=%.2f, min factor=%.2f)",
+        len(pool_y_opp), final_class_weights.max(), final_class_weights.min()
+    )
+
+    # Shrinkage powers on pooled predictions
+    pool_p_active = 1.0 - pool_probs_masked[:, inact_idx]
+    pool_p_store = final_store_model.predict_proba(pool_feats)
+    final_fuel_shrinkage = calibration.fit_shrinkage_power(
+        pool_y_fuel, final_fuel_model.predict(pool_feats), pool_p_active
+    )
+    final_nf_alpha, final_nf_beta = calibration.fit_dual_shrinkage_powers(
+        pool_y_nonfuel, final_nonfuel_model.predict(pool_feats), pool_p_active, pool_p_store,
+        base_active_power=final_fuel_shrinkage
+    )
+    logger.info(
+        "Final retrained shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f)",
+        final_fuel_shrinkage, final_nf_alpha, final_nf_beta
+    )
+
     # 5. Test Inference (2025-12-01)
     logger.info("--- Phase 3: Test Customer Inference (%s) ---", test_cutoff.date())
     test_snap = builder.build(test_cutoff, with_labels=False)
@@ -234,15 +278,15 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_pred_nonfuel_raw = final_nonfuel_model.predict(test_feats)
     test_probs = final_opp_model.predict_proba(test_feats)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs, aligned_mask)
-    test_opp_decisions = calibration.decide(test_probs_masked, class_weights)
+    test_opp_decisions = calibration.decide(test_probs_masked, final_class_weights)
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
     p_store_test = final_store_model.predict_proba(test_feats)
-    test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, fuel_shrinkage_power)
+    test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, final_fuel_shrinkage)
     test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=0.03)
     test_pred_nonfuel = calibration.apply_dual_shrinkage(
-        test_pred_nonfuel_raw, p_active_test, p_store_test, nonfuel_alpha, nonfuel_beta
+        test_pred_nonfuel_raw, p_active_test, p_store_test, final_nf_alpha, final_nf_beta
     )
     test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=0.03)
 
@@ -289,9 +333,12 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),
         "nonfuel_mean": round(float(sub_df["CLV_nonfuel"].mean()), 4),
         "shrinkage_powers": {
-            "fuel": round(float(fuel_shrinkage_power), 3),
-            "nonfuel_alpha": round(float(nonfuel_alpha), 3),
-            "nonfuel_beta": round(float(nonfuel_beta), 3),
+            "fuel": round(float(final_fuel_shrinkage), 3),
+            "nonfuel_alpha": round(float(final_nf_alpha), 3),
+            "nonfuel_beta": round(float(final_nf_beta), 3),
+            "validation_fuel": round(float(fuel_shrinkage_power), 3),
+            "validation_nonfuel_alpha": round(float(nonfuel_alpha), 3),
+            "validation_nonfuel_beta": round(float(nonfuel_beta), 3),
         },
     }
 

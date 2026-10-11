@@ -152,4 +152,64 @@ def test_fit_class_weights_with_dominant_classes():
     assert cal_f1 >= base_f1 - 1e-9
 
 
+def test_pooled_multi_cutoff_calibration():
+    """Verify that calibration routines correctly accept pooled multi-snapshot arrays."""
+    from src.calibration import (
+        fit_blend_weights,
+        fit_class_weights,
+        fit_shrinkage_power,
+        fit_dual_shrinkage_powers,
+        apply_shrinkage,
+        apply_dual_shrinkage,
+        decide,
+    )
+
+    rng = np.random.default_rng(42)
+    # Simulate 2 snapshots (e.g. 500 rows and 600 rows)
+    n1, n2, n_members, n_classes = 500, 600, 3, 5
+
+    # Pooled targets
+    y_reg_1 = rng.uniform(0.0, 3.0, size=n1)
+    y_reg_2 = rng.uniform(0.0, 3.0, size=n2)
+    y_reg_pool = np.concatenate([y_reg_1, y_reg_2])
+
+    y_cls_1 = rng.integers(0, n_classes, size=n1)
+    y_cls_2 = rng.integers(0, n_classes, size=n2)
+    y_cls_pool = np.concatenate([y_cls_1, y_cls_2])
+
+    # Pooled regressor predictions
+    preds_1 = np.column_stack([y_reg_1 + rng.normal(0, 0.1, n1) for _ in range(n_members)])
+    preds_2 = np.column_stack([y_reg_2 + rng.normal(0, 0.1, n2) for _ in range(n_members)])
+    preds_pool = np.vstack([preds_1, preds_2])
+
+    # Blend weights
+    blend = fit_blend_weights(preds_pool, y_reg_pool)
+    assert len(blend) == n_members
+    assert np.isclose(blend.sum(), 1.0)
+
+    # Class weights on pooled probabilities
+    probs_1 = rng.dirichlet(np.ones(n_classes), size=n1)
+    probs_2 = rng.dirichlet(np.ones(n_classes), size=n2)
+    probs_pool = np.vstack([probs_1, probs_2])
+    cw = fit_class_weights(probs_pool, y_cls_pool, dominant_classes=[0, 1])
+    assert len(cw) == n_classes
+    decisions = decide(probs_pool, cw)
+    assert decisions.shape == (n1 + n2,)
+
+    # Shrinkage powers on pooled arrays
+    p_act_pool = rng.uniform(0.2, 1.0, size=n1 + n2)
+    p_store_pool = rng.uniform(0.1, 0.9, size=n1 + n2)
+    y_pred_single = preds_pool @ blend
+    alpha = fit_shrinkage_power(y_reg_pool, y_pred_single, p_act_pool)
+    assert 0.0 <= alpha <= 1.0
+    shrunk_single = apply_shrinkage(y_pred_single, p_act_pool, alpha)
+    assert shrunk_single.shape == (n1 + n2,)
+
+    d_alpha, d_beta = fit_dual_shrinkage_powers(y_reg_pool, y_pred_single, p_act_pool, p_store_pool)
+    assert 0.0 <= d_alpha <= 1.0
+    assert 0.0 <= d_beta <= 1.0
+    shrunk_dual = apply_dual_shrinkage(y_pred_single, p_act_pool, p_store_pool, d_alpha, d_beta)
+    assert shrunk_dual.shape == (n1 + n2,)
+
+
 
