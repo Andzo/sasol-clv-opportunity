@@ -22,6 +22,9 @@ def main() -> int:
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for model training"
     )
+    parser.add_argument(
+        "--save-predictions", action="store_true", help="Cache evaluation and test predictions for EDA & diagnostics"
+    )
     args = parser.parse_args()
 
     cfg = PipelineConfig(
@@ -32,7 +35,7 @@ def main() -> int:
     )
 
     try:
-        summary = run_pipeline(cfg)
+        summary = run_pipeline(cfg, save_predictions=args.save_predictions)
         print("\n" + "=" * 60)
         print("PIPELINE EXECUTION SUMMARY")
         print("=" * 60)

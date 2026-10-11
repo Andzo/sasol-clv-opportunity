@@ -1,0 +1,329 @@
+[
+  {
+    "fig_id": "D01_daily_activity",
+    "section": "01_raw",
+    "title": "Daily Transaction Volume & Customer Footfall",
+    "is_interactive": true,
+    "findings": {
+      "start_date": "2024-03-19",
+      "end_date": "2025-11-30",
+      "mean_daily_transactions": 587.8424437299035,
+      "max_daily_transactions": 924.0,
+      "mean_daily_customers": 490.508038585209
+    },
+    "path": "01_raw/D01_daily_activity.html"
+  },
+  {
+    "fig_id": "D02_category_shares",
+    "section": "01_raw",
+    "title": "Category Line Item vs Spend Shares",
+    "is_interactive": false,
+    "findings": {
+      "fuel_line_share_pct": 73.25874155766435,
+      "fuel_spend_share_pct": 98.0932522063899
+    },
+    "path": "01_raw/D02_category_shares.png"
+  },
+  {
+    "fig_id": "D04_fuel_fill_modes",
+    "section": "01_raw",
+    "title": "Fuel Litres Fill Modes & Distribution",
+    "is_interactive": false,
+    "findings": {
+      "fuel_fill_median_litres": 13.68,
+      "fuel_fill_p90_litres": 46.36,
+      "fuel_fill_mode_approx": 7.509500000000001
+    },
+    "path": "01_raw/D04_fuel_fill_modes.png"
+  },
+  {
+    "fig_id": "D05_fuel_price_trend",
+    "section": "01_raw",
+    "title": "Monthly Implied Fuel Price Trend",
+    "is_interactive": false,
+    "findings": {
+      "min_monthly_price": 21.08478694513166,
+      "max_monthly_price": 25.148459677461535,
+      "price_variation_pct": 19.273008273238204
+    },
+    "path": "01_raw/D05_fuel_price_trend.png"
+  },
+  {
+    "fig_id": "D08_hour_weekday_heatmap",
+    "section": "01_raw",
+    "title": "Forecourt Traffic by Day & Hour Heatmap",
+    "is_interactive": true,
+    "findings": {
+      "peak_hour": 7,
+      "weekend_share_pct": 24.68098796993135
+    },
+    "path": "01_raw/D08_hour_weekday_heatmap.html"
+  },
+  {
+    "fig_id": "C01_cohort_growth",
+    "section": "02_cohorts",
+    "title": "Cohort Growth & Tenure Composition",
+    "is_interactive": false,
+    "findings": {
+      "first_snapshot_count": 3608.0,
+      "last_snapshot_count": 5238.0,
+      "cohort_growth_factor": 1.4517738359201773
+    },
+    "path": "02_cohorts/C01_cohort_growth.png"
+  },
+  {
+    "fig_id": "C02_customer_recurrence",
+    "section": "02_cohorts",
+    "title": "Multi-Cohort Customer Recurrence",
+    "is_interactive": false,
+    "findings": {
+      "pct_customers_in_all_snaps": 68.88125238640703,
+      "pct_customers_in_single_snap": 5.28827796869034,
+      "median_snapshot_appearances": 5.0
+    },
+    "path": "02_cohorts/C02_customer_recurrence.png"
+  },
+  {
+    "fig_id": "C04_eligibility_floor_proximity",
+    "section": "02_cohorts",
+    "title": "Proximity to 3-Basket Eligibility Floor",
+    "is_interactive": false,
+    "findings": {
+      "pct_near_floor_3_to_5_baskets": 9.182894234440626
+    },
+    "path": "02_cohorts/C04_eligibility_floor_proximity.png"
+  },
+  {
+    "fig_id": "C05_gap_survival_curve",
+    "section": "02_cohorts",
+    "title": "Inter-Purchase Interval Survival Curve",
+    "is_interactive": false,
+    "findings": {
+      "p_gap_greater_30d": 0.09933224137223405,
+      "p_gap_greater_60d": 0.04370699254201348,
+      "p_gap_greater_90d": 0.023105402278400435
+    },
+    "path": "02_cohorts/C05_gap_survival_curve.png"
+  },
+  {
+    "fig_id": "T01_target_distributions",
+    "section": "03_targets",
+    "title": "Target Distributions & Zero-Inflation",
+    "is_interactive": false,
+    "findings": {
+      "pct_zero_fuel": 29.24780450553646,
+      "pct_zero_nonfuel": 65.06300114547537,
+      "fuel_p95_litres": 812.509499999999,
+      "nonfuel_p95_rand": 437.67149999999975
+    },
+    "path": "03_targets/T01_target_distributions.png"
+  },
+  {
+    "fig_id": "T03_class_frequencies",
+    "section": "03_targets",
+    "title": "Opportunity Class Proportions Across Cutoffs",
+    "is_interactive": false,
+    "findings": {
+      "top_3_classes_share_pct": 81.61512027491409,
+      "inactivity_share_pct": 27.41504390988927,
+      "fuel_growth_share_pct": 27.395952653684613,
+      "stable_share_pct": 26.804123711340207
+    },
+    "path": "03_targets/T03_class_frequencies.png"
+  },
+  {
+    "fig_id": "T04_label_transitions",
+    "section": "03_targets",
+    "title": "Quarter-over-Quarter Label Transitions",
+    "is_interactive": false,
+    "findings": {
+      "inactivity_persistence": 0.7651266766020864,
+      "growth_to_stable_reversion": 0.4972269110200145,
+      "stable_to_growth_rate": 0.37438886799548704
+    },
+    "path": "03_targets/T04_label_transitions.png"
+  },
+  {
+    "fig_id": "T05_growth_rule_geometry",
+    "section": "03_targets",
+    "title": "Rule 5 Growth Hurdle Geometry",
+    "is_interactive": true,
+    "findings": {
+      "median_prev_spend": 1743.17,
+      "pct_zero_prev_spend": 26.097747231767848
+    },
+    "path": "03_targets/T05_growth_rule_geometry.html"
+  },
+  {
+    "fig_id": "T08_winner_decomposition",
+    "section": "03_targets",
+    "title": "Winning Source Category Breakdown",
+    "is_interactive": false,
+    "findings": {
+      "fuel_winning_share_pct": 61.855670103092784
+    },
+    "path": "03_targets/T08_winner_decomposition.png"
+  },
+  {
+    "fig_id": "S02_feature_psi_heatmap",
+    "section": "04_temporal",
+    "title": "Population Stability Index (PSI) Drift Heatmap",
+    "is_interactive": false,
+    "findings": {
+      "max_feature_psi": 0.7596637881988378,
+      "features_above_0.10": 1,
+      "features_above_0.25": 1
+    },
+    "path": "04_temporal/S02_feature_psi_heatmap.png"
+  },
+  {
+    "fig_id": "S03_adversarial_validation",
+    "section": "04_temporal",
+    "title": "Adversarial Validation Train vs Test Drift",
+    "is_interactive": false,
+    "findings": {
+      "adversarial_roc_auc": 0.8865456500940572,
+      "top_drifting_feature": "fuel_price_m3"
+    },
+    "path": "04_temporal/S03_adversarial_validation.png"
+  },
+  {
+    "fig_id": "S08_rolling_origin_metrics",
+    "section": "04_temporal",
+    "title": "Rolling-Origin Multi-Cutoff Score Stability",
+    "is_interactive": false,
+    "findings": {
+      "mean_rolling_composite": 0.5145333333333334,
+      "std_rolling_composite": 0.005450076452063168,
+      "min_rolling_composite": 0.5091,
+      "max_rolling_composite": 0.52
+    },
+    "path": "04_temporal/S08_rolling_origin_metrics.png"
+  },
+  {
+    "fig_id": "F01_correlation_clustermap",
+    "section": "05_features",
+    "title": "Spearman Rank Correlation Clustermap",
+    "is_interactive": false,
+    "findings": {
+      "pairs_with_spearman_gt_0.85": 49,
+      "max_offdiag_correlation": 1.0
+    },
+    "path": "05_features/F01_correlation_clustermap.png"
+  },
+  {
+    "fig_id": "F02_mutual_information",
+    "section": "05_features",
+    "title": "Mutual Information Feature Ranking",
+    "is_interactive": false,
+    "findings": {
+      "top_fuel_feature": "m3_fuel_litres",
+      "top_nonfuel_feature": "m3_nonfuel_baskets",
+      "top_opportunity_feature": "has_visited_m1"
+    },
+    "path": "05_features/F02_mutual_information.png"
+  },
+  {
+    "fig_id": "F04_class_conditional_distributions",
+    "section": "05_features",
+    "title": "Class-Conditional Feature Separations",
+    "is_interactive": false,
+    "findings": {
+      "inactivity_median_days_since_last": 120.0,
+      "growth_median_days_since_last": 14.434502858796296
+    },
+    "path": "05_features/F04_class_conditional_distributions.png"
+  },
+  {
+    "fig_id": "G01_rfm_clustering",
+    "section": "06_segments",
+    "title": "Customer Archetype RFM & PCA Clusters",
+    "is_interactive": true,
+    "findings": {
+      "pca_variance_explained": [
+        0.7618579792329754,
+        0.16931223549256832
+      ],
+      "cluster_distribution": {
+        "Lapsed / Infrequent": 1657,
+        "Convenience Cross-Shoppers": 1334,
+        "Forecourt Regulars": 1136,
+        "High-Volume Core": 1111
+      }
+    },
+    "path": "06_segments/G01_rfm_clustering.html"
+  },
+  {
+    "fig_id": "G04_site_effects_icc",
+    "section": "06_segments",
+    "title": "Site Heterogeneity & Forecourt Volume ICC",
+    "is_interactive": false,
+    "findings": {
+      "site_heterogeneity_icc": 0.09590604829212332,
+      "num_analyzed_sites": 372,
+      "min_site_mean_litres": 8.783367875647668,
+      "max_site_mean_litres": 57.337407407407404
+    },
+    "path": "06_segments/G04_site_effects_icc.png"
+  },
+  {
+    "fig_id": "M01_predicted_vs_actual",
+    "section": "07_models",
+    "title": "Predicted vs Actual Hexbin",
+    "is_interactive": false,
+    "findings": {
+      "fuel_eval_rmse": 0.603037913600157,
+      "nonfuel_eval_rmse": 0.7515598302481092
+    },
+    "path": "07_models/M01_predicted_vs_actual.png"
+  },
+  {
+    "fig_id": "M03_p_active_calibration",
+    "section": "07_models",
+    "title": "p_active Calibration Reliability Curve",
+    "is_interactive": false,
+    "findings": {
+      "expected_calibration_error_ece": 0.01964444451021108
+    },
+    "path": "07_models/M03_p_active_calibration.png"
+  },
+  {
+    "fig_id": "M04_confusion_matrix",
+    "section": "07_models",
+    "title": "Normalized Top Class Confusion Matrix",
+    "is_interactive": false,
+    "findings": {
+      "inactivity_recall": 0.7722841225626741,
+      "fuel_growth_recall": 0.46745976207137857,
+      "stable_recall": 0.6539293439077145
+    },
+    "path": "07_models/M04_confusion_matrix.png"
+  },
+  {
+    "fig_id": "M06_bootstrap_uncertainty",
+    "section": "07_models",
+    "title": "Bootstrap 1,000 Replicate Score Uncertainty (Holdout Risk)",
+    "is_interactive": false,
+    "findings": {
+      "bootstrap_mean_score": 0.5201556134736316,
+      "bootstrap_ci_95_low": 0.5118936968943473,
+      "bootstrap_ci_95_high": 0.5288404090978829,
+      "bootstrap_ci_width": 0.016946712203535608,
+      "bootstrap_std": 0.0043152432219560125
+    },
+    "path": "07_models/M06_bootstrap_uncertainty.png"
+  },
+  {
+    "fig_id": "M13_oracle_upper_bounds",
+    "section": "07_models",
+    "title": "Oracle Upper Bounds Simulation toward 0.70",
+    "is_interactive": false,
+    "findings": {
+      "Current Baseline": 0.5200381094661091,
+      "+ Perfect Inactivity": 0.5399127323461876,
+      "+ Perfect Fuel vs Stable": 0.6081735120852227,
+      "+ Low-Error Non-fuel (0.45)": 0.5939459924358834
+    },
+    "path": "07_models/M13_oracle_upper_bounds.png"
+  }
+]

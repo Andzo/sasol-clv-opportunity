@@ -28,7 +28,7 @@ from src.models import ClassifierEnsemble, RegressorEnsemble
 logger = logging.getLogger(__name__)
 
 
-def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
+def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[str, Any]:
     """Execute the full end-to-end training, validation, and submission pipeline."""
     start_time = time.time()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -138,8 +138,26 @@ def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
     logger.info("=== Out-of-Time Evaluation (%s) ===", eval_cutoff.date())
     logger.info("CLV_fuel RMSE:    %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_fuel, x_max_fuel)
     logger.info("CLV_nonfuel RMSE: %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_nonfuel, x_max_nonfuel)
-    logger.info("Weighted F1:      %.4f (Majority baseline:  %.4f)", eval_scores.weighted_f1, baseline_dict["sample_submission_zero"]["weighted_f1"])
     logger.info("Proxy Composite:  %.4f", composite_score)
+
+    if save_predictions:
+        eda_cache = cfg.paths.reports_dir / "eda" / "cache"
+        eda_cache.mkdir(parents=True, exist_ok=True)
+        eval_df = pd.DataFrame({
+            "pred_fuel_raw": eval_fuel_raw,
+            "pred_fuel_final": eval_fuel_pred,
+            "pred_nonfuel_raw": eval_nonfuel_raw,
+            "pred_nonfuel_final": eval_nonfuel_pred,
+            "pred_opportunity": eval_opp_labels,
+            "p_active": p_active_eval,
+            "true_fuel": eval_snap.labels["CLV_fuel"].to_numpy(),
+            "true_nonfuel": eval_snap.labels["CLV_nonfuel"].to_numpy(),
+            "true_opportunity": eval_snap.labels["Opportunity"].to_numpy(),
+        }, index=eval_snap.ids)
+        for i, l in enumerate(opp_labels):
+            eval_df[f"prob_{l}"] = eval_probs_masked[:, i]
+        eval_df.to_parquet(eda_cache / "eval_predictions.parquet")
+        logger.info("Saved evaluation predictions to %s", eda_cache / "eval_predictions.parquet")
 
     # 4. Final Retraining across All Historical Snapshots
     logger.info("--- Phase 2: Full Historical Retraining ---")
@@ -192,6 +210,22 @@ def run_pipeline(cfg: PipelineConfig) -> dict[str, Any]:
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
     test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, fuel_shrinkage_power)
     test_pred_nonfuel = calibration.apply_shrinkage(test_pred_nonfuel_raw, p_active_test, nonfuel_shrinkage_power)
+
+    if save_predictions:
+        eda_cache = cfg.paths.reports_dir / "eda" / "cache"
+        eda_cache.mkdir(parents=True, exist_ok=True)
+        test_df = pd.DataFrame({
+            "pred_fuel_raw": test_pred_fuel_raw,
+            "pred_fuel_final": test_pred_fuel,
+            "pred_nonfuel_raw": test_pred_nonfuel_raw,
+            "pred_nonfuel_final": test_pred_nonfuel,
+            "pred_opportunity": test_opp_labels,
+            "p_active": p_active_test,
+        }, index=pd.Index(test_ids, name="ID"))
+        for i, l in enumerate(opp_labels):
+            test_df[f"prob_{l}"] = test_probs_masked[:, i]
+        test_df.to_parquet(eda_cache / "test_predictions.parquet")
+        logger.info("Saved test predictions to %s", eda_cache / "test_predictions.parquet")
 
     # 6. Submission Build & Strict Validation
     logger.info("--- Phase 4: Submission Build & Validation ---")
