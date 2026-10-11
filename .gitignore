@@ -19,10 +19,10 @@ train.csv
 # Temporary or IDE files
 *.swp
 
-# EDA visual artifacts & caches (keep repository code-only)
-reports/eda/**/*.png
-reports/eda/**/*.html
-reports/eda/*.png
-reports/eda/*.html
-reports/eda/cache/
+# EDA & Research visual artifacts & caches (keep repository code-only)
+reports/**/*.png
+reports/**/*.html
+reports/*.png
+reports/*.html
+reports/**/cache/
 

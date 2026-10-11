@@ -1,0 +1,91 @@
+{
+  "z01_findings": {
+    "latest_inactivity_pct": 27.41504390988927,
+    "latest_forecourt_only_pct": 37.6479572355861,
+    "latest_dual_spender_pct": 33.10423825887743,
+    "latest_store_only_pct": 1.8327605956471937,
+    "forecourt_regular_ratio": 0.5321100917431192
+  },
+  "z02_findings": {
+    "hurdle_roc_auc": 0.8318615472433875,
+    "hurdle_brier_score": 0.151403334807381,
+    "hurdle_expected_calibration_error": 0.03438088151924954
+  },
+  "z04_findings": {
+    "optimal_gamma": 1.1,
+    "optimal_composite_score": 0.5194372227218463,
+    "optimal_rmse_zeros": 0.5770193992334711,
+    "optimal_rmse_pos": 1.0036218334086744
+  },
+  "benchmark_summary": [
+    {
+      "Paradigm": "Baseline (Production)",
+      "Total Nonfuel RMSE": 0.7515598302481092,
+      "Zero Subset RMSE (False Positive Bleed)": 0.5982400622206032,
+      "Positive Subset RMSE (Spender Underprediction)": 0.9748056318382636,
+      "Proxy Composite Score": 0.5200381094661091,
+      "Delta vs Baseline": 0.0,
+      "95% CI Delta": "[+0.0000, +0.0000]",
+      "p-value Superiority": 1.0,
+      "Statistically Significant": "NO"
+    },
+    {
+      "Paradigm": "Tweedie (p=1.1)",
+      "Total Nonfuel RMSE": 0.7546887500107192,
+      "Zero Subset RMSE (False Positive Bleed)": 0.5656891661035762,
+      "Positive Subset RMSE (Spender Underprediction)": 1.0170017108427196,
+      "Proxy Composite Score": 0.5192712572117935,
+      "Delta vs Baseline": -0.0007668522543156087,
+      "95% CI Delta": "[-0.0014, -0.0001]",
+      "p-value Superiority": 0.981,
+      "Statistically Significant": "NO"
+    },
+    {
+      "Paradigm": "Classical Hurdle (p * mu)",
+      "Total Nonfuel RMSE": 0.7561562868011272,
+      "Zero Subset RMSE (False Positive Bleed)": 0.6170299537898243,
+      "Positive Subset RMSE (Spender Underprediction)": 0.963097626547546,
+      "Proxy Composite Score": 0.518911585509929,
+      "Delta vs Baseline": -0.00112652395618007,
+      "95% CI Delta": "[-0.0018, -0.0004]",
+      "p-value Superiority": 1.0,
+      "Statistically Significant": "NO"
+    },
+    {
+      "Paradigm": "Calibrated Soft Hurdle (gamma=1.10)",
+      "Total Nonfuel RMSE": 0.7540115755466764,
+      "Zero Subset RMSE (False Positive Bleed)": 0.5770193992334711,
+      "Positive Subset RMSE (Spender Underprediction)": 1.0036218334086744,
+      "Proxy Composite Score": 0.5194372227218463,
+      "Delta vs Baseline": -0.0006008867442627297,
+      "95% CI Delta": "[-0.0013, +0.0002]",
+      "p-value Superiority": 0.944,
+      "Statistically Significant": "NO"
+    },
+    {
+      "Paradigm": "Hierarchical Hurdle (a=0.3, b=1.0)",
+      "Total Nonfuel RMSE": 0.7546497304731633,
+      "Zero Subset RMSE (False Positive Bleed)": 0.5964858922463728,
+      "Positive Subset RMSE (Spender Underprediction)": 0.9836006085843773,
+      "Proxy Composite Score": 0.519280820327056,
+      "Delta vs Baseline": -0.0007572891390530412,
+      "95% CI Delta": "[-0.0014, -0.0001]",
+      "p-value Superiority": 0.994,
+      "Statistically Significant": "NO"
+    },
+    {
+      "Paradigm": "Dual Soft Hurdle (a=0.15, b=0.10)",
+      "Total Nonfuel RMSE": 0.7503001184998365,
+      "Zero Subset RMSE (False Positive Bleed)": 0.5711643657541321,
+      "Positive Subset RMSE (Spender Underprediction)": 1.0018960117989089,
+      "Proxy Composite Score": 0.5203468463041369,
+      "Delta vs Baseline": 0.00030873683802778995,
+      "95% CI Delta": "[+0.0000, +0.0006]",
+      "p-value Superiority": 0.021,
+      "Statistically Significant": "YES"
+    }
+  ],
+  "winning_paradigm": "Dual Soft Hurdle (a=0.15, b=0.10)",
+  "winning_composite_score": 0.5203468463041369,
+  "delta_vs_baseline": 0.00030873683802778995
+}

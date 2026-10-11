@@ -159,3 +159,46 @@ def test_model_plots(dummy_predictions: pd.DataFrame):
     assert "bootstrap_ci_95_high" in fm6
     assert fm6["bootstrap_ci_95_low"] <= fm6["bootstrap_ci_95_high"]
     plt.close(fig_m6)
+
+
+def test_zero_inflation_plots(dummy_snapshot: Snapshot):
+    from src.viz.zero_inflation import (
+        plot_z01_zero_mass_decomposition,
+        plot_z02_hurdle_calibration,
+        plot_z03_decomposed_error_boxplots,
+        plot_z04_recombination_pareto_curve,
+    )
+
+    fig_z1, f_z1 = plot_z01_zero_mass_decomposition([dummy_snapshot])
+    assert isinstance(fig_z1, plt.Figure)
+    assert "latest_inactivity_pct" in f_z1
+    plt.close(fig_z1)
+
+    y_true = np.array([0, 1, 0, 1, 1, 0])
+    prob = np.array([0.1, 0.9, 0.2, 0.8, 0.7, 0.3])
+    fig_z2, f_z2 = plot_z02_hurdle_calibration(y_true, prob)
+    assert isinstance(fig_z2, plt.Figure)
+    assert "hurdle_roc_auc" in f_z2
+    plt.close(fig_z2)
+
+    residuals = {
+        "Base": {"zero_residuals": np.array([0.1, 0.2]), "pos_residuals": np.array([0.3, 0.4])},
+        "Hurdle": {"zero_residuals": np.array([0.05, 0.1]), "pos_residuals": np.array([0.25, 0.35])},
+    }
+    fig_z3, f_z3 = plot_z03_decomposed_error_boxplots(residuals)
+    assert isinstance(fig_z3, plt.Figure)
+    assert "Base" in f_z3
+    plt.close(fig_z3)
+
+    pareto_df = pd.DataFrame({
+        "gamma": [0.8, 1.0, 1.2],
+        "rmse_total": [0.76, 0.75, 0.755],
+        "rmse_zeros": [0.60, 0.58, 0.56],
+        "rmse_pos": [0.98, 1.00, 1.02],
+        "composite_score": [0.518, 0.520, 0.519],
+        "marker_size": [8, 8, 8],
+    })
+    fig_z4, f_z4 = plot_z04_recombination_pareto_curve(pareto_df)
+    assert isinstance(fig_z4, go.Figure)
+    assert "optimal_gamma" in f_z4
+
