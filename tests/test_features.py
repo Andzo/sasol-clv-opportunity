@@ -44,16 +44,10 @@ def test_build_features_schema_and_reproducibility():
     # 2. Key newly added feature columns must exist
     new_cols = [
         "fuel_m1_m3_ratio",
-        "fuel_litres_m1_m3_ratio",
         "nonfuel_m1_m3_ratio",
         "fuel_reversion_ratio",
-        "fuel_growth_hurdle_rand",
         "store_attachment_rate",
-        "forecourt_only",
         "exp_churn_hazard",
-        "fuel_overdue_ratio",
-        "fuel_rand_lag1",
-        "fuel_rand_trend_slope",
         "fuel_litres_trend_slope",
         "nonfuel_rand_trend_slope",
         "rel_fuel_price_m3",

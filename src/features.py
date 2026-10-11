@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.3.0"
+FEATURE_VERSION = "2.4.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -35,9 +35,13 @@ WINDOWS: dict[str, tuple[int, int]] = {
     "m3": (3, 0),    # == label "previous quarter" baseline
     "m6": (6, 0),
     "q2": (6, 3),    # quarter before the previous quarter
-    "yoy": (12, 9),  # same calendar season as the outcome window, one year earlier
 }
 TREND_MONTHS = 6
+
+DEAD_CATEGORIES: set[str] = {
+    "Frozen food", "Krispy Kreme", "Miscellaneous", "Promotional items", "Unknown"
+}
+ACTIVE_ADJUSTMENT_ITEMS: tuple[str, ...] = ("TOTAL/ROUNDING DISCO",)
 
 
 def safe_name(text: str) -> str:
@@ -79,9 +83,8 @@ def _window_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start
 def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     """Momentum ratios and unit economics derived from the window aggregates."""
     out: dict[str, pd.Series] = {}
-    for qty in ("baskets", "fuel_litres", "fuel_rand", "nonfuel_rand"):
+    for qty in ("baskets", "fuel_litres", "nonfuel_rand"):
         out[f"mom_m3_q2_{qty}"] = (win[f"m3_{qty}"] + 1.0) / (win[f"q2_{qty}"] + 1.0)
-        out[f"mom_m3_yoy_{qty}"] = (win[f"m3_{qty}"] + 1.0) / (win[f"yoy_{qty}"] + 1.0)
     out["delta_m3_q2_fuel_rand"] = win["m3_fuel_rand"] - win["q2_fuel_rand"]
     out["delta_m3_q2_nonfuel_rand"] = win["m3_nonfuel_rand"] - win["q2_nonfuel_rand"]
     out["m1_share_of_m3_baskets"] = win["m1_baskets"] / win["m3_baskets"].where(win["m3_baskets"] > 0)
@@ -92,16 +95,13 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out["basket_value_m3"] = spend / win["m3_baskets"].where(win["m3_baskets"] > 0)
     out["fuel_share_m3"] = win["m3_fuel_rand"] / spend.where(spend > 0)
     out["fuel_m1_m3_ratio"] = (win["m1_fuel_rand"] + 1.0) / (win["m3_fuel_rand"] / 3.0 + 1.0)
-    out["fuel_litres_m1_m3_ratio"] = (win["m1_fuel_litres"] + 1.0) / (win["m3_fuel_litres"] / 3.0 + 1.0)
     out["nonfuel_m1_m3_ratio"] = (win["m1_nonfuel_rand"] + 1.0) / (win["m3_nonfuel_rand"] / 3.0 + 1.0)
     out["fuel_reversion_ratio"] = (win["m3_fuel_rand"] / 3.0 + 1.0) / (win["m6_fuel_rand"] / 6.0 + 1.0)
     out["nonfuel_reversion_ratio"] = (win["m3_nonfuel_rand"] / 3.0 + 1.0) / (win["m6_nonfuel_rand"] / 6.0 + 1.0)
-    out["fuel_growth_hurdle_rand"] = np.maximum(20.0, 0.25 * win["m3_fuel_rand"])
-    out["fuel_hurdle_ratio"] = out["fuel_growth_hurdle_rand"] / (win["m3_fuel_rand"] + 1.0)
+    fuel_growth_hurdle = np.maximum(20.0, 0.25 * win["m3_fuel_rand"])
+    out["fuel_hurdle_ratio"] = fuel_growth_hurdle / (win["m3_fuel_rand"] + 1.0)
     out["store_attachment_rate"] = win["m3_nonfuel_baskets"] / (win["m3_baskets"] + 1.0)
-    out["forecourt_only"] = (win["m3_nonfuel_baskets"] == 0).astype("float64")
     out["has_visited_m1"] = (win["m1_baskets"] > 0).astype("float64")
-    out["has_visited_fuel_m1"] = (win["m1_fuel_baskets"] > 0).astype("float64")
     return pd.DataFrame(out)
 
 
@@ -122,7 +122,6 @@ def _recency_block(
 
     out = pd.DataFrame(index=ids)
     out["days_since_last_purchase"] = _days_since(t, g["_time"].max())
-    out["days_since_last_any_txn"] = _days_since(t, hist.groupby("ID")["_time"].max())
     out["days_since_last_fuel"] = _days_since(t, q[q["is_fuel_cat"]].groupby("ID")["_time"].max())
     out["days_since_last_nonfuel"] = _days_since(t, q[q["is_nonfuel"]].groupby("ID")["_time"].max())
     out["days_since_first_seen_capped"] = _days_since(t, first_any).clip(upper=TENURE_CAP_DAYS)
@@ -133,7 +132,6 @@ def _recency_block(
     out["gap_last"] = g["gap"].last()
     out["overdue_ratio"] = out["days_since_last_purchase"] / out["gap_median"].clip(lower=1.0)
     out["exp_churn_hazard"] = 1.0 - np.exp(-out["days_since_last_purchase"] / out["gap_mean"].clip(lower=1.0))
-    out["fuel_overdue_ratio"] = out["days_since_last_fuel"] / out["gap_median"].clip(lower=1.0)
     out["fuel_dormant_in_m3"] = (
         (q[q["is_fuel_cat"]].groupby("ID").size().reindex(ids).fillna(0) > 0) & (out["days_since_last_fuel"] > 90)
     ).astype("float64")
@@ -167,13 +165,18 @@ def _trend_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start:
 
     x = np.arange(TREND_MONTHS, dtype="float64") - (TREND_MONTHS - 1) / 2.0
     denom = float((x**2).sum())
-    for prefix in ("baskets", "fuel_rand", "fuel_litres", "nonfuel_rand"):
+    for prefix in ("baskets", "fuel_litres", "nonfuel_rand"):
         lags = out[[f"{prefix}_lag{k}" for k in range(TREND_MONTHS, 0, -1)]].to_numpy(dtype="float64")
         out[f"{prefix}_trend_slope"] = ((lags - lags.mean(axis=1, keepdims=True)) * x).sum(axis=1) / denom
         out.loc[np.isnan(lags).any(axis=1), f"{prefix}_trend_slope"] = np.nan
 
     out["active_months_6"] = (out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].to_numpy() > 0).sum(axis=1).astype("float64")
     out.loc[out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].isna().any(axis=1), "active_months_6"] = np.nan
+
+    # Drop redundant lag1 columns (already captured by m1_*) and fuel_rand_lag* columns
+    drop_cols = [f"{p}_lag1" for p in ("baskets", "fuel_rand", "fuel_litres", "nonfuel_rand")]
+    drop_cols += [f"fuel_rand_lag{k}" for k in range(2, TREND_MONTHS + 1)]
+    out = out.drop(columns=[c for c in drop_cols if c in out.columns])
     return out
 
 
@@ -259,11 +262,10 @@ def _behaviour_block(
     out["m6_mean_hour"] = g["hour"].mean()
     out["m6_std_hour"] = g["hour"].std()
     out["m6_cross_share"] = g["cross"].mean()
-    out["m6_return_lines"] = core[core["_quantity"] < 0].groupby("ID").size()
     excluded = core[~core["is_included"]]
     out["m6_excluded_baskets"] = excluded.groupby("ID")["TransactionId"].nunique()
     out["m6_excluded_rand"] = excluded.groupby("ID")["amount"].sum()
-    for item in label_config["adjustment_items"]:
+    for item in ACTIVE_ADJUSTMENT_ITEMS:
         tag = safe_name(item)
         out[f"ever_adj_{tag}"] = hist[hist["ItemName"] == item].groupby("ID").size().gt(0).astype("float64")
         out[f"m6_adj_{tag}_lines"] = w[w["ItemName"] == item].groupby("ID").size()
@@ -471,7 +473,7 @@ def build_features(
     t = pd.Timestamp(cutoff)
     ids = pd.Index(ids, name="ID").astype(str)
     hist = tx[(tx["_time"] < t) & tx["ID"].isin(ids)]
-    cats = included_categories(label_config)
+    cats = [c for c in included_categories(label_config) if c not in DEAD_CATEGORIES]
 
     win = _window_block(hist, ids, t, data_start)
     recency, observed_months = _recency_block(hist, ids, t, data_start)
