@@ -56,6 +56,15 @@ def test_build_features_schema_and_reproducibility():
         "fuel_rand_trend_slope",
         "fuel_litres_trend_slope",
         "nonfuel_rand_trend_slope",
+        "rel_fuel_price_m3",
+        "m6_top_loc_mean_litres",
+        "m6_top_loc_store_attach",
+        "m6_top_loc_weekend_share",
+        "m6_top_loc_log_volume",
+        "is_holiday_quarter",
+        "cutoff_quarter",
+        "hist_december_active",
+        "hist_december_spend_log",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"

@@ -29,7 +29,7 @@ def make_regressor(name: str, seed: int, n_jobs: int) -> Any:
         )
     if name == "catboost":
         return CatBoostRegressor(
-            iterations=1000, learning_rate=0.04, depth=6, l2_leaf_reg=5.0, loss_function="RMSE",
+            iterations=600, learning_rate=0.05, depth=6, l2_leaf_reg=5.0, loss_function="RMSE",
             random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
         )
     if name == "xgb":
@@ -52,7 +52,7 @@ def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
         )
     if name == "catboost":
         return CatBoostClassifier(
-            iterations=800, learning_rate=0.05, depth=6, loss_function="MultiClass",
+            iterations=500, learning_rate=0.05, depth=6, loss_function="MultiClass",
             random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
         )
     if name == "xgb":

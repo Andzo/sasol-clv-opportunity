@@ -122,3 +122,34 @@ def test_store_attachment_classifier():
     assert (probs >= 0.0).all() and (probs <= 1.0).all()
 
 
+def test_inactivity_gate():
+    from src.calibration import apply_inactivity_gate
+
+    y_pred = np.array([2.0, 1.5, 0.8, 0.4])
+    p_active = np.array([0.9, 0.5, 0.04, 0.01])
+
+    gated = apply_inactivity_gate(y_pred, p_active, threshold=0.05)
+    assert np.isclose(gated[0], 2.0)
+    assert np.isclose(gated[1], 1.5)
+    assert gated[2] == 0.0
+    assert gated[3] == 0.0
+
+
+def test_fit_class_weights_with_dominant_classes():
+    from src.calibration import fit_class_weights, decide, weighted_f1
+
+    rng = np.random.default_rng(42)
+    n_samples, n_classes = 400, 5
+    probs = rng.dirichlet(np.ones(n_classes), size=n_samples)
+    y_true = rng.integers(0, n_classes, size=n_samples)
+
+    weights = fit_class_weights(probs, y_true, dominant_classes=[0, 1])
+    assert len(weights) == n_classes
+    assert (weights > 0).all()
+    # Should improve or maintain F1
+    base_f1 = weighted_f1(y_true, decide(probs), n_classes)
+    cal_f1 = weighted_f1(y_true, decide(probs, weights), n_classes)
+    assert cal_f1 >= base_f1 - 1e-9
+
+
+

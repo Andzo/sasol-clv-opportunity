@@ -100,11 +100,12 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     nonfuel_model.set_weights(nonfuel_blend_weights)
     logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
-    # Fit class weights on calibration fold
+    # Fit class weights on calibration fold with dominant class protection
     cal_probs = opp_model.predict_proba(cal_snap.features)
     cal_probs_masked = calibration.apply_eligibility_mask(cal_probs, cal_snap.mask)
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
-    class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y)
+    dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
+    class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y, dominant_classes=dom_classes)
     logger.info("Fitted class weights (max factor=%.2f, min factor=%.2f)", class_weights.max(), class_weights.min())
 
     # Fit soft active shrinkage (fuel) and dual soft hurdle shrinkage (nonfuel) on calibration fold
@@ -140,9 +141,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
     p_store_eval = store_model.predict_proba(eval_snap.features)
     eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_raw, p_active_eval, fuel_shrinkage_power)
+    eval_fuel_pred = calibration.apply_inactivity_gate(eval_fuel_pred, p_active_eval, threshold=0.03)
     eval_nonfuel_pred = calibration.apply_dual_shrinkage(
         eval_nonfuel_raw, p_active_eval, p_store_eval, nonfuel_alpha, nonfuel_beta
     )
+    eval_nonfuel_pred = calibration.apply_inactivity_gate(eval_nonfuel_pred, p_active_eval, threshold=0.03)
 
     eval_scores = metrics.score(
         eval_snap.labels,
@@ -237,9 +240,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
     p_store_test = final_store_model.predict_proba(test_feats)
     test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, fuel_shrinkage_power)
+    test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=0.03)
     test_pred_nonfuel = calibration.apply_dual_shrinkage(
         test_pred_nonfuel_raw, p_active_test, p_store_test, nonfuel_alpha, nonfuel_beta
     )
+    test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=0.03)
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"

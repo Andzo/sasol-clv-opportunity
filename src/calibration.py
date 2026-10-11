@@ -12,7 +12,8 @@ from typing import Sequence
 import numpy as np
 from scipy.optimize import nnls
 
-DEFAULT_GRID: np.ndarray = np.geomspace(0.6, 1.8, 13)
+DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 2.5, 33)
+DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.8, 1.25, 17)
 
 
 def apply_eligibility_mask(probs: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -49,19 +50,26 @@ def fit_class_weights(
     probs: np.ndarray,
     y_true: np.ndarray,
     grid: np.ndarray = DEFAULT_GRID,
-    n_passes: int = 3,
+    n_passes: int = 4,
+    dominant_classes: Sequence[int] | None = None,
 ) -> np.ndarray:
     """Coordinate ascent on per-class decision weights maximising weighted F1.
 
-    Deterministic; returns all-ones if no improvement is found.
+    If dominant_classes is provided (e.g. Inactivity, Stable, Fuel Growth), searches
+    a tighter bounded grid for dominant classes to prevent rare-category false alarms
+    from cannibalizing high-support classes, while searching the broader grid for
+    secondary and minority classes.
     """
     n_classes = probs.shape[1]
     weights = np.ones(n_classes)
     best = weighted_f1(y_true, decide(probs, weights), n_classes)
+    dom_set = set(dominant_classes) if dominant_classes is not None else set()
+
     for _ in range(n_passes):
         improved = False
         for c in range(n_classes):
-            for value in grid:
+            c_grid = DOMINANT_TIGHT_GRID if c in dom_set else grid
+            for value in c_grid:
                 trial = weights.copy()
                 trial[c] = value
                 score = weighted_f1(y_true, decide(probs, trial), n_classes)
@@ -162,4 +170,18 @@ def apply_dual_shrinkage(
     if beta > 0:
         res = res * (p_store ** beta)
     return res
+
+
+def apply_inactivity_gate(
+    y_pred: np.ndarray,
+    p_active: np.ndarray,
+    threshold: float = 0.05,
+) -> np.ndarray:
+    """Zero continuous predictions for customers whose active probability is strictly below threshold."""
+    if threshold <= 0:
+        return np.asarray(y_pred, dtype="float64")
+    out = np.asarray(y_pred, dtype="float64").copy()
+    out[np.asarray(p_active) < threshold] = 0.0
+    return out
+
 

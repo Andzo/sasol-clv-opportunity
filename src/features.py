@@ -22,7 +22,7 @@ import pandas as pd
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.1.0"
+FEATURE_VERSION = "2.2.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -84,6 +84,8 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out["delta_m3_q2_nonfuel_rand"] = win["m3_nonfuel_rand"] - win["q2_nonfuel_rand"]
     out["m1_share_of_m3_baskets"] = win["m1_baskets"] / win["m3_baskets"].where(win["m3_baskets"] > 0)
     out["fuel_price_m3"] = win["m3_fuel_rand"] / win["m3_fuel_litres"].where(win["m3_fuel_litres"] > 0)
+    vol_weighted_price = (win["m3_fuel_rand"].sum() / win["m3_fuel_litres"].sum()) if win["m3_fuel_litres"].sum() > 0 else 23.0
+    out["rel_fuel_price_m3"] = (out["fuel_price_m3"] / vol_weighted_price).fillna(1.0)
     spend = win["m3_fuel_rand"] + win["m3_nonfuel_rand"]
     out["basket_value_m3"] = spend / win["m3_baskets"].where(win["m3_baskets"] > 0)
     out["fuel_share_m3"] = win["m3_fuel_rand"] / spend.where(spend > 0)
@@ -226,6 +228,31 @@ def _behaviour_block(
     out = pd.DataFrame(index=ids)
     out["m6_distinct_locations"] = g["loc"].nunique()
     out["m6_top_location_share"] = b.groupby(["ID", "loc"]).size().groupby(level=0).max() / g.size()
+
+    # Station Location Target Profiling
+    loc_baskets = core.groupby("LocationId")["TransactionId"].nunique()
+    loc_fuel_litres = core[core["is_fuel_sale"]].groupby("LocationId")["qty"].sum()
+    loc_fuel_baskets = core[core["is_fuel_cat"]].groupby("LocationId")["TransactionId"].nunique()
+    loc_nonfuel_baskets = core[core["is_nonfuel"]].groupby("LocationId")["TransactionId"].nunique()
+    loc_weekend_baskets = core[core["_time"].dt.dayofweek >= 5].groupby("LocationId")["TransactionId"].nunique()
+
+    loc_mean_litres = (loc_fuel_litres / loc_fuel_baskets.clip(lower=1)).fillna(21.0)
+    loc_store_attach = (loc_nonfuel_baskets / loc_baskets.clip(lower=1)).fillna(0.10)
+    loc_weekend_share = (loc_weekend_baskets / loc_baskets.clip(lower=1)).fillna(0.25)
+    loc_log_baskets = np.log1p(loc_baskets.astype("float64"))
+
+    cust_top_loc = b.groupby(["ID", "loc"]).size().reset_index(name="cnt").sort_values(["ID", "cnt"], ascending=[True, False]).groupby("ID")["loc"].first()
+
+    med_litres = float(loc_mean_litres.median()) if len(loc_mean_litres) > 0 else 21.0
+    med_attach = float(loc_store_attach.median()) if len(loc_store_attach) > 0 else 0.10
+    med_weekend = float(loc_weekend_share.median()) if len(loc_weekend_share) > 0 else 0.25
+    med_log_vol = float(loc_log_baskets.median()) if len(loc_log_baskets) > 0 else 5.0
+
+    out["m6_top_loc_mean_litres"] = cust_top_loc.map(loc_mean_litres).reindex(ids).fillna(med_litres)
+    out["m6_top_loc_store_attach"] = cust_top_loc.map(loc_store_attach).reindex(ids).fillna(med_attach)
+    out["m6_top_loc_weekend_share"] = cust_top_loc.map(loc_weekend_share).reindex(ids).fillna(med_weekend)
+    out["m6_top_loc_log_volume"] = cust_top_loc.map(loc_log_baskets).reindex(ids).fillna(med_log_vol)
+
     out["m6_weekend_share"] = g["weekend"].mean()
     out["m6_mean_hour"] = g["hour"].mean()
     out["m6_std_hour"] = g["hour"].std()
@@ -280,5 +307,18 @@ def build_features(
     feats = pd.concat(blocks, axis=1)
     feats["cutoff_month_sin"] = np.sin(2 * np.pi * t.month / 12.0)
     feats["cutoff_month_cos"] = np.cos(2 * np.pi * t.month / 12.0)
+    feats["is_holiday_quarter"] = float(t.month in (11, 12, 1))
+    feats["cutoff_quarter"] = float(t.quarter)
+
+    dec24_lo, dec24_hi = pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
+    if t >= dec24_hi:
+        dec24_tx = hist[(hist["_time"] >= dec24_lo) & (hist["_time"] < dec24_hi) & hist["is_qualifying"]]
+        dec24_spend = dec24_tx.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+        feats["hist_december_active"] = (dec24_spend > 0).astype("float64")
+        feats["hist_december_spend_log"] = np.log1p(dec24_spend.astype("float64"))
+    else:
+        feats["hist_december_active"] = 0.0
+        feats["hist_december_spend_log"] = 0.0
+
     feats.index.name = "ID"
     return feats.astype("float64")
