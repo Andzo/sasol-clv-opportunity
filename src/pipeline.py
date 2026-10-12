@@ -10,8 +10,10 @@ Orchestrates:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -23,9 +25,27 @@ from src import calibration, dataset, metrics, submission
 from src.config import PipelineConfig
 from src.data import load_test_ids, load_transactions
 from src.dataset import SnapshotBuilder, stack
+from src.features import FEATURE_VERSION
 from src.models import ClassifierEnsemble, RegressorEnsemble, StoreAttachmentClassifier
 
 logger = logging.getLogger(__name__)
+
+
+def _get_git_info() -> dict[str, Any]:
+    try:
+        commit_full = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        commit_short = commit_full[:7]
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True).strip()
+        status_out = subprocess.check_output(["git", "status", "--porcelain"], text=True).strip()
+        is_dirty = len(status_out) > 0
+        return {
+            "commit": commit_short,
+            "commit_full": commit_full,
+            "branch": branch,
+            "dirty": is_dirty,
+        }
+    except Exception:
+        return {"commit": "unknown", "commit_full": "unknown", "branch": "unknown", "dirty": False}
 
 
 def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[str, Any]:
@@ -339,12 +359,40 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     sample_df = pd.read_csv(cfg.paths.sample_submission)
     submission.validate_submission(sub_df, sample_df, opp_labels)
     cfg.paths.submissions_dir.mkdir(parents=True, exist_ok=True)
+    git_info = _get_git_info()
     timestamp_str = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-    timestamped_path = cfg.paths.submissions_dir / f"submission_{timestamp_str}_comp{composite_score:.4f}.csv"
+    sub_base_name = f"submission_git_{git_info['commit']}_{timestamp_str}_comp{composite_score:.4f}"
+    timestamped_path = cfg.paths.submissions_dir / f"{sub_base_name}.csv"
     submission.write_submission(sub_df, timestamped_path)
     submission.write_submission(sub_df, cfg.paths.submission)
     submission.write_submission(sub_df, cfg.paths.root / "submission.csv")
-    logger.info("Submission successfully written to %s and %s (%d rows)", timestamped_path.name, cfg.paths.submission.name, len(sub_df))
+
+    # Companion manifest for 100% reproducibility and lineage tracking
+    manifest: dict[str, Any] = {
+        "submission_file": timestamped_path.name,
+        "created_at": pd.Timestamp.now().isoformat(),
+        "git_commit": git_info["commit_full"],
+        "git_commit_short": git_info["commit"],
+        "git_branch": git_info["branch"],
+        "git_dirty": git_info["dirty"],
+        "feature_version": FEATURE_VERSION,
+        "models": {
+            "regression_members": list(cfg.models.regression_members),
+            "classification_members": list(cfg.models.classification_members),
+            "seed": cfg.models.seed,
+        },
+        "evaluation_metrics": eval_scores.as_dict(),
+        "proxy_composite_score": round(composite_score, 4),
+        "reproduction_command": f"git checkout {git_info['commit']} && python main.py --save-predictions",
+    }
+    manifest_path = cfg.paths.submissions_dir / f"{sub_base_name}.manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    (cfg.paths.submissions_dir / "submission_latest.manifest.json").write_text(json.dumps(manifest, indent=2))
+
+    logger.info(
+        "Submission written to %s (Linked to git commit %s, comp=%.4f, %d rows)",
+        timestamped_path.name, git_info["commit"], composite_score, len(sub_df)
+    )
 
     # Save evaluation summary
     elapsed = time.time() - start_time
