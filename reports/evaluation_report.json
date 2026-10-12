@@ -1,13 +1,13 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 2342.49,
+  "elapsed_seconds": 979.99,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.603037913600157,
-    "rmse_nonfuel": 0.7515598302481092,
-    "weighted_f1": 0.5071281128727799
+    "rmse_fuel": 0.599493788107772,
+    "rmse_nonfuel": 0.7438231640213242,
+    "weighted_f1": 0.5130226090950719
   },
-  "proxy_composite_score": 0.52,
+  "proxy_composite_score": 0.5249,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -22,20 +22,47 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1876,
-    "Inactivity": 1800,
-    "Existing-category growth: Fuel": 1301,
-    "Existing-category growth: Other": 399,
-    "Existing-category growth: Food & beverage": 50,
-    "Existing-category growth: Beverages": 47,
-    "New category adoption: Food & beverage": 9,
-    "New category adoption: Other": 5,
-    "New category adoption: Beverages": 1
+    "Stable": 1754,
+    "Inactivity": 1621,
+    "Existing-category growth: Fuel": 1461,
+    "Existing-category growth: Other": 316,
+    "Existing-category growth: Beverages": 180,
+    "Existing-category growth: Food & beverage": 115,
+    "New category adoption: Other": 15,
+    "New category adoption: Food & beverage": 12,
+    "New category adoption: Beverages": 9,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1,
+    "New category adoption: Snacking": 1
   },
-  "fuel_mean": 1.4121,
-  "nonfuel_mean": 0.6582,
+  "fuel_mean": 1.4379,
+  "nonfuel_mean": 0.6584,
+  "blend_weights": {
+    "fuel": {
+      "lgbm": 0.3522,
+      "catboost": 0.1301,
+      "xgb": 0.5177
+    },
+    "nonfuel": {
+      "lgbm": 0.0,
+      "catboost": 0.4398,
+      "xgb": 0.5602
+    }
+  },
+  "temperature": {
+    "validation": 1.05,
+    "final": 1.1
+  },
+  "inactivity_threshold": {
+    "validation": 0.01,
+    "final": 0.08
+  },
   "shrinkage_powers": {
-    "fuel": 0.15,
-    "nonfuel": 0.35
+    "fuel": 0.0,
+    "nonfuel_alpha": 0.0,
+    "nonfuel_beta": 0.08,
+    "validation_fuel": 0.05,
+    "validation_nonfuel_alpha": 0.05,
+    "validation_nonfuel_beta": 0.05
   }
 }
