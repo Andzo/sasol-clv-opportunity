@@ -87,7 +87,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.25,
     ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
 
     nonfuel_model = RegressorEnsemble(
@@ -230,7 +231,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     final_fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.25,
     ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
     final_fuel_model.set_weights(fuel_blend_weights)
 
@@ -440,3 +442,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     logger.info("Completed in %.2f minutes", elapsed / 60.0)
 
     return summary
+
+
+if __name__ == "__main__":
+    from src.config import PipelineConfig
+    run_pipeline(PipelineConfig(), save_predictions=True)
