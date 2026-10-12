@@ -107,7 +107,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
     cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
-        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes
+        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes, seed=cfg.models.seed
     )
     cal_probs_scaled = calibration.apply_temperature_scaling(cal_probs, cal_temp)
     cal_probs_masked = calibration.apply_eligibility_mask(cal_probs_scaled, cal_snap.mask)
@@ -250,7 +250,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     # Class decision multipliers on 10,199 pooled instances
     pool_probs = final_opp_model.predict_proba(pool_feats)
     final_temp, final_class_weights = calibration.fit_temperature_and_class_weights(
-        pool_probs, pool_y_opp, mask=pool_masks, dominant_classes=dom_classes
+        pool_probs, pool_y_opp, mask=pool_masks, dominant_classes=dom_classes, seed=cfg.models.seed
     )
     pool_probs_scaled = calibration.apply_temperature_scaling(pool_probs, final_temp)
     pool_probs_masked = calibration.apply_eligibility_mask(pool_probs_scaled, pool_masks)

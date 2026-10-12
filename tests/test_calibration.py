@@ -75,12 +75,34 @@ def test_fit_temperature_and_class_weights():
     probs = rng.dirichlet(np.ones(n_classes), size=n_samples)
     y_true = rng.integers(0, n_classes, size=n_samples)
 
+    # 1. Warm-start baseline (n_trials=0)
+    base_T, base_cw = fit_temperature_and_class_weights(
+        probs, y_true, temperatures=[0.85, 0.90, 1.00], dominant_classes=[0], n_trials=0
+    )
+    p_base = apply_temperature_scaling(probs, base_T)
+    base_f1 = weighted_f1(y_true, decide(p_base, base_cw), n_classes)
+
+    # 2. Optuna TPE refinement (n_trials=50 for fast unit test)
     best_T, cw = fit_temperature_and_class_weights(
-        probs, y_true, temperatures=[0.85, 0.90, 1.00], dominant_classes=[0]
+        probs, y_true, temperatures=[0.85, 0.90, 1.00], dominant_classes=[0], n_trials=50, seed=42
     )
     assert best_T in [0.85, 0.90, 1.00]
     assert len(cw) == n_classes
     assert (cw >= 0).all()
+    # Dominant class bounded
+    assert 0.80 <= cw[0] <= 1.25
+
+    p_opt = apply_temperature_scaling(probs, best_T)
+    opt_f1 = weighted_f1(y_true, decide(p_opt, cw), n_classes)
+    # Guaranteed never to be worse than warm-start baseline
+    assert opt_f1 >= base_f1 - 1e-9
+
+    # 3. Determinism check
+    best_T2, cw2 = fit_temperature_and_class_weights(
+        probs, y_true, temperatures=[0.85, 0.90, 1.00], dominant_classes=[0], n_trials=50, seed=42
+    )
+    assert best_T == best_T2
+    assert np.allclose(cw, cw2)
 
 
 def test_fit_inactivity_threshold():

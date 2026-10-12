@@ -1,13 +1,13 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 2497.39,
+  "elapsed_seconds": 1145.74,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.6016065895333765,
-    "rmse_nonfuel": 0.7452526820962827,
-    "weighted_f1": 0.511649308934473
+    "rmse_fuel": 0.601836207452724,
+    "rmse_nonfuel": 0.7452979137125453,
+    "weighted_f1": 0.5137582607762181
   },
-  "proxy_composite_score": 0.5236,
+  "proxy_composite_score": 0.5244,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -22,19 +22,19 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1819,
-    "Inactivity": 1652,
-    "Existing-category growth: Fuel": 1550,
-    "Existing-category growth: Other": 267,
-    "Existing-category growth: Beverages": 83,
-    "Existing-category growth: Food & beverage": 73,
+    "Stable": 1796,
+    "Inactivity": 1672,
+    "Existing-category growth: Fuel": 1449,
+    "Existing-category growth: Other": 270,
+    "Existing-category growth: Beverages": 167,
+    "Existing-category growth: Food & beverage": 84,
+    "New category adoption: Food & beverage": 19,
     "New category adoption: Other": 18,
-    "New category adoption: Food & beverage": 16,
-    "New category adoption: Beverages": 7,
+    "New category adoption: Beverages": 10,
     "New category adoption: Lubricants": 3
   },
-  "fuel_mean": 1.4416,
-  "nonfuel_mean": 0.657,
+  "fuel_mean": 1.4439,
+  "nonfuel_mean": 0.6582,
   "blend_weights": {
     "fuel": {
       "lgbm": 0.3627,
@@ -48,8 +48,8 @@
     }
   },
   "temperature": {
-    "validation": 1.0,
-    "final": 1.0
+    "validation": 1.1,
+    "final": 1.1
   },
   "inactivity_threshold": {
     "validation": 0.01,

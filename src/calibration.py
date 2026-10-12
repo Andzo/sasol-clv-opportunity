@@ -101,14 +101,17 @@ def fit_temperature_and_class_weights(
     probs: np.ndarray,
     y_true: np.ndarray,
     mask: np.ndarray | None = None,
-    temperatures: Sequence[float] = (0.80, 0.85, 0.90, 0.95, 1.00),
+    temperatures: Sequence[float] = (0.80, 0.85, 0.90, 0.95, 1.00, 1.05, 1.10),
     dominant_classes: Sequence[int] | None = None,
+    n_trials: int = 250,
+    seed: int = 42,
 ) -> tuple[float, np.ndarray]:
     """Jointly search for optimal temperature T and class decision weights W maximizing Weighted F1.
 
-    For each candidate temperature T, probabilities are sharpened/softened and masked, then
-    coordinate ascent finds optimal class weights W. The combination achieving the highest
-    Weighted F1 is returned.
+    First evaluates coordinate ascent across the candidate temperatures to establish a strong
+    warm-start baseline. If n_trials > 0, refines the joint threshold vector via Optuna's
+    continuous TPESampler with dominant class protection, guaranteed never to perform worse
+    than coordinate ascent.
     """
     best_f1 = -1.0
     best_temp = 1.0
@@ -126,7 +129,49 @@ def fit_temperature_and_class_weights(
             best_temp = float(temp)
             best_weights = cw
 
-    return best_temp, best_weights
+    if n_trials <= 0:
+        return best_temp, best_weights
+
+    # Refine via continuous TPE in bounded space
+    import optuna
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+
+    # Enqueue coordinate ascent solution as trial 0
+    init_params = {"temperature": best_temp}
+    for c in range(n_classes):
+        init_params[f"w_{c}"] = float(best_weights[c])
+    study.enqueue_trial(init_params)
+
+    # Enqueue uniform weights as trial 1
+    uniform_params = {"temperature": 1.0 if 1.0 in temperatures else best_temp}
+    for c in range(n_classes):
+        uniform_params[f"w_{c}"] = 1.0
+    study.enqueue_trial(uniform_params)
+
+    dom_set = set(dominant_classes) if dominant_classes is not None else set()
+    temp_list = [float(t) for t in temperatures]
+
+    def objective(trial: optuna.Trial) -> float:
+        t = trial.suggest_categorical("temperature", temp_list)
+        w = np.ones(n_classes)
+        for c in range(n_classes):
+            if c in dom_set:
+                w[c] = trial.suggest_float(f"w_{c}", 0.80, 1.25)
+            else:
+                w[c] = trial.suggest_float(f"w_{c}", 0.50, 2.50)
+        p_s = apply_temperature_scaling(probs, t)
+        if mask is not None:
+            p_s = apply_eligibility_mask(p_s, mask)
+        return weighted_f1(y_true, decide(p_s, w), n_classes)
+
+    study.optimize(objective, n_trials=n_trials)
+
+    opt_temp = float(study.best_params["temperature"])
+    opt_weights = np.array([study.best_params[f"w_{c}"] for c in range(n_classes)], dtype="float64")
+    return opt_temp, opt_weights
 
 
 def fit_blend_weights(member_preds: np.ndarray, y_true: np.ndarray) -> np.ndarray:
