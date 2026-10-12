@@ -68,6 +68,7 @@ def test_build_features_schema_and_reproducibility():
         "btyd_nonfuel_exp_baskets_m3",
         "btyd_exp_monetary_spend",
         "btyd_exp_clv_spend_m3",
+        "m6_mean_basket_items",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"

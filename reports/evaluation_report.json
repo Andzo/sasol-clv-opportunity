@@ -1,13 +1,13 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 1145.74,
+  "elapsed_seconds": 1270.66,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.601836207452724,
-    "rmse_nonfuel": 0.7452979137125453,
-    "weighted_f1": 0.5137582607762181
+    "rmse_fuel": 0.6013533735741353,
+    "rmse_nonfuel": 0.7455767956126168,
+    "weighted_f1": 0.5130226090950719
   },
-  "proxy_composite_score": 0.5244,
+  "proxy_composite_score": 0.5241,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -22,33 +22,35 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1796,
-    "Inactivity": 1672,
-    "Existing-category growth: Fuel": 1449,
-    "Existing-category growth: Other": 270,
-    "Existing-category growth: Beverages": 167,
-    "Existing-category growth: Food & beverage": 84,
-    "New category adoption: Food & beverage": 19,
-    "New category adoption: Other": 18,
-    "New category adoption: Beverages": 10,
-    "New category adoption: Lubricants": 3
+    "Stable": 1754,
+    "Inactivity": 1621,
+    "Existing-category growth: Fuel": 1461,
+    "Existing-category growth: Other": 316,
+    "Existing-category growth: Beverages": 180,
+    "Existing-category growth: Food & beverage": 115,
+    "New category adoption: Other": 15,
+    "New category adoption: Food & beverage": 12,
+    "New category adoption: Beverages": 9,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1,
+    "New category adoption: Snacking": 1
   },
-  "fuel_mean": 1.4439,
-  "nonfuel_mean": 0.6582,
+  "fuel_mean": 1.4382,
+  "nonfuel_mean": 0.6577,
   "blend_weights": {
     "fuel": {
-      "lgbm": 0.3627,
-      "catboost": 0.0,
-      "xgb": 0.6373
+      "lgbm": 0.104,
+      "catboost": 0.2564,
+      "xgb": 0.6397
     },
     "nonfuel": {
       "lgbm": 0.0,
-      "catboost": 0.2863,
-      "xgb": 0.7137
+      "catboost": 0.418,
+      "xgb": 0.582
     }
   },
   "temperature": {
-    "validation": 1.1,
+    "validation": 1.05,
     "final": 1.1
   },
   "inactivity_threshold": {

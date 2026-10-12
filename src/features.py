@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.4.0"
+FEATURE_VERSION = "2.5.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -262,6 +262,8 @@ def _behaviour_block(
     out["m6_mean_hour"] = g["hour"].mean()
     out["m6_std_hour"] = g["hour"].std()
     out["m6_cross_share"] = g["cross"].mean()
+    items_per_basket = core.groupby(["ID", "TransactionId"]).size()
+    out["m6_mean_basket_items"] = items_per_basket.groupby("ID").mean().reindex(ids).fillna(1.0)
     excluded = core[~core["is_included"]]
     out["m6_excluded_baskets"] = excluded.groupby("ID")["TransactionId"].nunique()
     out["m6_excluded_rand"] = excluded.groupby("ID")["amount"].sum()
