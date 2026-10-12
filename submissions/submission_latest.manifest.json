@@ -1,10 +1,10 @@
 {
-  "submission_file": "submission_git_24f682d_20261012_200740_comp0.5253.csv",
-  "created_at": "2026-10-12T20:07:40.314912",
-  "git_commit": "24f682dbba1e4b3662e76abec51be57a3c686165",
-  "git_commit_short": "24f682d",
-  "git_branch": "feat/phase-5-threshold-tuning",
-  "git_dirty": true,
+  "submission_file": "submission_git_f377a8b_20261012_202257_comp0.5253.csv",
+  "created_at": "2026-10-12T20:22:57.586931",
+  "git_commit": "f377a8b407da3666e8202dccc6a8c4aeca9bb3e8",
+  "git_commit_short": "f377a8b",
+  "git_branch": "main",
+  "git_dirty": false,
   "feature_version": "2.6.0",
   "models": {
     "regression_members": [
@@ -25,5 +25,5 @@
     "weighted_f1": 0.5143617433108786
   },
   "proxy_composite_score": 0.5253,
-  "reproduction_command": "git checkout 24f682d && python main.py --save-predictions"
+  "reproduction_command": "git checkout f377a8b && python main.py --save-predictions"
 }
