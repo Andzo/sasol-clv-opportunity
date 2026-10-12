@@ -93,7 +93,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     nonfuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.40,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -236,7 +237,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     final_nonfuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.40,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
     final_nonfuel_model.set_weights(nonfuel_blend_weights)
 

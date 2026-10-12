@@ -1,10 +1,10 @@
 {
-  "submission_file": "submission_git_f377a8b_20261012_202257_comp0.5253.csv",
-  "created_at": "2026-10-12T20:22:57.586931",
-  "git_commit": "f377a8b407da3666e8202dccc6a8c4aeca9bb3e8",
-  "git_commit_short": "f377a8b",
-  "git_branch": "main",
-  "git_dirty": false,
+  "submission_file": "submission_git_f447cb8_20261012_235331_comp0.5253.csv",
+  "created_at": "2026-10-12T23:53:31.728133",
+  "git_commit": "f447cb8d29486e1e3414a0a2f36fea877f02de37",
+  "git_commit_short": "f447cb8",
+  "git_branch": "feat/tuned-nonfuel-tweedie",
+  "git_dirty": true,
   "feature_version": "2.6.0",
   "models": {
     "regression_members": [
@@ -21,9 +21,9 @@
   },
   "evaluation_metrics": {
     "rmse_fuel": 0.5998840030783862,
-    "rmse_nonfuel": 0.7441273895530521,
+    "rmse_nonfuel": 0.7438804771287408,
     "weighted_f1": 0.5143617433108786
   },
   "proxy_composite_score": 0.5253,
-  "reproduction_command": "git checkout f377a8b && python main.py --save-predictions"
+  "reproduction_command": "git checkout f447cb8 && python main.py --save-predictions"
 }

@@ -19,11 +19,11 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 from xgboost import XGBClassifier, XGBRegressor
 
 
-def make_regressor(name: str, seed: int, n_jobs: int) -> Any:
+def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.15) -> Any:
     """Compound Poisson-Gamma (Tweedie) and squared-error regressors."""
     if name == "lgbm":
         return LGBMRegressor(
-            objective="tweedie", tweedie_variance_power=1.15,
+            objective="tweedie", tweedie_variance_power=tweedie_power,
             n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
@@ -35,7 +35,7 @@ def make_regressor(name: str, seed: int, n_jobs: int) -> Any:
         )
     if name == "xgb":
         return XGBRegressor(
-            objective="reg:tweedie", tweedie_variance_power=1.15,
+            objective="reg:tweedie", tweedie_variance_power=tweedie_power,
             n_estimators=550, learning_rate=0.018, max_depth=4, min_child_weight=6.5,
             subsample=0.75, colsample_bytree=0.50, reg_lambda=14.0, tree_method="hist",
             random_state=seed, n_jobs=n_jobs,
@@ -69,9 +69,12 @@ def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
 class RegressorEnsemble:
     """Weighted average of non-negative regressor predictions."""
 
-    def __init__(self, members: Sequence[str], seed: int = 42, n_jobs: int = -1) -> None:
+    def __init__(
+        self, members: Sequence[str], seed: int = 42, n_jobs: int = -1, tweedie_power: float = 1.15
+    ) -> None:
         self.members = tuple(members)
-        self.models = [make_regressor(m, seed, n_jobs) for m in self.members]
+        self.tweedie_power = tweedie_power
+        self.models = [make_regressor(m, seed, n_jobs, tweedie_power=tweedie_power) for m in self.members]
         self.weights = np.full(len(self.members), 1.0 / len(self.members))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray) -> "RegressorEnsemble":
