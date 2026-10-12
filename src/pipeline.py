@@ -76,7 +76,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
-    opp_weights = [0.25, 0.45, 0.30] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
+    opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
     opp_model = ClassifierEnsemble(
         members=cfg.models.classification_members,
         n_classes=n_classes,
