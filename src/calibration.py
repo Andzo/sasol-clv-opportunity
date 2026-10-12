@@ -46,6 +46,23 @@ def decide(probs: np.ndarray, weights: np.ndarray | None = None) -> np.ndarray:
     return np.argmax(probs if weights is None else probs * weights, axis=1)
 
 
+def apply_temperature_scaling(probs: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """Scale softmax probabilities by temperature T in log space.
+
+    T < 1.0 sharpens high-confidence probabilities;
+    T > 1.0 softens/flattens probability distribution.
+    Guaranteed to sum to 1.0 along axis=1.
+    """
+    if temperature <= 0:
+        raise ValueError("Temperature must be strictly positive")
+    if np.isclose(temperature, 1.0):
+        return np.asarray(probs, dtype="float64")
+    log_p = np.log(np.clip(probs, 1e-12, 1.0)) / float(temperature)
+    log_p -= log_p.max(axis=1, keepdims=True)
+    exp_p = np.exp(log_p)
+    return exp_p / exp_p.sum(axis=1, keepdims=True)
+
+
 def fit_class_weights(
     probs: np.ndarray,
     y_true: np.ndarray,
@@ -78,6 +95,38 @@ def fit_class_weights(
         if not improved:
             break
     return weights
+
+
+def fit_temperature_and_class_weights(
+    probs: np.ndarray,
+    y_true: np.ndarray,
+    mask: np.ndarray | None = None,
+    temperatures: Sequence[float] = (0.80, 0.85, 0.90, 0.95, 1.00),
+    dominant_classes: Sequence[int] | None = None,
+) -> tuple[float, np.ndarray]:
+    """Jointly search for optimal temperature T and class decision weights W maximizing Weighted F1.
+
+    For each candidate temperature T, probabilities are sharpened/softened and masked, then
+    coordinate ascent finds optimal class weights W. The combination achieving the highest
+    Weighted F1 is returned.
+    """
+    best_f1 = -1.0
+    best_temp = 1.0
+    best_weights = np.ones(probs.shape[1])
+    n_classes = probs.shape[1]
+
+    for temp in temperatures:
+        p_scaled = apply_temperature_scaling(probs, temp)
+        if mask is not None:
+            p_scaled = apply_eligibility_mask(p_scaled, mask)
+        cw = fit_class_weights(p_scaled, y_true, dominant_classes=dominant_classes)
+        score = weighted_f1(y_true, decide(p_scaled, cw), n_classes)
+        if score > best_f1 + 1e-12:
+            best_f1 = score
+            best_temp = float(temp)
+            best_weights = cw
+
+    return best_temp, best_weights
 
 
 def fit_blend_weights(member_preds: np.ndarray, y_true: np.ndarray) -> np.ndarray:
@@ -183,5 +232,33 @@ def apply_inactivity_gate(
     out = np.asarray(y_pred, dtype="float64").copy()
     out[np.asarray(p_active) < threshold] = 0.0
     return out
+
+
+def fit_inactivity_threshold(
+    y_fuel_true: np.ndarray,
+    y_fuel_pred: np.ndarray,
+    y_nf_true: np.ndarray,
+    y_nf_pred: np.ndarray,
+    p_active: np.ndarray,
+    thresholds: Sequence[float] = (0.01, 0.02, 0.03, 0.04, 0.05, 0.08),
+) -> float:
+    """Find the optimal zero-gating threshold tau minimizing combined RMSE on calibration instances."""
+    best_tau = 0.03
+    best_loss = float("inf")
+    y_fuel_true = np.asarray(y_fuel_true, dtype="float64")
+    y_fuel_pred = np.asarray(y_fuel_pred, dtype="float64")
+    y_nf_true = np.asarray(y_nf_true, dtype="float64")
+    y_nf_pred = np.asarray(y_nf_pred, dtype="float64")
+    p_active = np.asarray(p_active, dtype="float64")
+
+    for tau in thresholds:
+        f_gated = apply_inactivity_gate(y_fuel_pred, p_active, threshold=tau)
+        nf_gated = apply_inactivity_gate(y_nf_pred, p_active, threshold=tau)
+        loss = float(np.sqrt(np.mean((y_fuel_true - f_gated)**2)) + np.sqrt(np.mean((y_nf_true - nf_gated)**2)))
+        if loss < best_loss:
+            best_loss = loss
+            best_tau = float(tau)
+
+    return best_tau
 
 

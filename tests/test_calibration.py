@@ -2,9 +2,13 @@
 import numpy as np
 from src.calibration import (
     apply_eligibility_mask,
+    apply_inactivity_gate,
+    apply_temperature_scaling,
     decide,
     fit_blend_weights,
     fit_class_weights,
+    fit_inactivity_threshold,
+    fit_temperature_and_class_weights,
     weighted_f1,
 )
 
@@ -44,6 +48,50 @@ def test_fit_class_weights_improves_or_maintains_f1():
     cal_f1 = weighted_f1(y_true, cal_preds, n_classes)
 
     assert cal_f1 >= init_f1 - 1e-9
+
+
+def test_apply_temperature_scaling():
+    probs = np.array([
+        [0.7, 0.2, 0.1],
+        [0.34, 0.33, 0.33],
+    ])
+    # T = 1.0 is identity
+    assert np.allclose(apply_temperature_scaling(probs, 1.0), probs)
+
+    # T < 1.0 sharpens mode
+    sharp = apply_temperature_scaling(probs, 0.5)
+    assert sharp[0, 0] > probs[0, 0]
+    assert np.allclose(sharp.sum(axis=1), 1.0)
+
+    # T > 1.0 softens mode
+    soft = apply_temperature_scaling(probs, 2.0)
+    assert soft[0, 0] < probs[0, 0]
+    assert np.allclose(soft.sum(axis=1), 1.0)
+
+
+def test_fit_temperature_and_class_weights():
+    rng = np.random.default_rng(42)
+    n_samples, n_classes = 300, 4
+    probs = rng.dirichlet(np.ones(n_classes), size=n_samples)
+    y_true = rng.integers(0, n_classes, size=n_samples)
+
+    best_T, cw = fit_temperature_and_class_weights(
+        probs, y_true, temperatures=[0.85, 0.90, 1.00], dominant_classes=[0]
+    )
+    assert best_T in [0.85, 0.90, 1.00]
+    assert len(cw) == n_classes
+    assert (cw >= 0).all()
+
+
+def test_fit_inactivity_threshold():
+    y_true = np.array([0.0, 0.0, 1.5, 2.0])
+    y_pred = np.array([0.1, 0.05, 1.4, 2.1])
+    p_act = np.array([0.02, 0.04, 0.8, 0.9])
+
+    tau = fit_inactivity_threshold(
+        y_true, y_pred, y_true, y_pred, p_act, thresholds=[0.01, 0.03, 0.05]
+    )
+    assert tau in [0.01, 0.03, 0.05]
 
 
 def test_fit_blend_weights():

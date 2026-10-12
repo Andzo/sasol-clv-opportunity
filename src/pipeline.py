@@ -102,13 +102,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     nonfuel_model.set_weights(nonfuel_blend_weights)
     logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
-    # Fit class weights on calibration fold with dominant class protection
+    # Fit temperature and class weights jointly on calibration fold with dominant class protection
     cal_probs = opp_model.predict_proba(cal_snap.features)
-    cal_probs_masked = calibration.apply_eligibility_mask(cal_probs, cal_snap.mask)
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
-    class_weights = calibration.fit_class_weights(cal_probs_masked, cal_y, dominant_classes=dom_classes)
-    logger.info("Fitted class weights (max factor=%.2f, min factor=%.2f)", class_weights.max(), class_weights.min())
+    cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
+        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes
+    )
+    cal_probs_scaled = calibration.apply_temperature_scaling(cal_probs, cal_temp)
+    cal_probs_masked = calibration.apply_eligibility_mask(cal_probs_scaled, cal_snap.mask)
+    logger.info("Fitted temperature T=%.2f, class weights (max=%.2f, min=%.2f)", cal_temp, class_weights.max(), class_weights.min())
 
     # Fit soft active shrinkage (fuel) and dual soft hurdle shrinkage (nonfuel) on calibration fold
     inact_idx = label_to_idx["Inactivity"]
@@ -125,29 +128,39 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         p_store_cal,
         base_active_power=fuel_shrinkage_power,
     )
+    # Fit dynamic inactivity gating threshold on calibration fold
+    cal_f_shrunk = calibration.apply_shrinkage(fuel_model.predict(cal_snap.features), p_active_cal, fuel_shrinkage_power)
+    cal_nf_shrunk = calibration.apply_dual_shrinkage(nonfuel_model.predict(cal_snap.features), p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
+    inact_threshold = calibration.fit_inactivity_threshold(
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_f_shrunk,
+        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_shrunk,
+        p_active_cal,
+    )
     logger.info(
-        "Fitted shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f)",
+        "Fitted shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f); inact_thresh=%.3f",
         fuel_shrinkage_power,
         nonfuel_alpha,
         nonfuel_beta,
+        inact_threshold,
     )
 
     # Score on Evaluation Snapshot (2025-09-01)
     eval_fuel_raw = fuel_model.predict(eval_snap.features)
     eval_nonfuel_raw = nonfuel_model.predict(eval_snap.features)
     eval_probs = opp_model.predict_proba(eval_snap.features)
-    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs, eval_snap.mask)
+    eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
+    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
     eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
     eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
 
     p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
     p_store_eval = store_model.predict_proba(eval_snap.features)
     eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_raw, p_active_eval, fuel_shrinkage_power)
-    eval_fuel_pred = calibration.apply_inactivity_gate(eval_fuel_pred, p_active_eval, threshold=0.03)
+    eval_fuel_pred = calibration.apply_inactivity_gate(eval_fuel_pred, p_active_eval, threshold=inact_threshold)
     eval_nonfuel_pred = calibration.apply_dual_shrinkage(
         eval_nonfuel_raw, p_active_eval, p_store_eval, nonfuel_alpha, nonfuel_beta
     )
-    eval_nonfuel_pred = calibration.apply_inactivity_gate(eval_nonfuel_pred, p_active_eval, threshold=0.03)
+    eval_nonfuel_pred = calibration.apply_inactivity_gate(eval_nonfuel_pred, p_active_eval, threshold=inact_threshold)
 
     eval_scores = metrics.score(
         eval_snap.labels,
@@ -236,11 +249,14 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
 
     # Class decision multipliers on 10,199 pooled instances
     pool_probs = final_opp_model.predict_proba(pool_feats)
-    pool_probs_masked = calibration.apply_eligibility_mask(pool_probs, pool_masks)
-    final_class_weights = calibration.fit_class_weights(pool_probs_masked, pool_y_opp, dominant_classes=dom_classes)
+    final_temp, final_class_weights = calibration.fit_temperature_and_class_weights(
+        pool_probs, pool_y_opp, mask=pool_masks, dominant_classes=dom_classes
+    )
+    pool_probs_scaled = calibration.apply_temperature_scaling(pool_probs, final_temp)
+    pool_probs_masked = calibration.apply_eligibility_mask(pool_probs_scaled, pool_masks)
     logger.info(
-        "Final retrained class weights on %d pooled instances (max factor=%.2f, min factor=%.2f)",
-        len(pool_y_opp), final_class_weights.max(), final_class_weights.min()
+        "Final retrained T=%.2f, class weights on %d pooled instances (max factor=%.2f, min factor=%.2f)",
+        final_temp, len(pool_y_opp), final_class_weights.max(), final_class_weights.min()
     )
 
     # Shrinkage powers on pooled predictions
@@ -253,9 +269,17 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         pool_y_nonfuel, final_nonfuel_model.predict(pool_feats), pool_p_active, pool_p_store,
         base_active_power=final_fuel_shrinkage
     )
+    # Fit final dynamic inactivity gating threshold on pooled predictions
+    pool_f_shrunk = calibration.apply_shrinkage(final_fuel_model.predict(pool_feats), pool_p_active, final_fuel_shrinkage)
+    pool_nf_shrunk = calibration.apply_dual_shrinkage(final_nonfuel_model.predict(pool_feats), pool_p_active, pool_p_store, final_nf_alpha, final_nf_beta)
+    final_inact_thresh = calibration.fit_inactivity_threshold(
+        pool_y_fuel, pool_f_shrunk,
+        pool_y_nonfuel, pool_nf_shrunk,
+        pool_p_active,
+    )
     logger.info(
-        "Final retrained shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f)",
-        final_fuel_shrinkage, final_nf_alpha, final_nf_beta
+        "Final retrained shrinkage powers: fuel (alpha=%.2f); nonfuel (alpha=%.2f, beta=%.2f); inact_thresh=%.3f",
+        final_fuel_shrinkage, final_nf_alpha, final_nf_beta, final_inact_thresh
     )
 
     # 5. Test Inference (2025-12-01)
@@ -273,18 +297,19 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_pred_fuel_raw = final_fuel_model.predict(test_feats)
     test_pred_nonfuel_raw = final_nonfuel_model.predict(test_feats)
     test_probs = final_opp_model.predict_proba(test_feats)
-    test_probs_masked = calibration.apply_eligibility_mask(test_probs, aligned_mask)
+    test_probs_scaled = calibration.apply_temperature_scaling(test_probs, final_temp)
+    test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
     test_opp_decisions = calibration.decide(test_probs_masked, final_class_weights)
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
     p_store_test = final_store_model.predict_proba(test_feats)
     test_pred_fuel = calibration.apply_shrinkage(test_pred_fuel_raw, p_active_test, final_fuel_shrinkage)
-    test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=0.03)
+    test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=final_inact_thresh)
     test_pred_nonfuel = calibration.apply_dual_shrinkage(
         test_pred_nonfuel_raw, p_active_test, p_store_test, final_nf_alpha, final_nf_beta
     )
-    test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=0.03)
+    test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=final_inact_thresh)
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -332,7 +357,14 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
             "fuel": dict(zip(cfg.models.regression_members, [round(float(w), 4) for w in fuel_blend_weights])),
             "nonfuel": dict(zip(cfg.models.regression_members, [round(float(w), 4) for w in nonfuel_blend_weights])),
         },
-        "classifier_weights": dict(zip(cfg.models.classification_members, [round(float(w), 4) for w in opp_model.weights])),
+        "temperature": {
+            "validation": round(float(cal_temp), 2),
+            "final": round(float(final_temp), 2),
+        },
+        "inactivity_threshold": {
+            "validation": round(float(inact_threshold), 3),
+            "final": round(float(final_inact_thresh), 3),
+        },
         "shrinkage_powers": {
             "fuel": round(float(final_fuel_shrinkage), 3),
             "nonfuel_alpha": round(float(final_nf_alpha), 3),
