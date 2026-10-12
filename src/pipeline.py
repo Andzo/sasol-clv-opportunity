@@ -254,10 +254,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
 
-    # Multi-Cutoff Pooled Calibration for Final Retrained Models (2025-06-01 + 2025-09-01)
-    logger.info("Calibrating final models on pooled recent snapshots (%s + %s)...", cal_cutoff.date(), eval_cutoff.date())
+    # Honest Out-of-Fold Multi-Cutoff Pooled Calibration (2025-06-01 + 2025-09-01)
+    logger.info("Calibrating final models on honest out-of-fold pooled snapshots (%s + %s)...", cal_cutoff.date(), eval_cutoff.date())
     pool_snaps = [cal_snap, eval_snap]
-    pool_feats = pd.concat([s.features for s in pool_snaps], axis=0)
     pool_masks = np.vstack([s.mask for s in pool_snaps])
     pool_y_fuel = np.concatenate([s.labels["CLV_fuel"].to_numpy() for s in pool_snaps])
     pool_y_nonfuel = np.concatenate([s.labels["CLV_nonfuel"].to_numpy() for s in pool_snaps])
@@ -267,31 +266,35 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     logger.info("Retained out-of-fold fuel blend weights: %s", np.round(fuel_blend_weights, 3))
     logger.info("Retained out-of-fold nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
-    # Class decision multipliers on 10,199 pooled instances
-    pool_probs = final_opp_model.predict_proba(pool_feats)
+    # Pool honest out-of-fold predictions from Phase 1 models across cal_snap and eval_snap (10,199 instances)
+    # (Phase 1 models were trained strictly before cal_cutoff, so their predictions on both cal and eval are 100% out-of-fold)
+    oof_pool_probs = np.vstack([cal_probs, eval_probs])
     final_temp, final_class_weights = calibration.fit_temperature_and_class_weights(
-        pool_probs, pool_y_opp, mask=pool_masks, dominant_classes=dom_classes, seed=cfg.models.seed
+        oof_pool_probs, pool_y_opp, mask=pool_masks, dominant_classes=dom_classes, seed=cfg.models.seed
     )
-    pool_probs_scaled = calibration.apply_temperature_scaling(pool_probs, final_temp)
-    pool_probs_masked = calibration.apply_eligibility_mask(pool_probs_scaled, pool_masks)
+    oof_pool_probs_scaled = calibration.apply_temperature_scaling(oof_pool_probs, final_temp)
+    oof_pool_probs_masked = calibration.apply_eligibility_mask(oof_pool_probs_scaled, pool_masks)
     logger.info(
-        "Final retrained T=%.2f, class weights on %d pooled instances (max factor=%.2f, min factor=%.2f)",
+        "Final retrained T=%.2f, class weights on %d honest out-of-fold pooled instances (max=%.2f, min=%.2f)",
         final_temp, len(pool_y_opp), final_class_weights.max(), final_class_weights.min()
     )
 
-    # Shrinkage powers on pooled predictions
-    pool_p_active = 1.0 - pool_probs_masked[:, inact_idx]
-    pool_p_store = final_store_model.predict_proba(pool_feats)
+    # Shrinkage powers on honest out-of-fold pooled predictions
+    pool_p_active = 1.0 - oof_pool_probs_masked[:, inact_idx]
+    pool_p_store = np.concatenate([p_store_cal, p_store_eval])
+    oof_pool_fuel = np.concatenate([fuel_model.predict(cal_snap.features), eval_fuel_raw])
+    oof_pool_nonfuel = np.concatenate([nonfuel_model.predict(cal_snap.features), eval_nonfuel_raw])
+
     final_fuel_shrinkage = calibration.fit_shrinkage_power(
-        pool_y_fuel, final_fuel_model.predict(pool_feats), pool_p_active
+        pool_y_fuel, oof_pool_fuel, pool_p_active
     )
     final_nf_alpha, final_nf_beta = calibration.fit_dual_shrinkage_powers(
-        pool_y_nonfuel, final_nonfuel_model.predict(pool_feats), pool_p_active, pool_p_store,
+        pool_y_nonfuel, oof_pool_nonfuel, pool_p_active, pool_p_store,
         base_active_power=final_fuel_shrinkage
     )
-    # Fit final dynamic inactivity gating threshold on pooled predictions
-    pool_f_shrunk = calibration.apply_shrinkage(final_fuel_model.predict(pool_feats), pool_p_active, final_fuel_shrinkage)
-    pool_nf_shrunk = calibration.apply_dual_shrinkage(final_nonfuel_model.predict(pool_feats), pool_p_active, pool_p_store, final_nf_alpha, final_nf_beta)
+    # Fit final dynamic inactivity gating threshold on honest out-of-fold pooled predictions
+    pool_f_shrunk = calibration.apply_shrinkage(oof_pool_fuel, pool_p_active, final_fuel_shrinkage)
+    pool_nf_shrunk = calibration.apply_dual_shrinkage(oof_pool_nonfuel, pool_p_active, pool_p_store, final_nf_alpha, final_nf_beta)
     final_inact_thresh = calibration.fit_inactivity_threshold(
         pool_y_fuel, pool_f_shrunk,
         pool_y_nonfuel, pool_nf_shrunk,

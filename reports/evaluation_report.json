@@ -1,6 +1,6 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 949.96,
+  "elapsed_seconds": 877.6,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
     "rmse_fuel": 0.5998840030783862,
@@ -22,20 +22,17 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1732,
-    "Existing-category growth: Fuel": 1645,
-    "Inactivity": 1602,
-    "Existing-category growth: Other": 237,
-    "Existing-category growth: Beverages": 130,
-    "Existing-category growth: Food & beverage": 98,
-    "New category adoption: Food & beverage": 17,
-    "New category adoption: Other": 17,
-    "New category adoption: Beverages": 6,
-    "New category adoption: Lubricants": 3,
-    "New category adoption: Confectionary": 1
+    "Stable": 1734,
+    "Inactivity": 1612,
+    "Existing-category growth: Fuel": 1471,
+    "Existing-category growth: Other": 370,
+    "Existing-category growth: Beverages": 197,
+    "Existing-category growth: Food & beverage": 94,
+    "New category adoption: Other": 8,
+    "New category adoption: Food & beverage": 2
   },
-  "fuel_mean": 1.4383,
-  "nonfuel_mean": 0.6585,
+  "fuel_mean": 1.4286,
+  "nonfuel_mean": 0.6672,
   "blend_weights": {
     "fuel": {
       "lgbm": 0.1974,
@@ -54,12 +51,12 @@
   },
   "inactivity_threshold": {
     "validation": 0.01,
-    "final": 0.08
+    "final": 0.01
   },
   "shrinkage_powers": {
-    "fuel": 0.0,
-    "nonfuel_alpha": 0.0,
-    "nonfuel_beta": 0.08,
+    "fuel": 0.05,
+    "nonfuel_alpha": 0.05,
+    "nonfuel_beta": 0.05,
     "validation_fuel": 0.05,
     "validation_nonfuel_alpha": 0.05,
     "validation_nonfuel_beta": 0.05
