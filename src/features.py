@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.5.0"
+FEATURE_VERSION = "2.6.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -264,6 +264,24 @@ def _behaviour_block(
     out["m6_cross_share"] = g["cross"].mean()
     items_per_basket = core.groupby(["ID", "TransactionId"]).size()
     out["m6_mean_basket_items"] = items_per_basket.groupby("ID").mean().reindex(ids).fillna(1.0)
+    # Promotional discounts & modifier savings
+    mod_col = "modifier_amount" if "modifier_amount" in w.columns else "TotalModifierAmount"
+    if mod_col in w.columns:
+        w_mod = pd.to_numeric(w[mod_col], errors="coerce").fillna(0.0)
+        hist_mod = pd.to_numeric(hist[mod_col], errors="coerce").fillna(0.0)
+    else:
+        w_mod = pd.Series(0.0, index=w.index)
+        hist_mod = pd.Series(0.0, index=hist.index)
+    has_disc = w_mod > 0.0
+    w_disc = w[has_disc]
+    disc_lines = w_disc.groupby("ID").size().reindex(ids).fillna(0.0)
+    tot_lines = w.groupby("ID").size().reindex(ids).fillna(1.0)
+    out["m6_discount_lines"] = disc_lines
+    out["m6_discount_line_share"] = (disc_lines / tot_lines.clip(lower=1.0)).fillna(0.0)
+    out["m6_discount_savings_rand"] = pd.to_numeric(w_disc[mod_col], errors="coerce").groupby(w_disc["ID"]).sum().reindex(ids).fillna(0.0)
+    out["ever_discount_shopper"] = (
+        hist[hist_mod > 0.0].groupby("ID").size().reindex(ids).fillna(0).gt(0).astype("float64")
+    )
     excluded = core[~core["is_included"]]
     out["m6_excluded_baskets"] = excluded.groupby("ID")["TransactionId"].nunique()
     out["m6_excluded_rand"] = excluded.groupby("ID")["amount"].sum()

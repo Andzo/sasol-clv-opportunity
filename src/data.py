@@ -72,6 +72,10 @@ def annotate(tx: pd.DataFrame, label_config: Mapping[str, Any]) -> pd.DataFrame:
     out["is_fuel_cat"] = out["ItemCategoryLevel2"].eq("Fuel")
     out["is_fuel_sale"] = out["is_fuel_cat"] & out["LineItemType"].eq("Sale_Fuel")
     out["is_nonfuel"] = out["is_included"] & ~out["is_fuel_cat"]
+    if "TotalModifierAmount" in out.columns:
+        out["modifier_amount"] = pd.to_numeric(out["TotalModifierAmount"], errors="coerce").fillna(0.0)
+    else:
+        out["modifier_amount"] = 0.0
     out["ID"] = out["ID"].astype(str)
     return out
 
@@ -91,7 +95,13 @@ def load_transactions(cfg: PipelineConfig) -> pd.DataFrame:
     cache = cfg.paths.cache_dir / f"transactions_{_cache_key(cfg)}.parquet"
     if cfg.use_cache and cache.exists():
         logger.info("Loading cached transactions from %s", cache.name)
-        return pd.read_parquet(cache)
+        tx = pd.read_parquet(cache)
+        if "modifier_amount" not in tx.columns:
+            if "TotalModifierAmount" in tx.columns:
+                tx["modifier_amount"] = pd.to_numeric(tx["TotalModifierAmount"], errors="coerce").fillna(0.0)
+            else:
+                tx["modifier_amount"] = 0.0
+        return tx
 
     logger.info("Parsing %s", cfg.paths.train_csv.name)
     raw = pd.read_csv(cfg.paths.train_csv, dtype=str, keep_default_na=False)

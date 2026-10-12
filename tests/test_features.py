@@ -69,6 +69,10 @@ def test_build_features_schema_and_reproducibility():
         "btyd_exp_monetary_spend",
         "btyd_exp_clv_spend_m3",
         "m6_mean_basket_items",
+        "m6_discount_lines",
+        "m6_discount_line_share",
+        "m6_discount_savings_rand",
+        "ever_discount_shopper",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"
