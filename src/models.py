@@ -93,11 +93,28 @@ class RegressorEnsemble:
 class ClassifierEnsemble:
     """Probability-averaging ensemble over a fixed label space ``0..n_classes-1``."""
 
-    def __init__(self, members: Sequence[str], n_classes: int, seed: int = 42, n_jobs: int = -1) -> None:
+    def __init__(
+        self,
+        members: Sequence[str],
+        n_classes: int,
+        seed: int = 42,
+        n_jobs: int = -1,
+        weights: Sequence[float] | None = None,
+    ) -> None:
         self.members = tuple(members)
         self.n_classes = n_classes
         self.models = [make_classifier(m, seed, n_jobs) for m in self.members]
         self.classes_: np.ndarray | None = None
+        if weights is not None:
+            self.set_weights(weights)
+        else:
+            self.weights = np.full(len(self.members), 1.0 / len(self.members))
+
+    def set_weights(self, weights: Sequence[float]) -> None:
+        w = np.asarray(weights, dtype="float64")
+        if w.shape != (len(self.members),) or w.sum() <= 0 or (w < 0).any():
+            raise ValueError("Classifier weights must be non-negative, one per member, with positive sum")
+        self.weights = w / w.sum()
 
     def fit(self, X: pd.DataFrame, y: np.ndarray) -> "ClassifierEnsemble":
         y = np.asarray(y, dtype=int)
@@ -122,7 +139,10 @@ class ClassifierEnsemble:
         return out
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        probs = np.mean(self.predict_member_proba(X), axis=0)
+        member_probs = self.predict_member_proba(X)
+        probs = np.zeros_like(member_probs[0])
+        for w, p in zip(self.weights, member_probs):
+            probs += w * p
         return probs / probs.sum(axis=1, keepdims=True)
 
 
@@ -135,10 +155,10 @@ def lgbm_importance(model: Any, feature_names: Sequence[str]) -> pd.Series:
 
 
 class StoreAttachmentClassifier:
-    """Predicts binary convenience store visitation P(CLV_nonfuel > 0 | X)."""
+    """Predicts binary convenience store visitation P(CLV_nonfuel > 0 | X) using a diverse GBDT ensemble."""
 
     def __init__(self, seed: int = 42, n_jobs: int = -1) -> None:
-        self.model = LGBMClassifier(
+        self.lgbm = LGBMClassifier(
             objective="binary",
             n_estimators=400,
             learning_rate=0.03,
@@ -153,12 +173,38 @@ class StoreAttachmentClassifier:
             force_col_wise=True,
             verbose=-1,
         )
+        self.catboost = CatBoostClassifier(
+            iterations=400,
+            learning_rate=0.04,
+            depth=6,
+            loss_function="Logloss",
+            random_seed=seed,
+            thread_count=n_jobs,
+            verbose=0,
+            allow_writing_files=False,
+        )
+        self.xgb = XGBClassifier(
+            objective="binary:logistic",
+            n_estimators=350,
+            learning_rate=0.03,
+            max_depth=5,
+            subsample=0.8,
+            colsample_bytree=0.6,
+            tree_method="hist",
+            random_state=seed,
+            n_jobs=n_jobs,
+        )
 
     def fit(self, X: pd.DataFrame, y: np.ndarray) -> "StoreAttachmentClassifier":
         y_binary = (np.asarray(y) > 0).astype(int)
-        self.model.fit(X, y_binary)
+        self.lgbm.fit(X, y_binary)
+        self.catboost.fit(X, y_binary)
+        self.xgb.fit(X, y_binary)
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        return np.asarray(self.model.predict_proba(X)[:, 1], dtype="float64")
+        p_lgbm = np.asarray(self.lgbm.predict_proba(X)[:, 1], dtype="float64")
+        p_cb = np.asarray(self.catboost.predict_proba(X)[:, 1], dtype="float64")
+        p_xgb = np.asarray(self.xgb.predict_proba(X)[:, 1], dtype="float64")
+        return (p_lgbm + p_cb + p_xgb) / 3.0
 

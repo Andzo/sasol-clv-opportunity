@@ -76,11 +76,13 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
+    opp_weights = [0.25, 0.45, 0.30] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
     opp_model = ClassifierEnsemble(
         members=cfg.models.classification_members,
         n_classes=n_classes,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        weights=opp_weights,
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
     logger.info("Training StoreAttachmentClassifier for nonfuel zero-inflation hurdle...")
@@ -209,7 +211,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         members=cfg.models.classification_members,
         n_classes=n_classes,
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        weights=opp_weights,
     ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
     logger.info("Retraining final StoreAttachmentClassifier on full historical panel...")
@@ -227,16 +230,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     pool_y_nonfuel = np.concatenate([s.labels["CLV_nonfuel"].to_numpy() for s in pool_snaps])
     pool_y_opp = np.concatenate([s.labels["Opportunity"].map(label_to_idx).to_numpy() for s in pool_snaps])
 
-    # Blend weights on pooled predictions
-    pool_fuel_m = np.vstack([final_fuel_model.predict_members(s.features) for s in pool_snaps])
-    final_fuel_blend = calibration.fit_blend_weights(pool_fuel_m, pool_y_fuel)
-    final_fuel_model.set_weights(final_fuel_blend)
-    logger.info("Final retrained fuel blend weights: %s", np.round(final_fuel_blend, 3))
-
-    pool_nonfuel_m = np.vstack([final_nonfuel_model.predict_members(s.features) for s in pool_snaps])
-    final_nonfuel_blend = calibration.fit_blend_weights(pool_nonfuel_m, pool_y_nonfuel)
-    final_nonfuel_model.set_weights(final_nonfuel_blend)
-    logger.info("Final retrained nonfuel blend weights: %s", np.round(final_nonfuel_blend, 3))
+    # Retain honest out-of-fold calibrated blend weights (fitting NNLS on in-sample pool leads to degenerate [1,0,0])
+    logger.info("Retained out-of-fold fuel blend weights: %s", np.round(fuel_blend_weights, 3))
+    logger.info("Retained out-of-fold nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
     # Class decision multipliers on 10,199 pooled instances
     pool_probs = final_opp_model.predict_proba(pool_feats)
@@ -332,6 +328,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         "class_distribution_submission": sub_df["Opportunity"].value_counts().to_dict(),
         "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),
         "nonfuel_mean": round(float(sub_df["CLV_nonfuel"].mean()), 4),
+        "blend_weights": {
+            "fuel": dict(zip(cfg.models.regression_members, [round(float(w), 4) for w in fuel_blend_weights])),
+            "nonfuel": dict(zip(cfg.models.regression_members, [round(float(w), 4) for w in nonfuel_blend_weights])),
+        },
+        "classifier_weights": dict(zip(cfg.models.classification_members, [round(float(w), 4) for w in opp_model.weights])),
         "shrinkage_powers": {
             "fuel": round(float(final_fuel_shrinkage), 3),
             "nonfuel_alpha": round(float(final_nf_alpha), 3),
