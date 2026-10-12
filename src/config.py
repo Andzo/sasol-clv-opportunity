@@ -47,8 +47,12 @@ class Paths:
         return self.root / "reports"
 
     @property
+    def submissions_dir(self) -> Path:
+        return self.root / "submissions"
+
+    @property
     def submission(self) -> Path:
-        return self.root / "submission.csv"
+        return self.submissions_dir / "submission_latest.csv"
 
 
 @dataclass(frozen=True)

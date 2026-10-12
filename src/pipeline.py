@@ -338,8 +338,13 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     )
     sample_df = pd.read_csv(cfg.paths.sample_submission)
     submission.validate_submission(sub_df, sample_df, opp_labels)
+    cfg.paths.submissions_dir.mkdir(parents=True, exist_ok=True)
+    timestamp_str = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+    timestamped_path = cfg.paths.submissions_dir / f"submission_{timestamp_str}_comp{composite_score:.4f}.csv"
+    submission.write_submission(sub_df, timestamped_path)
     submission.write_submission(sub_df, cfg.paths.submission)
-    logger.info("Submission successfully written to %s (%d rows)", cfg.paths.submission.name, len(sub_df))
+    submission.write_submission(sub_df, cfg.paths.root / "submission.csv")
+    logger.info("Submission successfully written to %s and %s (%d rows)", timestamped_path.name, cfg.paths.submission.name, len(sub_df))
 
     # Save evaluation summary
     elapsed = time.time() - start_time
