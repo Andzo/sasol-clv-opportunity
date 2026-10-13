@@ -26,6 +26,7 @@ from src.config import PipelineConfig
 from src.data import load_test_ids, load_transactions
 from src.dataset import SnapshotBuilder, stack
 from src.features import FEATURE_VERSION
+from src.hurdle import TwoPartFuelHurdle, TwoPartNonfuelHurdle
 from src.models import (
     ClassifierEnsemble,
     HierarchicalOpportunityClassifier,
@@ -233,14 +234,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         np.array(eval_opp_labels)
     )
     baseline_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
-    x_max_fuel = baseline_dict["sample_submission_zero"]["rmse_fuel"]
-    x_max_nonfuel = baseline_dict["sample_submission_zero"]["rmse_nonfuel"]
-    composite_score = eval_scores.composite(x_max_fuel, x_max_nonfuel)
+    leaderboard_score = eval_scores.leaderboard_composite()
+    score_breakdown = eval_scores.leaderboard_breakdown()
+    composite_score = leaderboard_score
 
     logger.info("=== Out-of-Time Evaluation (%s) ===", eval_cutoff.date())
-    logger.info("CLV_fuel RMSE:    %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_fuel, x_max_fuel)
-    logger.info("CLV_nonfuel RMSE: %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_nonfuel, x_max_nonfuel)
-    logger.info("Proxy Composite:  %.4f", composite_score)
+    logger.info("CLV_fuel RMSE:       %.4f (Score contribution: %.5f)", eval_scores.rmse_fuel, score_breakdown["score_fuel"])
+    logger.info("CLV_nonfuel RMSE:    %.4f (Score contribution: %.5f)", eval_scores.rmse_nonfuel, score_breakdown["score_nonfuel"])
+    logger.info("Opportunity F1:      %.4f (Score contribution: %.5f)", eval_scores.weighted_f1, score_breakdown["score_opportunity"])
+    logger.info("Leaderboard Score:   %.5f (Formula: 0.3*(1-RMSE_f/0.740) + 0.3*(1-RMSE_nf/0.816) + 0.4*F1)", leaderboard_score)
+
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -427,6 +430,35 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     )
     test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=final_inact_thresh)
 
+    # Two-Part Hurdle blending for zero-inflated targets
+    logger.info("Fitting TwoPartNonfuelHurdle on full historical panel...")
+    hurdle_nf = TwoPartNonfuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_nf.fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+    test_hurdle_nf = hurdle_nf.predict(test_feats)
+    test_pred_nonfuel = 0.90 * test_pred_nonfuel + 0.10 * test_hurdle_nf
+
+    logger.info("Fitting TwoPartFuelHurdle on full historical panel...")
+    hurdle_fuel = TwoPartFuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_fuel.fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+    test_hurdle_fuel = hurdle_fuel.predict(test_feats)
+    test_pred_fuel = 0.90 * test_pred_fuel + 0.10 * test_hurdle_fuel
+
+    # Candidate D Inactivity recency/velocity boundary arbitration
+    m1_baskets = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))
+    days_last = test_feats["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in test_feats.columns else np.full(len(test_feats), 999.0)
+    m3_litres = test_feats["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in test_feats.columns else np.zeros(len(test_feats))
+    pred_litres = np.expm1(np.clip(test_pred_fuel * 2.352825386185113, 0, 15.0))
+    is_physical_growth = (pred_litres > 1.25 * m3_litres) & ((pred_litres - m3_litres) >= 1.0)
+
+    is_inact = np.array(test_opp_labels) == "Inactivity"
+    active_veto = is_inact & ((m1_baskets > 0) | (days_last < 45))
+    vetoed_count = active_veto.sum()
+    if vetoed_count > 0:
+        logger.info("Recovered %d false inactive instances via recency/velocity boundary arbitration.", vetoed_count)
+        for idx in np.where(active_veto)[0]:
+            test_opp_labels[idx] = "Existing-category growth: Fuel" if is_physical_growth[idx] else "Stable"
+
+
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
         eda_cache.mkdir(parents=True, exist_ok=True)
@@ -478,7 +510,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
             "seed": cfg.models.seed,
         },
         "evaluation_metrics": eval_scores.as_dict(),
-        "proxy_composite_score": round(composite_score, 4),
+        "leaderboard_composite_score": round(leaderboard_score, 5),
+        "leaderboard_breakdown": score_breakdown,
+        "proxy_composite_score": round(leaderboard_score, 5),
         "reproduction_command": f"git checkout {git_info['commit']} && python main.py --save-predictions",
     }
     manifest_path = cfg.paths.submissions_dir / f"{sub_base_name}.manifest.json"
@@ -486,8 +520,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     (cfg.paths.submissions_dir / "submission_latest.manifest.json").write_text(json.dumps(manifest, indent=2))
 
     logger.info(
-        "Submission written to %s (Linked to git commit %s, comp=%.4f, %d rows)",
-        timestamped_path.name, git_info["commit"], composite_score, len(sub_df)
+        "Submission written to %s (Linked to git commit %s, score=%.5f, %d rows)",
+        timestamped_path.name, git_info["commit"], leaderboard_score, len(sub_df)
     )
 
     # Save evaluation summary
@@ -497,7 +531,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         "elapsed_seconds": round(elapsed, 2),
         "evaluation_cutoff": str(eval_cutoff.date()),
         "metrics": eval_scores.as_dict(),
-        "proxy_composite_score": round(composite_score, 4),
+        "leaderboard_composite_score": round(leaderboard_score, 5),
+        "leaderboard_breakdown": score_breakdown,
+        "proxy_composite_score": round(leaderboard_score, 5),
         "baselines": baseline_dict,
         "class_distribution_submission": sub_df["Opportunity"].value_counts().to_dict(),
         "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),

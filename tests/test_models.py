@@ -140,3 +140,19 @@ def test_two_part_nonfuel_hurdle():
     assert preds.shape == (n_samples,)
     assert (preds >= 0.0).all()
 
+
+def test_two_part_fuel_hurdle():
+    from src.hurdle import TwoPartFuelHurdle
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 60, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+    y[:15] = 0.0
+
+    hurdle = TwoPartFuelHurdle(seed=42, n_jobs=1)
+    hurdle.fit(X, y)
+    preds = hurdle.predict(X)
+    assert preds.shape == (n_samples,)
+    assert (preds >= 0.0).all()
+
+
