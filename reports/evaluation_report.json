@@ -1,14 +1,21 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 569.34,
+  "elapsed_seconds": 559.8,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5979604629364262,
-    "rmse_nonfuel": 0.7452376504430518,
-    "weighted_f1": 0.5150184327400898,
-    "macro_f1": 0.15270577322856468
+    "rmse_fuel": 0.5975878365449352,
+    "rmse_nonfuel": 0.7444700566221018,
+    "weighted_f1": 0.5134862870675534,
+    "macro_f1": 0.15789971217203572
   },
-  "proxy_composite_score": 0.5256,
+  "leaderboard_composite_score": 0.28943,
+  "leaderboard_breakdown": {
+    "score_fuel": 0.05773466086016139,
+    "score_nonfuel": 0.026297773300697855,
+    "score_opportunity": 0.20539451482702137,
+    "total_score": 0.28942694898788063
+  },
+  "proxy_composite_score": 0.28943,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -25,36 +32,47 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Inactivity": 1761,
-    "Stable": 1654,
-    "Existing-category growth: Fuel": 1335,
-    "Existing-category growth: Other": 495,
-    "Existing-category growth: Beverages": 151,
-    "Existing-category growth: Food & beverage": 66,
-    "New category adoption: Food & beverage": 12,
-    "New category adoption: Other": 9,
-    "New category adoption: Beverages": 4,
-    "New category adoption: Lubricants": 1
+    "Stable": 1760,
+    "Existing-category growth: Fuel": 1723,
+    "Inactivity": 1377,
+    "Existing-category growth: Other": 323,
+    "Existing-category growth: Beverages": 194,
+    "New category adoption: Snacking": 26,
+    "Existing-category growth: Food & beverage": 23,
+    "New category adoption: Beverages": 17,
+    "New category adoption: Lubricants": 15,
+    "New category adoption: Other": 10,
+    "New category adoption: Food & beverage": 7,
+    "New category adoption: Groceries": 6,
+    "New category adoption: Confectionary": 3,
+    "New category adoption: Tobacco": 3,
+    "New category adoption: Breads & rolls": 1
   },
-  "fuel_mean": 1.4526,
-  "nonfuel_mean": 0.6679,
+  "fuel_mean": 1.449,
+  "nonfuel_mean": 0.6702,
   "blend_weights": {
     "fuel": {
-      "lgbm": 0.2716,
-      "catboost": 0.0355,
-      "xgb": 0.5185,
-      "ridge": 0.1745
+      "lgbm": 0.2027,
+      "lgbm_huber": 0.0,
+      "catboost": 0.0,
+      "xgb": 0.4255,
+      "xgb_huber": 0.1644,
+      "ridge": 0.1529,
+      "extratrees": 0.0545
     },
     "nonfuel": {
       "lgbm": 0.0,
-      "catboost": 0.328,
-      "xgb": 0.6396,
-      "ridge": 0.0323
+      "lgbm_huber": 0.0,
+      "catboost": 0.1304,
+      "xgb": 0.4069,
+      "xgb_huber": 0.3648,
+      "ridge": 0.0184,
+      "extratrees": 0.0795
     }
   },
   "temperature": {
-    "validation": 0.95,
-    "final": 1.0
+    "validation": 1.1,
+    "final": 1.05
   },
   "inactivity_threshold": {
     "validation": 0.01,
