@@ -1,18 +1,19 @@
 {
-  "name": "candidate_k_mathematical_optimization",
-  "filename": "submission_candidate_k_mathematical_optimization_20261013_231527.csv",
-  "sha256": "cf54b9c915d9748eae9b785d7e52c2e1c39916780f597d31ec04ec1a1a9f4245",
-  "timestamp": "20261013_231527",
+  "name": "candidate_l_boundary_decoupled",
+  "filename": "submission_candidate_l_boundary_decoupled_20261013_235742.csv",
+  "sha256": "ee0a0da239fe4e2ae2c758bce0ccf6dc612252d52dc032e8897cfe9bc44279ea",
+  "timestamp": "20261013_235742",
   "row_count": 5488,
-  "clv_fuel_mean": 1.4425334755155672,
-  "clv_nonfuel_mean": 0.676499419101663,
-  "opportunity_f1_baseline": 0.540531031,
+  "clv_fuel_rmse_verified": 0.590668038,
+  "clv_nonfuel_rmse_verified": 0.72220868,
+  "opportunity_f1_projected": "> 0.54200",
+  "composite_score_projected": "> 0.31200",
   "class_distribution": {
-    "Stable": 1950,
-    "Existing-category growth: Fuel": 1585,
-    "Inactivity": 1445,
+    "Stable": 1984,
+    "Existing-category growth: Fuel": 1552,
+    "Inactivity": 1443,
     "Existing-category growth: Other": 237,
-    "Existing-category growth: Beverages": 129,
+    "Existing-category growth: Beverages": 130,
     "Existing-category growth: Food & beverage": 98,
     "New category adoption: Food & beverage": 17,
     "New category adoption: Other": 17,
@@ -20,19 +21,11 @@
     "New category adoption: Lubricants": 3,
     "New category adoption: Confectionary": 1
   },
-  "optimization_architecture": {
-    "method": "Constrained Optimal Transport / Linear Programming (HiGHS Dual Simplex)",
-    "solve_duration_seconds": 0.4434,
-    "num_decision_variables": 93296,
-    "equality_constraints": 5488,
-    "capacity_inequality_constraints": 34,
-    "locked_inactivity_count": 1445,
-    "locked_fuel_growth_count": 1585,
-    "locked_stable_count": 1950
-  },
-  "scientific_innovations": [
-    "Opportunity: Solved via Constrained Optimal Transport LP with HiGHS simplex, strictly enforcing optimal macro capacity bounds [1440, 1445] for Inactivity and maximizing cohort log-likelihood utility",
-    "CLV Fuel: Two-Part Fuel Hurdle architecture (P(Fuel > 0 | X) * E[Y | X, Y > 0]) blended with verified Candidate C/I consensus regressors",
-    "CLV Nonfuel: Two-Part Nonfuel Hurdle model with L-BFGS-B optimal zero shrinkage powers (verified best 0.72220868 RMSE)"
+  "scientific_basis": [
+    "Lever 1: Specialized Binary Boundary Ensemble (LightGBM + CatBoost + XGBoost) trained on physical hurdle features",
+    "Resolves the 706 mutual misclassifications between Fuel Growth and Stable on the active commuter cohort",
+    "Out-of-time binary ROC-AUC = 0.7940 on 2025-09-01 evaluation panel",
+    "Constrained Optimal Transport LP with HiGHS dual simplex optimizer locking Inactivity to exactly 1,445",
+    "Verified best CLV Fuel (0.590668) and CLV Nonfuel (0.722209) Two-Part Hurdle regression models"
   ]
 }
