@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "2.6.0"
+FEATURE_VERSION = "2.7.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 365.0
@@ -264,6 +264,29 @@ def _behaviour_block(
     out["m6_cross_share"] = g["cross"].mean()
     items_per_basket = core.groupby(["ID", "TransactionId"]).size()
     out["m6_mean_basket_items"] = items_per_basket.groupby("ID").mean().reindex(ids).fillna(1.0)
+
+    # Fuel fill-up volume and variance per transaction
+    fuel_lines = core[core["is_fuel_sale"]]
+    if len(fuel_lines) > 0:
+        fuel_baskets = fuel_lines.groupby(["ID", "TransactionId"])["qty"].sum()
+        g_fq = fuel_baskets.groupby("ID")
+        out["m6_fuel_mean_litres"] = g_fq.mean().reindex(ids).fillna(med_litres)
+        out["m6_fuel_std_litres"] = g_fq.std().reindex(ids).fillna(0.0)
+    else:
+        out["m6_fuel_mean_litres"] = med_litres
+        out["m6_fuel_std_litres"] = 0.0
+
+    # Commuter peak-hour share and day-of-week entropy
+    if len(b) > 0:
+        is_commuter = (b["time"].dt.dayofweek < 5) & b["time"].dt.hour.isin([6, 7, 8, 16, 17, 18])
+        out["m6_commuter_share"] = is_commuter.groupby(b["ID"]).mean().reindex(ids).fillna(0.25)
+        dow_counts = b.groupby(["ID", b["time"].dt.dayofweek]).size().unstack(fill_value=0).reindex(ids, fill_value=0)
+        dow_p = dow_counts.div(dow_counts.sum(axis=1).clip(lower=1), axis=0)
+        out["m6_dow_entropy"] = -(dow_p * np.log2(dow_p + 1e-6)).sum(axis=1).fillna(2.0)
+    else:
+        out["m6_commuter_share"] = 0.25
+        out["m6_dow_entropy"] = 2.0
+
     # Promotional discounts & modifier savings
     mod_col = "modifier_amount" if "modifier_amount" in w.columns else "TotalModifierAmount"
     if mod_col in w.columns:
@@ -289,7 +312,7 @@ def _behaviour_block(
         tag = safe_name(item)
         out[f"ever_adj_{tag}"] = hist[hist["ItemName"] == item].groupby("ID").size().gt(0).astype("float64")
         out[f"m6_adj_{tag}_lines"] = w[w["ItemName"] == item].groupby("ID").size()
-    count_cols = [c for c in out.columns if not c.startswith(("m6_mean_hour", "m6_std_hour", "m6_top", "m6_weekend", "m6_cross"))]
+    count_cols = [c for c in out.columns if not c.startswith(("m6_mean_hour", "m6_std_hour", "m6_top", "m6_weekend", "m6_cross", "m6_fuel_mean", "m6_commuter", "m6_dow"))]
     out[count_cols] = out[count_cols].fillna(0.0)
     return out
 
@@ -471,6 +494,66 @@ def _btyd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFr
     return out
 
 
+def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
+    """Statistical hurdle physics, tail exceedance Z-scores, and spend volatility."""
+    out = pd.DataFrame(index=feats.index)
+
+    # 1. Fuel Lags & Volatility
+    f_lags = feats[["m1_fuel_litres", "fuel_litres_lag2", "fuel_litres_lag3", "fuel_litres_lag4", "fuel_litres_lag5", "fuel_litres_lag6"]]
+    f_std = f_lags.std(axis=1).fillna(0.0)
+    f_mean = f_lags.mean(axis=1).fillna(0.0)
+    f_cv = (f_std / (f_mean + 1e-4)).fillna(0.0)
+
+    m3_f_rand = feats["m3_fuel_rand"]
+    q2_f_rand = feats["q2_fuel_rand"]
+    m6_f_rand = feats["m6_fuel_rand"]
+    life_f = feats["fuel_litres_per_month_life"]
+    rel_p = feats.get("rel_fuel_price_m3", pd.Series(1.0, index=feats.index))
+
+    m3_f_lit = feats["m3_fuel_litres"]
+    h_f_lit = np.maximum(m3_f_lit + 1.0, 1.25 * m3_f_lit)
+    z_f = ((h_f_lit - f_mean * 3.0) / (f_std * np.sqrt(3.0) + 1.0)).fillna(2.0)
+
+    f_hurdle = np.maximum(m3_f_rand + 20.0, 1.25 * m3_f_rand)
+
+    out["fuel_volatility_cv"] = f_cv
+    out["fuel_monthly_std"] = f_std
+    out["fuel_hurdle_zscore"] = z_f
+    out["fuel_hurdle_rand"] = f_hurdle
+    out["fuel_attainability_q2"] = ((q2_f_rand + 1.0) / (f_hurdle + 1.0)).fillna(0.5)
+    out["fuel_attainability_life"] = ((life_f * 3.0 * rel_p * 23.0 + 1.0) / (f_hurdle + 1.0)).fillna(0.5)
+    out["fuel_rebound_ratio"] = ((m6_f_rand / 2.0 + 1.0) / (m3_f_rand + 1.0)).fillna(1.0)
+    out["fuel_headroom_rand"] = f_hurdle - m3_f_rand
+
+    # 2. Nonfuel Lags & Volatility
+    nf_lags = feats[["m1_nonfuel_rand", "nonfuel_rand_lag2", "nonfuel_rand_lag3", "nonfuel_rand_lag4", "nonfuel_rand_lag5", "nonfuel_rand_lag6"]]
+    nf_std = nf_lags.std(axis=1).fillna(0.0)
+    nf_mean = nf_lags.mean(axis=1).fillna(0.0)
+    nf_cv = (nf_std / (nf_mean + 1.0)).fillna(0.0)
+
+    m3_nf_rand = feats["m3_nonfuel_rand"]
+    q2_nf_rand = feats["q2_nonfuel_rand"]
+    m6_nf_rand = feats["m6_nonfuel_rand"]
+    life_nf = feats["nonfuel_rand_per_month_life"]
+
+    nf_hurdle = np.maximum(m3_nf_rand + 20.0, 1.25 * m3_nf_rand)
+    z_nf = ((nf_hurdle - nf_mean * 3.0) / (nf_std * np.sqrt(3.0) + 1.0)).fillna(2.0)
+
+    out["nonfuel_volatility_cv"] = nf_cv
+    out["nonfuel_monthly_std"] = nf_std
+    out["nonfuel_hurdle_zscore"] = z_nf
+    out["nonfuel_hurdle_rand"] = nf_hurdle
+    out["nonfuel_attainability_q2"] = ((q2_nf_rand + 1.0) / (nf_hurdle + 1.0)).fillna(0.5)
+    out["nonfuel_attainability_life"] = ((life_nf * 3.0 + 1.0) / (nf_hurdle + 1.0)).fillna(0.5)
+    out["nonfuel_rebound_ratio"] = ((m6_nf_rand / 2.0 + 1.0) / (m3_nf_rand + 1.0)).fillna(1.0)
+    out["nonfuel_headroom_rand"] = nf_hurdle - m3_nf_rand
+
+    # 3. Relative Z-score competition (Rule 6 argmax)
+    out["z_diff_fuel_nonfuel"] = z_f - z_nf
+
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -507,20 +590,30 @@ def build_features(
         _btyd_block(hist, ids, t),
     ]
     feats = pd.concat(blocks, axis=1)
-    feats["cutoff_month_sin"] = np.sin(2 * np.pi * t.month / 12.0)
-    feats["cutoff_month_cos"] = np.cos(2 * np.pi * t.month / 12.0)
-    feats["is_holiday_quarter"] = float(t.month in (11, 12, 1))
-    feats["cutoff_quarter"] = float(t.quarter)
+    hurdle_block = _hurdle_physics_block(feats)
+    cal_dict = {
+        "cutoff_month_sin": np.full(len(ids), np.sin(2 * np.pi * t.month / 12.0)),
+        "cutoff_month_cos": np.full(len(ids), np.cos(2 * np.pi * t.month / 12.0)),
+        "is_holiday_quarter": np.full(len(ids), float(t.month in (11, 12, 1))),
+        "cutoff_quarter": np.full(len(ids), float(t.quarter)),
+    }
 
     dec24_lo, dec24_hi = pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
     if t >= dec24_hi:
         dec24_tx = hist[(hist["_time"] >= dec24_lo) & (hist["_time"] < dec24_hi) & hist["is_qualifying"]]
         dec24_spend = dec24_tx.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
-        feats["hist_december_active"] = (dec24_spend > 0).astype("float64")
-        feats["hist_december_spend_log"] = np.log1p(dec24_spend.astype("float64"))
+        cal_dict["hist_december_active"] = (dec24_spend > 0).astype("float64")
+        cal_dict["hist_december_spend_log"] = np.log1p(dec24_spend.astype("float64"))
+        sep_nov_tx = hist[(hist["_time"] >= pd.Timestamp("2024-09-01")) & (hist["_time"] < dec24_lo) & hist["is_qualifying"]]
+        sep_nov_spend = sep_nov_tx.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+        cal_dict["dec24_surge_ratio"] = (dec24_spend + 1.0) / (sep_nov_spend / 3.0 + 1.0)
     else:
-        feats["hist_december_active"] = 0.0
-        feats["hist_december_spend_log"] = 0.0
+        cal_dict["hist_december_active"] = np.zeros(len(ids), dtype="float64")
+        cal_dict["hist_december_spend_log"] = np.zeros(len(ids), dtype="float64")
+        cal_dict["dec24_surge_ratio"] = np.ones(len(ids), dtype="float64")
+
+    cal_block = pd.DataFrame(cal_dict, index=ids)
+    feats = pd.concat([feats, hurdle_block, cal_block], axis=1)
 
     feats.index.name = "ID"
     return feats.astype("float64")
