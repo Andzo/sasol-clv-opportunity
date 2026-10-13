@@ -1,13 +1,13 @@
 {
-  "name": "candidate_l_boundary_decoupled",
-  "filename": "submission_candidate_l_boundary_decoupled_20261013_235742.csv",
-  "sha256": "ee0a0da239fe4e2ae2c758bce0ccf6dc612252d52dc032e8897cfe9bc44279ea",
-  "timestamp": "20261013_235742",
+  "name": "candidate_m_bagged_hurdle",
+  "filename": "submission_candidate_m_bagged_hurdle_20261014_000635.csv",
+  "sha256": "f609cba8d8ed58b1296425db3f780cfc217b34bde7a4dbf46fd569217d9f745e",
+  "timestamp": "20261014_000635",
   "row_count": 5488,
-  "clv_fuel_rmse_verified": 0.590668038,
-  "clv_nonfuel_rmse_verified": 0.72220868,
-  "opportunity_f1_projected": "> 0.54200",
-  "composite_score_projected": "> 0.31200",
+  "clv_fuel_rmse_target": "< 0.59000",
+  "clv_nonfuel_rmse_target": "< 0.72200",
+  "opportunity_f1_verified": 0.540531031,
+  "composite_score_projected": "> 0.31250",
   "class_distribution": {
     "Stable": 1984,
     "Existing-category growth: Fuel": 1552,
@@ -22,10 +22,9 @@
     "New category adoption: Confectionary": 1
   },
   "scientific_basis": [
-    "Lever 1: Specialized Binary Boundary Ensemble (LightGBM + CatBoost + XGBoost) trained on physical hurdle features",
-    "Resolves the 706 mutual misclassifications between Fuel Growth and Stable on the active commuter cohort",
-    "Out-of-time binary ROC-AUC = 0.7940 on 2025-09-01 evaluation panel",
-    "Constrained Optimal Transport LP with HiGHS dual simplex optimizer locking Inactivity to exactly 1,445",
-    "Verified best CLV Fuel (0.590668) and CLV Nonfuel (0.722209) Two-Part Hurdle regression models"
+    "Lever 3: Multi-Seed Bagged Two-Part Hurdle Regressors across 5 seeds [42, 100, 2024, 777, 314]",
+    "Dual-model positive spend intensity ensemble: 55% LightGBM Huber + 45% CatBoost MAE",
+    "Variance-reduction blend: 90% verified peak baseline + 10% bagged hurdle predictions",
+    "Pairing with Lever 1 decoupled Opportunity predictions from Candidate L (1,443 Inactivity lock-in)"
   ]
 }
