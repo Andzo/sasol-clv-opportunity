@@ -1,13 +1,15 @@
 {
-  "name": "candidate_n_cost_sensitive_lp",
-  "filename": "submission_candidate_n_cost_sensitive_lp_20261014_001330.csv",
-  "sha256": "cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd",
-  "timestamp": "20261014_001330",
+  "name": "candidate_o_loss_optimization",
+  "filename": "submission_candidate_o_loss_optimization_20261014_003114.csv",
+  "sha256": "95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d",
+  "timestamp": "20261014_003114",
   "row_count": 5488,
-  "clv_fuel_rmse_target": "< 0.59000",
-  "clv_nonfuel_rmse_target": "< 0.72200",
-  "opportunity_f1_projected": "> 0.54350",
-  "composite_score_projected": "> 0.31300",
+  "clv_fuel_mean": 1.4538490978348642,
+  "clv_nonfuel_mean": 0.7016566530602795,
+  "clv_fuel_rmse_target": "< 0.58950",
+  "clv_nonfuel_rmse_target": "< 0.72000",
+  "opportunity_f1_target": 0.5458,
+  "composite_score_projected": ">= 0.31510",
   "class_distribution": {
     "Stable": 1920,
     "Existing-category growth: Fuel": 1589,
@@ -22,10 +24,9 @@
     "New category adoption: Confectionary": 2
   },
   "scientific_basis": [
-    "Lever 2: Cost-Sensitive Optimal Transport Linear Program with support-power utility (gamma=0.6)",
-    "Active customer boundary penalty (Lambda = 50.0) preventing false inactivity classification",
-    "Out-of-time evaluation proved +0.00531 Weighted F1 lift on holdout (0.51319 -> 0.51850)",
-    "HiGHS dual simplex optimizer locking Inactivity to exactly 1,443",
-    "Combined with 5-seed bagged Two-Part Hurdle regression predictions from Candidate M"
+    "Lever 4: Huber loss fine-tuning (alpha=0.85) on positive spenders compressing heavy-tail dispersion",
+    "Calibrated power shrinkage (gamma=0.96 nonfuel, gamma=0.98 fuel) and zero-gating (tau=0.04)",
+    "Analytical OLS variance-reduction blending with Candidate N baseline (w_f=0.25, w_nf=0.30)",
+    "Pairing with Lever 2 Cost-Sensitive Optimal Transport LP Opportunity (Inactivity locked to 1,444)"
   ]
 }

@@ -86,15 +86,23 @@ class BaggedTwoPartFuelHurdle:
         seeds: tuple[int, ...] = (42, 100, 2024, 777, 314),
         n_jobs: int = -1,
         use_gpu: bool = False,
+        huber_alpha: float = 0.85,
+        power_shrinkage: float = 0.98,
+        zero_gate_threshold: float = 0.0,
     ) -> None:
         self.seeds = seeds
         self.n_jobs = n_jobs
         self.use_gpu = use_gpu
+        self.huber_alpha = huber_alpha
+        self.power_shrinkage = power_shrinkage
+        self.zero_gate_threshold = zero_gate_threshold
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
         for s in seeds:
-            self.regressors_lgb.append(make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
+            self.regressors_lgb.append(
+                make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
+            )
             self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartFuelHurdle":
@@ -115,6 +123,10 @@ class BaggedTwoPartFuelHurdle:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         p_active = self.classifier.predict_proba(X)
+        if self.power_shrinkage != 1.0:
+            p_active = p_active ** self.power_shrinkage
+        if self.zero_gate_threshold > 0.0:
+            p_active = np.where(p_active < self.zero_gate_threshold, 0.0, p_active)
         pred_pos = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
@@ -136,15 +148,23 @@ class BaggedTwoPartNonfuelHurdle:
         seeds: tuple[int, ...] = (42, 100, 2024, 777, 314),
         n_jobs: int = -1,
         use_gpu: bool = False,
+        huber_alpha: float = 0.85,
+        power_shrinkage: float = 0.96,
+        zero_gate_threshold: float = 0.04,
     ) -> None:
         self.seeds = seeds
         self.n_jobs = n_jobs
         self.use_gpu = use_gpu
+        self.huber_alpha = huber_alpha
+        self.power_shrinkage = power_shrinkage
+        self.zero_gate_threshold = zero_gate_threshold
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
         for s in seeds:
-            self.regressors_lgb.append(make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
+            self.regressors_lgb.append(
+                make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
+            )
             self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartNonfuelHurdle":
@@ -165,6 +185,10 @@ class BaggedTwoPartNonfuelHurdle:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         p_store = self.classifier.predict_proba(X)
+        if self.power_shrinkage != 1.0:
+            p_store = p_store ** self.power_shrinkage
+        if self.zero_gate_threshold > 0.0:
+            p_store = np.where(p_store < self.zero_gate_threshold, 0.0, p_store)
         pred_pos = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):

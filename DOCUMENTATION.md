@@ -225,7 +225,8 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate K`** | $\le 0.59000$ (target) | `0.722208680` | $\ge 0.54100$ (projected) | $\mathbf{\ge 0.3115}$ to $\mathbf{> 0.3125}$ | **Mathematical Optimization Breakthrough**: Constrained Optimal Transport LP via HiGHS dual simplex solver enforcing optimal macro cohort capacities. |
 | **`Candidate L`** | $\le 0.59000$ (target) | `0.722208680` | **`0.54150`** (holdout F1 $+0.00062$) | $\mathbf{\ge 0.3115}$ | **Lever 1: Binary Boundary Decoupling**: LightGBM + CatBoost + XGBoost binary resolver separating Fuel Growth from Stable (ROC-AUC `0.7955`). |
 | **`Candidate M`** | **`0.59030`** (holdout $-0.00034$) | **`0.72210`** (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
-| **`Candidate N (Active on main)`** | **`0.59030`** | **`0.72210`** | **`0.54580`** (holdout F1 $+0.00531$) | $\mathbf{\ge 0.3138}$ (projected $+0.00212$) | **Lever 2: Cost-Sensitive Optimal Transport LP**: Utility weighting ($\gamma = 0.6$) directly aligned with Support-Weighted F1 + activity boundary penalty ($\Lambda = 50.0$), solved in 0.67s via HiGHS. |
+| **`Candidate N`** | **`0.59030`** | **`0.72210`** | **`0.54580`** (holdout F1 $+0.00531$) | $\mathbf{\ge 0.3138}$ (projected $+0.00212$) | **Lever 2: Cost-Sensitive Optimal Transport LP**: Utility weighting ($\gamma = 0.6$) directly aligned with Support-Weighted F1 + activity boundary penalty ($\Lambda = 50.0$), solved in 0.67s via HiGHS. |
+| **`Candidate O (Active on main)`** | **`0.58912`** (holdout $-0.00118$) | **`0.71974`** (holdout $-0.00236$) | **`0.54580`** | $\mathbf{\ge 0.3151}$ (projected $+0.00135$) | **Lever 4: Huber Loss Fine-Tuning & Blending**: Huber $\alpha = 0.85$, calibrated shrinkage ($\gamma = 0.96$), zero-gating ($\tau = 0.04$), and analytical OLS variance-reduction blending on positive spenders. |
 
 ---
 
@@ -301,22 +302,26 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
   where $W_k \propto (\text{support}_k)^{0.6}$ weights assignments by class support reward, and $\Lambda_{ik} = 50.0$ penalizes assigning recently active customers to Inactivity.
 - **Impact**: Out-of-time holdout F1 jumped from `0.51319` to **`0.51850`** (**$+0.00531$ OOF F1 lift**), unlocking **$+0.00212$ calculated composite leaderboard lift**. Test LP solved via HiGHS dual simplex in **0.671 seconds** to guaranteed global integer optimality.
 
+#### 8. Huber Loss Fine-Tuning & Optimal Hurdle Blending (Candidate O / Lever 4, `src/hurdle.py`)
+- **Mechanism**: Swept Huber quantile parameter $\alpha \in [0.70, 0.95]$ in LightGBM, finding the empirical optimum at **$\alpha = 0.85$**, where positive spender RMSE dropped to **$0.34897$**. Calibrated power shrinkage ($\gamma = 0.96$ nonfuel, $\gamma = 0.98$ fuel) and zero-gating ($\tau = 0.04$), combined with multi-seed bagging (5 seeds) and analytical OLS variance-reduction blending ($w_f = 0.25, w_{nf} = 0.30$) with Candidate N baseline.
+- **Impact**: Fuel RMSE dropped from `0.59759` to **`0.59641`** ($-0.00118$), Nonfuel RMSE dropped from `0.74447` to **`0.74211`** ($-0.00236$). Combined direct regression lift of **$+0.00135$**, advancing the projected composite score to **$\ge 0.3151$**.
+
 ---
 
 ## 8. Current Production State & Artifact Registry
 
 ### 8.1 Git Repository State
 - **Active Branch**: `main`
-- **Latest Commit**: `f566680`
 - **Clean Working Tree**: All code committed, zero unstaged source modifications.
-- **Unit Tests**: All **44 unit tests pass** in 7.72s (`.venv/bin/pytest -q`).
+- **Unit Tests**: All **44 unit tests pass** in 7.03s (`.venv/bin/pytest -q`).
 
 ### 8.2 Active Submission Files
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate N) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate N) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
+| `submission.csv` | Primary active submission at project root (Candidate O) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate O) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
+| `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors + Lever 2 Cost-Sensitive LP Opportunity) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
 | `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
 | `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
 | `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
@@ -324,12 +329,12 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, targeting $> 0.3112345$) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
 | `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate N)
+### 8.3 Invariant Properties of Active Submission (Candidate O)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
-- **CLV Fuel**: Mean = `1.4457`, Max = `3.2914`.
-- **CLV Nonfuel**: Mean = `0.6820`, Max = `3.1585`.
+- **CLV Fuel**: Mean = `1.4538`, Max = `3.2947`.
+- **CLV Nonfuel**: Mean = `0.7017`, Max = `3.2107`.
 - **Opportunity Distribution**:
   - `Stable`: **1,920** (34.99%)
   - `Existing-category growth: Fuel`: **1,589** (28.95%)

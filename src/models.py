@@ -19,7 +19,14 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 from xgboost import XGBClassifier, XGBRegressor
 
 
-def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.15, use_gpu: bool = False) -> Any:
+def make_regressor(
+    name: str,
+    seed: int,
+    n_jobs: int,
+    tweedie_power: float = 1.15,
+    use_gpu: bool = False,
+    huber_alpha: float = 0.90,
+) -> Any:
     """Compound Poisson-Gamma (Tweedie), Huber, and squared-error regressors."""
     if name == "lgbm":
         return LGBMRegressor(
@@ -30,7 +37,7 @@ def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.1
         )
     if name == "lgbm_huber":
         return LGBMRegressor(
-            objective="huber", alpha=0.90,
+            objective="huber", alpha=huber_alpha,
             n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
