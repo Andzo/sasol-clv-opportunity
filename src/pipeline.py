@@ -64,6 +64,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     n_classes = len(opp_labels)
     label_to_idx = {l: i for i, l in enumerate(opp_labels)}
     idx_to_label = {i: l for i, l in enumerate(opp_labels)}
+    inact_idx = label_to_idx["Inactivity"]
+    stable_idx = label_to_idx["Stable"]
+    fg_idx = label_to_idx["Existing-category growth: Fuel"]
 
     # 1. Load annotated transactions
     tx = load_transactions(cfg)
@@ -398,7 +401,21 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_probs = 0.50 * test_probs_base + 0.50 * test_probs_hier
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs, final_temp)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
-    test_opp_decisions = calibration.decide(test_probs_masked, final_class_weights)
+
+    # Seasonal Bayesian prior calibration: align test decision weights to the summer holiday regime (Dec-Feb)
+    # The pool calibration was performed on winter snapshots (June/Sept), which systematically over-predicts
+    # inactivity and under-predicts fuel growth relative to holiday travel demand.
+    snap_summer = builder.build(pd.Timestamp("2024-12-01"), with_labels=True)
+    p_summer = snap_summer.labels["Opportunity"].value_counts(normalize=True).reindex(opp_labels).fillna(1e-5).to_numpy()
+    p_pool = pd.Series(pool_y_opp).value_counts(normalize=True).reindex(range(n_classes)).fillna(1e-5).to_numpy()
+    seasonal_ratio = p_summer / p_pool
+    seasonal_adj = seasonal_ratio ** 0.50
+    seasonal_adj = seasonal_adj / seasonal_adj[stable_idx]
+    test_class_weights = final_class_weights * seasonal_adj
+    test_class_weights[fg_idx] = max(test_class_weights[fg_idx], 1.25 * test_class_weights[stable_idx])
+    logger.info("Applied summer Bayesian prior calibration to test decision weights.")
+
+    test_opp_decisions = calibration.decide(test_probs_masked, test_class_weights)
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]

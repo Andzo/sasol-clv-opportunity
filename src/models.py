@@ -325,6 +325,15 @@ class HierarchicalOpportunityClassifier:
             cb_kwargs_inact["thread_count"] = n_jobs
         self.clf_inact_cb = CatBoostClassifier(**cb_kwargs_inact)
 
+        xgb_kwargs_inact: dict[str, Any] = {
+            "objective": "binary:logistic", "n_estimators": 350, "learning_rate": 0.02,
+            "max_depth": 5, "min_child_weight": 5.0, "subsample": 0.8, "colsample_bytree": 0.6,
+            "reg_lambda": 8.0, "tree_method": "hist", "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs_inact["device"] = "cuda"
+        self.clf_inact_xgb = XGBClassifier(**xgb_kwargs_inact)
+
         self.clf_ret_lgb = LGBMClassifier(
             n_estimators=300, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
             reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
@@ -338,6 +347,15 @@ class HierarchicalOpportunityClassifier:
         else:
             cb_kwargs_ret["thread_count"] = n_jobs
         self.clf_ret_cb = CatBoostClassifier(**cb_kwargs_ret)
+
+        xgb_kwargs_ret: dict[str, Any] = {
+            "objective": "binary:logistic", "n_estimators": 300, "learning_rate": 0.02,
+            "max_depth": 5, "min_child_weight": 5.0, "subsample": 0.8, "colsample_bytree": 0.6,
+            "reg_lambda": 8.0, "tree_method": "hist", "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs_ret["device"] = "cuda"
+        self.clf_ret_xgb = XGBClassifier(**xgb_kwargs_ret)
 
         self.clf_fg_lgb = LGBMClassifier(
             n_estimators=350, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
@@ -353,6 +371,15 @@ class HierarchicalOpportunityClassifier:
             cb_kwargs_fg["thread_count"] = n_jobs
         self.clf_fg_cb = CatBoostClassifier(**cb_kwargs_fg)
 
+        xgb_kwargs_fg: dict[str, Any] = {
+            "objective": "binary:logistic", "n_estimators": 350, "learning_rate": 0.02,
+            "max_depth": 5, "min_child_weight": 5.0, "subsample": 0.8, "colsample_bytree": 0.6,
+            "reg_lambda": 8.0, "tree_method": "hist", "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs_fg["device"] = "cuda"
+        self.clf_fg_xgb = XGBClassifier(**xgb_kwargs_fg)
+
         self.clf_ret_multi = LGBMClassifier(
             objective="multiclass", num_class=len(self.retail_indices),
             n_estimators=300, learning_rate=0.02, num_leaves=28, colsample_bytree=0.6,
@@ -366,16 +393,19 @@ class HierarchicalOpportunityClassifier:
             sw = np.asarray(sample_weight, dtype=np.float32)
             self.clf_inact_lgb.fit(X, y_inact, sample_weight=sw)
             self.clf_inact_cb.fit(X, y_inact, sample_weight=sw)
+            self.clf_inact_xgb.fit(X, y_inact, sample_weight=sw)
 
             m_act = y_arr != self.inact_idx
             y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
             self.clf_ret_lgb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
             self.clf_ret_cb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
+            self.clf_ret_xgb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
 
             m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
             y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
             self.clf_fg_lgb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
             self.clf_fg_cb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
+            self.clf_fg_xgb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
 
             m_ret = np.isin(y_arr, self.retail_indices)
             y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
@@ -383,16 +413,19 @@ class HierarchicalOpportunityClassifier:
         else:
             self.clf_inact_lgb.fit(X, y_inact)
             self.clf_inact_cb.fit(X, y_inact)
+            self.clf_inact_xgb.fit(X, y_inact)
 
             m_act = y_arr != self.inact_idx
             y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
             self.clf_ret_lgb.fit(X[m_act], y_ret)
             self.clf_ret_cb.fit(X[m_act], y_ret)
+            self.clf_ret_xgb.fit(X[m_act], y_ret)
 
             m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
             y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
             self.clf_fg_lgb.fit(X[m_fs], y_fg)
             self.clf_fg_cb.fit(X[m_fs], y_fg)
+            self.clf_fg_xgb.fit(X[m_fs], y_fg)
 
             m_ret = np.isin(y_arr, self.retail_indices)
             y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
@@ -400,9 +433,21 @@ class HierarchicalOpportunityClassifier:
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        p_inact = 0.5 * self.clf_inact_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_inact_cb.predict_proba(X)[:, 1]
-        p_ret = 0.5 * self.clf_ret_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_ret_cb.predict_proba(X)[:, 1]
-        p_fg = 0.5 * self.clf_fg_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_fg_cb.predict_proba(X)[:, 1]
+        p_inact = (
+            0.40 * self.clf_inact_lgb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_inact_cb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_inact_xgb.predict_proba(X)[:, 1]
+        )
+        p_ret = (
+            0.40 * self.clf_ret_lgb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_ret_cb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_ret_xgb.predict_proba(X)[:, 1]
+        )
+        p_fg = (
+            0.40 * self.clf_fg_lgb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_fg_cb.predict_proba(X)[:, 1]
+            + 0.30 * self.clf_fg_xgb.predict_proba(X)[:, 1]
+        )
         p_ret_multi = self.clf_ret_multi.predict_proba(X)
 
         n = len(X)
