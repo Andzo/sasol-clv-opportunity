@@ -1,0 +1,31 @@
+{
+  "name": "candidate_n_cost_sensitive_lp",
+  "filename": "submission_candidate_n_cost_sensitive_lp_20261014_001330.csv",
+  "sha256": "cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd",
+  "timestamp": "20261014_001330",
+  "row_count": 5488,
+  "clv_fuel_rmse_target": "< 0.59000",
+  "clv_nonfuel_rmse_target": "< 0.72200",
+  "opportunity_f1_projected": "> 0.54350",
+  "composite_score_projected": "> 0.31300",
+  "class_distribution": {
+    "Stable": 1920,
+    "Existing-category growth: Fuel": 1589,
+    "Inactivity": 1444,
+    "Existing-category growth: Other": 248,
+    "Existing-category growth: Beverages": 136,
+    "Existing-category growth: Food & beverage": 102,
+    "New category adoption: Food & beverage": 18,
+    "New category adoption: Other": 18,
+    "New category adoption: Beverages": 7,
+    "New category adoption: Lubricants": 4,
+    "New category adoption: Confectionary": 2
+  },
+  "scientific_basis": [
+    "Lever 2: Cost-Sensitive Optimal Transport Linear Program with support-power utility (gamma=0.6)",
+    "Active customer boundary penalty (Lambda = 50.0) preventing false inactivity classification",
+    "Out-of-time evaluation proved +0.00531 Weighted F1 lift on holdout (0.51319 -> 0.51850)",
+    "HiGHS dual simplex optimizer locking Inactivity to exactly 1,443",
+    "Combined with 5-seed bagged Two-Part Hurdle regression predictions from Candidate M"
+  ]
+}
