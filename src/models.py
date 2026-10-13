@@ -214,3 +214,116 @@ class StoreAttachmentClassifier:
         p_xgb = np.asarray(self.xgb.predict_proba(X)[:, 1], dtype="float64")
         return (p_lgbm + p_cb + p_xgb) / 3.0
 
+
+class HierarchicalOpportunityClassifier:
+    """Multi-tier hierarchical opportunity ensemble.
+
+    Deconstructs the 17-class Opportunity problem into 4 specialized stages:
+    1. Inactivity Gate: P(Inactivity | X) using LightGBM + CatBoost
+    2. Active Retail Gate: P(Retail | X, Active) using LightGBM + CatBoost
+    3. Pairwise Boundary: P(Fuel Growth | X, Fuel or Stable) using LightGBM + CatBoost
+    4. Retail Multiclass: P(c | X, Retail) over secondary/minor retail classes using LightGBM
+    """
+
+    def __init__(
+        self,
+        n_classes: int = 17,
+        seed: int = 42,
+        n_jobs: int = -1,
+        inact_idx: int = 4,
+        stable_idx: int = 16,
+        fg_idx: int = 2,
+    ) -> None:
+        self.n_classes = n_classes
+        self.seed = seed
+        self.n_jobs = n_jobs
+        self.inact_idx = inact_idx
+        self.stable_idx = stable_idx
+        self.fg_idx = fg_idx
+        self.trio_indices = [inact_idx, stable_idx, fg_idx]
+        self.retail_indices = [i for i in range(n_classes) if i not in self.trio_indices]
+        self.retail_idx_to_local = {idx: i for i, idx in enumerate(self.retail_indices)}
+
+        self.clf_inact_lgb = LGBMClassifier(
+            n_estimators=350, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
+            reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
+        )
+        self.clf_inact_cb = CatBoostClassifier(
+            iterations=400, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
+            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
+        )
+
+        self.clf_ret_lgb = LGBMClassifier(
+            n_estimators=300, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
+            reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
+        )
+        self.clf_ret_cb = CatBoostClassifier(
+            iterations=350, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
+            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
+        )
+
+        self.clf_fg_lgb = LGBMClassifier(
+            n_estimators=350, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
+            reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
+        )
+        self.clf_fg_cb = CatBoostClassifier(
+            iterations=350, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
+            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
+        )
+
+        self.clf_ret_multi = LGBMClassifier(
+            objective="multiclass", num_class=len(self.retail_indices),
+            n_estimators=300, learning_rate=0.02, num_leaves=28, colsample_bytree=0.6,
+            reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
+        )
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "HierarchicalOpportunityClassifier":
+        y_arr = np.asarray(y, dtype=int)
+        y_inact = (y_arr == self.inact_idx).astype(int)
+        self.clf_inact_lgb.fit(X, y_inact)
+        self.clf_inact_cb.fit(X, y_inact)
+
+        m_act = y_arr != self.inact_idx
+        y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
+        self.clf_ret_lgb.fit(X[m_act], y_ret)
+        self.clf_ret_cb.fit(X[m_act], y_ret)
+
+        m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
+        y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
+        self.clf_fg_lgb.fit(X[m_fs], y_fg)
+        self.clf_fg_cb.fit(X[m_fs], y_fg)
+
+        m_ret = np.isin(y_arr, self.retail_indices)
+        y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
+        self.clf_ret_multi.fit(X[m_ret], y_ret_multi)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        p_inact = 0.5 * self.clf_inact_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_inact_cb.predict_proba(X)[:, 1]
+        p_ret = 0.5 * self.clf_ret_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_ret_cb.predict_proba(X)[:, 1]
+        p_fg = 0.5 * self.clf_fg_lgb.predict_proba(X)[:, 1] + 0.5 * self.clf_fg_cb.predict_proba(X)[:, 1]
+        p_ret_multi = self.clf_ret_multi.predict_proba(X)
+
+        n = len(X)
+        p_i = np.clip(p_inact, 1e-6, 1.0 - 1e-6)
+        p_a = 1.0 - p_i
+        p_r = np.clip(p_ret, 1e-6, 1.0 - 1e-6)
+        p_f = np.clip(p_fg, 1e-6, 1.0 - 1e-6)
+
+        if "m3_baskets" in X.columns:
+            is_dormant = X["m3_baskets"].to_numpy() == 0
+            p_f = p_f.copy()
+            p_f[is_dormant] = np.maximum(p_f[is_dormant], 0.98)
+
+        joint = np.zeros((n, self.n_classes), dtype="float64")
+        joint[:, self.inact_idx] = p_i
+        p_commuter = p_a * (1.0 - p_r)
+        joint[:, self.fg_idx] = p_commuter * p_f
+        joint[:, self.stable_idx] = p_commuter * (1.0 - p_f)
+
+        p_retail_total = p_a * p_r
+        for local_i, global_i in enumerate(self.retail_indices):
+            joint[:, global_i] = p_retail_total * p_ret_multi[:, local_i]
+
+        return joint / joint.sum(axis=1, keepdims=True)
+

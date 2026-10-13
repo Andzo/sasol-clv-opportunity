@@ -26,7 +26,12 @@ from src.config import PipelineConfig
 from src.data import load_test_ids, load_transactions
 from src.dataset import SnapshotBuilder, stack
 from src.features import FEATURE_VERSION
-from src.models import ClassifierEnsemble, RegressorEnsemble, StoreAttachmentClassifier
+from src.models import (
+    ClassifierEnsemble,
+    HierarchicalOpportunityClassifier,
+    RegressorEnsemble,
+    StoreAttachmentClassifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +112,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         weights=opp_weights,
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
+    logger.info("Training HierarchicalOpportunityClassifier...")
+    hier_model = HierarchicalOpportunityClassifier(
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        inact_idx=label_to_idx["Inactivity"],
+        stable_idx=label_to_idx["Stable"],
+        fg_idx=label_to_idx["Existing-category growth: Fuel"],
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
     logger.info("Training StoreAttachmentClassifier for nonfuel zero-inflation hurdle...")
     store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
@@ -124,8 +139,23 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     nonfuel_model.set_weights(nonfuel_blend_weights)
     logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
+    # Fit linear calibration for fuel and nonfuel spend debiasing
+    cal_fuel_raw_uncal = fuel_model.predict(cal_snap.features)
+    fuel_slope, fuel_intercept = calibration.fit_linear_calibration(
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_raw_uncal
+    )
+    logger.info("Fuel linear calibration: slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
+
+    cal_nonfuel_raw_uncal = nonfuel_model.predict(cal_snap.features)
+    nonfuel_slope, nonfuel_intercept = calibration.fit_linear_calibration(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nonfuel_raw_uncal
+    )
+    logger.info("Nonfuel linear calibration: slope=%.3f, intercept=%.3f", nonfuel_slope, nonfuel_intercept)
+
     # Fit temperature and class weights jointly on calibration fold with dominant class protection
-    cal_probs = opp_model.predict_proba(cal_snap.features)
+    cal_probs_base = opp_model.predict_proba(cal_snap.features)
+    cal_probs_hier = hier_model.predict_proba(cal_snap.features)
+    cal_probs = 0.50 * cal_probs_base + 0.50 * cal_probs_hier
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
     cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
@@ -140,19 +170,21 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     p_active_cal = 1.0 - cal_probs_masked[:, inact_idx]
     p_store_cal = store_model.predict_proba(cal_snap.features)
 
+    cal_fuel_calibrated = calibration.apply_linear_calibration(cal_fuel_raw_uncal, fuel_slope, fuel_intercept)
     fuel_shrinkage_power = calibration.fit_shrinkage_power(
-        cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features), p_active_cal
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_calibrated, p_active_cal
     )
+    cal_nonfuel_calibrated = calibration.apply_linear_calibration(cal_nonfuel_raw_uncal, nonfuel_slope, nonfuel_intercept)
     nonfuel_alpha, nonfuel_beta = calibration.fit_dual_shrinkage_powers(
         cal_snap.labels["CLV_nonfuel"].to_numpy(),
-        nonfuel_model.predict(cal_snap.features),
+        cal_nonfuel_calibrated,
         p_active_cal,
         p_store_cal,
         base_active_power=fuel_shrinkage_power,
     )
     # Fit dynamic inactivity gating threshold on calibration fold
-    cal_f_shrunk = calibration.apply_shrinkage(fuel_model.predict(cal_snap.features), p_active_cal, fuel_shrinkage_power)
-    cal_nf_shrunk = calibration.apply_dual_shrinkage(nonfuel_model.predict(cal_snap.features), p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
+    cal_f_shrunk = calibration.apply_shrinkage(cal_fuel_calibrated, p_active_cal, fuel_shrinkage_power)
+    cal_nf_shrunk = calibration.apply_dual_shrinkage(cal_nonfuel_calibrated, p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
     inact_threshold = calibration.fit_inactivity_threshold(
         cal_snap.labels["CLV_fuel"].to_numpy(), cal_f_shrunk,
         cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_shrunk,
@@ -167,9 +199,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     )
 
     # Score on Evaluation Snapshot (2025-09-01)
-    eval_fuel_raw = fuel_model.predict(eval_snap.features)
-    eval_nonfuel_raw = nonfuel_model.predict(eval_snap.features)
-    eval_probs = opp_model.predict_proba(eval_snap.features)
+    eval_fuel_raw = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), fuel_slope, fuel_intercept)
+    eval_nonfuel_raw = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nonfuel_slope, nonfuel_intercept)
+    eval_probs_base = opp_model.predict_proba(eval_snap.features)
+    eval_probs_hier = hier_model.predict_proba(eval_snap.features)
+    eval_probs = 0.50 * eval_probs_base + 0.50 * eval_probs_hier
     eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
     eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
@@ -252,6 +286,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         weights=opp_weights,
     ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
+    logger.info("Retraining final HierarchicalOpportunityClassifier on full historical panel...")
+    final_hier_model = HierarchicalOpportunityClassifier(
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        inact_idx=label_to_idx["Inactivity"],
+        stable_idx=label_to_idx["Stable"],
+        fg_idx=label_to_idx["Existing-category growth: Fuel"],
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
     logger.info("Retraining final StoreAttachmentClassifier on full historical panel...")
     final_store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
@@ -286,8 +330,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     # Shrinkage powers on honest out-of-fold pooled predictions
     pool_p_active = 1.0 - oof_pool_probs_masked[:, inact_idx]
     pool_p_store = np.concatenate([p_store_cal, p_store_eval])
-    oof_pool_fuel = np.concatenate([fuel_model.predict(cal_snap.features), eval_fuel_raw])
-    oof_pool_nonfuel = np.concatenate([nonfuel_model.predict(cal_snap.features), eval_nonfuel_raw])
+    oof_pool_fuel = np.concatenate([cal_fuel_calibrated, eval_fuel_raw])
+    oof_pool_nonfuel = np.concatenate([cal_nonfuel_calibrated, eval_nonfuel_raw])
 
     final_fuel_shrinkage = calibration.fit_shrinkage_power(
         pool_y_fuel, oof_pool_fuel, pool_p_active
@@ -321,9 +365,15 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
     aligned_mask = test_snap.mask[test_mask_rows]
 
-    test_pred_fuel_raw = final_fuel_model.predict(test_feats)
-    test_pred_nonfuel_raw = final_nonfuel_model.predict(test_feats)
-    test_probs = final_opp_model.predict_proba(test_feats)
+    test_pred_fuel_raw = calibration.apply_linear_calibration(
+        final_fuel_model.predict(test_feats), fuel_slope, fuel_intercept
+    )
+    test_pred_nonfuel_raw = calibration.apply_linear_calibration(
+        final_nonfuel_model.predict(test_feats), nonfuel_slope, nonfuel_intercept
+    )
+    test_probs_base = final_opp_model.predict_proba(test_feats)
+    test_probs_hier = final_hier_model.predict_proba(test_feats)
+    test_probs = 0.50 * test_probs_base + 0.50 * test_probs_hier
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs, final_temp)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
     test_opp_decisions = calibration.decide(test_probs_masked, final_class_weights)

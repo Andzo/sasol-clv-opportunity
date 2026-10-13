@@ -211,6 +211,24 @@ def apply_shrinkage(y_pred: np.ndarray, p_active: np.ndarray, power: float) -> n
     return np.asarray(y_pred, dtype="float64") * (p_active ** power)
 
 
+def fit_linear_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
+    """Fit optimal slope a and intercept b minimizing MSE on calibration fold: y ~ a * y_pred + b."""
+    from scipy.optimize import minimize
+    y_t = np.asarray(y_true, dtype="float64")
+    y_p = np.asarray(y_pred, dtype="float64")
+    res = minimize(
+        lambda p: np.mean((y_t - (p[0] * y_p + p[1])) ** 2),
+        x0=[1.0, 0.0],
+        bounds=[(0.80, 1.25), (-0.25, 0.25)],
+    )
+    return float(res.x[0]), float(res.x[1])
+
+
+def apply_linear_calibration(y_pred: np.ndarray, slope: float, intercept: float) -> np.ndarray:
+    """Apply slope and intercept shift with non-negativity clipping."""
+    return np.clip(slope * np.asarray(y_pred, dtype="float64") + intercept, 0.0, None)
+
+
 def fit_dual_shrinkage_powers(
     y_true: np.ndarray,
     y_pred: np.ndarray,

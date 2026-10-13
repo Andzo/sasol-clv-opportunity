@@ -1,13 +1,13 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 958.93,
+  "elapsed_seconds": 1168.72,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.599141666159842,
-    "rmse_nonfuel": 0.7446600086295261,
-    "weighted_f1": 0.5149877329579108
+    "rmse_fuel": 0.5986407640392277,
+    "rmse_nonfuel": 0.745126471339512,
+    "weighted_f1": 0.5168460474090634
   },
-  "proxy_composite_score": 0.5255,
+  "proxy_composite_score": 0.5262,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -22,18 +22,18 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1766,
-    "Inactivity": 1749,
-    "Existing-category growth: Fuel": 1297,
-    "Existing-category growth: Other": 433,
-    "Existing-category growth: Beverages": 172,
-    "Existing-category growth: Food & beverage": 58,
-    "New category adoption: Other": 7,
-    "New category adoption: Food & beverage": 4,
-    "New category adoption: Beverages": 2
+    "Inactivity": 1721,
+    "Stable": 1638,
+    "Existing-category growth: Fuel": 1388,
+    "Existing-category growth: Other": 511,
+    "Existing-category growth: Beverages": 133,
+    "Existing-category growth: Food & beverage": 76,
+    "New category adoption: Food & beverage": 8,
+    "New category adoption: Other": 8,
+    "New category adoption: Beverages": 5
   },
-  "fuel_mean": 1.4272,
-  "nonfuel_mean": 0.653,
+  "fuel_mean": 1.4479,
+  "nonfuel_mean": 0.6702,
   "blend_weights": {
     "fuel": {
       "lgbm": 0.2062,
@@ -47,7 +47,7 @@
     }
   },
   "temperature": {
-    "validation": 1.1,
+    "validation": 1.05,
     "final": 1.05
   },
   "inactivity_threshold": {
@@ -55,11 +55,11 @@
     "final": 0.01
   },
   "shrinkage_powers": {
-    "fuel": 0.05,
-    "nonfuel_alpha": 0.05,
+    "fuel": 0.0,
+    "nonfuel_alpha": 0.0,
     "nonfuel_beta": 0.05,
-    "validation_fuel": 0.05,
-    "validation_nonfuel_alpha": 0.05,
+    "validation_fuel": 0.0,
+    "validation_nonfuel_alpha": 0.0,
     "validation_nonfuel_beta": 0.05
   }
 }

@@ -5,6 +5,7 @@ import pytest
 
 from src.models import (
     ClassifierEnsemble,
+    HierarchicalOpportunityClassifier,
     RegressorEnsemble,
     StoreAttachmentClassifier,
     make_classifier,
@@ -71,3 +72,28 @@ def test_regressor_ensemble_blending():
 
     assert preds.shape == (n_samples,)
     assert (preds >= 0.0).all()
+
+
+def test_hierarchical_opportunity_classifier():
+    rng = np.random.default_rng(42)
+    n_samples, n_features, n_classes = 80, 5, 5
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    X["m3_baskets"] = rng.integers(0, 5, size=n_samples)
+    y = rng.integers(0, n_classes, size=n_samples)
+    # Ensure all classes are represented
+    y[:n_classes] = np.arange(n_classes)
+
+    clf = HierarchicalOpportunityClassifier(
+        n_classes=n_classes,
+        seed=42,
+        n_jobs=1,
+        inact_idx=0,
+        stable_idx=1,
+        fg_idx=2,
+    )
+    clf.fit(X, y)
+    probs = clf.predict_proba(X)
+
+    assert probs.shape == (n_samples, n_classes)
+    assert (probs >= 0.0).all()
+    assert np.allclose(probs.sum(axis=1), 1.0)
