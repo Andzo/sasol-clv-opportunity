@@ -282,4 +282,18 @@ def test_pooled_multi_cutoff_calibration():
     assert shrunk_dual.shape == (n1 + n2,)
 
 
+def test_linear_calibration():
+    from src.calibration import fit_linear_calibration, apply_linear_calibration
+
+    y_true = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y_pred = np.array([0.9, 1.8, 2.7, 3.6, 4.5])  # slope is ~1.11
+
+    slope, intercept = fit_linear_calibration(y_true, y_pred)
+    assert np.isclose(slope, 1.11, atol=0.05)
+    assert np.isclose(intercept, 0.0, atol=0.1)
+
+    calibrated = apply_linear_calibration(y_pred, slope, intercept)
+    assert np.allclose(calibrated, y_true, atol=0.1)
+
+
 

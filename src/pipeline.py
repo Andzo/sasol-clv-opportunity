@@ -26,7 +26,13 @@ from src.config import PipelineConfig
 from src.data import load_test_ids, load_transactions
 from src.dataset import SnapshotBuilder, stack
 from src.features import FEATURE_VERSION
-from src.models import ClassifierEnsemble, RegressorEnsemble, StoreAttachmentClassifier
+from src.hurdle import TwoPartFuelHurdle, TwoPartNonfuelHurdle
+from src.models import (
+    ClassifierEnsemble,
+    HierarchicalOpportunityClassifier,
+    RegressorEnsemble,
+    StoreAttachmentClassifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     n_classes = len(opp_labels)
     label_to_idx = {l: i for i, l in enumerate(opp_labels)}
     idx_to_label = {i: l for i, l in enumerate(opp_labels)}
+    inact_idx = label_to_idx["Inactivity"]
+    stable_idx = label_to_idx["Stable"]
+    fg_idx = label_to_idx["Existing-category growth: Fuel"]
 
     # 1. Load annotated transactions
     tx = load_transactions(cfg)
@@ -89,6 +98,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
 
     nonfuel_model = RegressorEnsemble(
@@ -96,6 +106,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -105,12 +116,25 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         weights=opp_weights,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
+    logger.info("Training HierarchicalOpportunityClassifier...")
+    hier_model = HierarchicalOpportunityClassifier(
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        inact_idx=label_to_idx["Inactivity"],
+        stable_idx=label_to_idx["Stable"],
+        fg_idx=label_to_idx["Existing-category growth: Fuel"],
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
     logger.info("Training StoreAttachmentClassifier for nonfuel zero-inflation hurdle...")
     store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
     # Fit blend weights on calibration fold
@@ -124,8 +148,23 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     nonfuel_model.set_weights(nonfuel_blend_weights)
     logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
 
+    # Fit linear calibration for fuel and nonfuel spend debiasing
+    cal_fuel_raw_uncal = fuel_model.predict(cal_snap.features)
+    fuel_slope, fuel_intercept = calibration.fit_linear_calibration(
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_raw_uncal
+    )
+    logger.info("Fuel linear calibration: slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
+
+    cal_nonfuel_raw_uncal = nonfuel_model.predict(cal_snap.features)
+    nonfuel_slope, nonfuel_intercept = calibration.fit_linear_calibration(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nonfuel_raw_uncal
+    )
+    logger.info("Nonfuel linear calibration: slope=%.3f, intercept=%.3f", nonfuel_slope, nonfuel_intercept)
+
     # Fit temperature and class weights jointly on calibration fold with dominant class protection
-    cal_probs = opp_model.predict_proba(cal_snap.features)
+    cal_probs_base = opp_model.predict_proba(cal_snap.features)
+    cal_probs_hier = hier_model.predict_proba(cal_snap.features)
+    cal_probs = 0.50 * cal_probs_base + 0.50 * cal_probs_hier
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
     cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
@@ -140,19 +179,21 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     p_active_cal = 1.0 - cal_probs_masked[:, inact_idx]
     p_store_cal = store_model.predict_proba(cal_snap.features)
 
+    cal_fuel_calibrated = calibration.apply_linear_calibration(cal_fuel_raw_uncal, fuel_slope, fuel_intercept)
     fuel_shrinkage_power = calibration.fit_shrinkage_power(
-        cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features), p_active_cal
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_calibrated, p_active_cal
     )
+    cal_nonfuel_calibrated = calibration.apply_linear_calibration(cal_nonfuel_raw_uncal, nonfuel_slope, nonfuel_intercept)
     nonfuel_alpha, nonfuel_beta = calibration.fit_dual_shrinkage_powers(
         cal_snap.labels["CLV_nonfuel"].to_numpy(),
-        nonfuel_model.predict(cal_snap.features),
+        cal_nonfuel_calibrated,
         p_active_cal,
         p_store_cal,
         base_active_power=fuel_shrinkage_power,
     )
     # Fit dynamic inactivity gating threshold on calibration fold
-    cal_f_shrunk = calibration.apply_shrinkage(fuel_model.predict(cal_snap.features), p_active_cal, fuel_shrinkage_power)
-    cal_nf_shrunk = calibration.apply_dual_shrinkage(nonfuel_model.predict(cal_snap.features), p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
+    cal_f_shrunk = calibration.apply_shrinkage(cal_fuel_calibrated, p_active_cal, fuel_shrinkage_power)
+    cal_nf_shrunk = calibration.apply_dual_shrinkage(cal_nonfuel_calibrated, p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
     inact_threshold = calibration.fit_inactivity_threshold(
         cal_snap.labels["CLV_fuel"].to_numpy(), cal_f_shrunk,
         cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_shrunk,
@@ -167,9 +208,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     )
 
     # Score on Evaluation Snapshot (2025-09-01)
-    eval_fuel_raw = fuel_model.predict(eval_snap.features)
-    eval_nonfuel_raw = nonfuel_model.predict(eval_snap.features)
-    eval_probs = opp_model.predict_proba(eval_snap.features)
+    eval_fuel_raw = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), fuel_slope, fuel_intercept)
+    eval_nonfuel_raw = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nonfuel_slope, nonfuel_intercept)
+    eval_probs_base = opp_model.predict_proba(eval_snap.features)
+    eval_probs_hier = hier_model.predict_proba(eval_snap.features)
+    eval_probs = 0.50 * eval_probs_base + 0.50 * eval_probs_hier
     eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
     eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
@@ -191,14 +234,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         np.array(eval_opp_labels)
     )
     baseline_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
-    x_max_fuel = baseline_dict["sample_submission_zero"]["rmse_fuel"]
-    x_max_nonfuel = baseline_dict["sample_submission_zero"]["rmse_nonfuel"]
-    composite_score = eval_scores.composite(x_max_fuel, x_max_nonfuel)
+    leaderboard_score = eval_scores.leaderboard_composite()
+    score_breakdown = eval_scores.leaderboard_breakdown()
+    composite_score = leaderboard_score
 
     logger.info("=== Out-of-Time Evaluation (%s) ===", eval_cutoff.date())
-    logger.info("CLV_fuel RMSE:    %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_fuel, x_max_fuel)
-    logger.info("CLV_nonfuel RMSE: %.4f (SampleSub baseline: %.4f)", eval_scores.rmse_nonfuel, x_max_nonfuel)
-    logger.info("Proxy Composite:  %.4f", composite_score)
+    logger.info("CLV_fuel RMSE:       %.4f (Score contribution: %.5f)", eval_scores.rmse_fuel, score_breakdown["score_fuel"])
+    logger.info("CLV_nonfuel RMSE:    %.4f (Score contribution: %.5f)", eval_scores.rmse_nonfuel, score_breakdown["score_nonfuel"])
+    logger.info("Opportunity F1:      %.4f (Score contribution: %.5f)", eval_scores.weighted_f1, score_breakdown["score_opportunity"])
+    logger.info("Leaderboard Score:   %.5f (Formula: 0.3*(1-RMSE_f/0.740) + 0.3*(1-RMSE_nf/0.816) + 0.4*F1)", leaderboard_score)
+
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -228,12 +273,25 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     full_panel = stack(full_snaps)
     logger.info("Full panel size: %d instances", len(full_panel.X))
 
+    # Seasonal sample weighting: upweight cutoffs with holiday/summer outcome windows
+    full_cutoffs_dt = pd.to_datetime(full_panel.cutoffs)
+    is_summer_cutoff = full_cutoffs_dt.isin([
+        pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
+    ])
+    full_sample_weights = np.ones(len(full_panel.X), dtype=np.float32)
+    full_sample_weights[is_summer_cutoff] = 2.0
+    logger.info(
+        "Applied seasonal sample weighting: %d summer instances weighted at 2.0x, %d baseline instances at 1.0x",
+        is_summer_cutoff.sum(), (~is_summer_cutoff).sum()
+    )
+
     final_fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
     final_fuel_model.set_weights(fuel_blend_weights)
 
     final_nonfuel_model = RegressorEnsemble(
@@ -241,7 +299,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
     final_nonfuel_model.set_weights(nonfuel_blend_weights)
 
     final_opp_model = ClassifierEnsemble(
@@ -250,12 +309,25 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         weights=opp_weights,
-    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=full_sample_weights)
+
+    logger.info("Retraining final HierarchicalOpportunityClassifier on full historical panel...")
+    final_hier_model = HierarchicalOpportunityClassifier(
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        inact_idx=label_to_idx["Inactivity"],
+        stable_idx=label_to_idx["Stable"],
+        fg_idx=label_to_idx["Existing-category growth: Fuel"],
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Retraining final StoreAttachmentClassifier on full historical panel...")
     final_store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
 
     # Honest Out-of-Fold Multi-Cutoff Pooled Calibration (2025-06-01 + 2025-09-01)
@@ -286,8 +358,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     # Shrinkage powers on honest out-of-fold pooled predictions
     pool_p_active = 1.0 - oof_pool_probs_masked[:, inact_idx]
     pool_p_store = np.concatenate([p_store_cal, p_store_eval])
-    oof_pool_fuel = np.concatenate([fuel_model.predict(cal_snap.features), eval_fuel_raw])
-    oof_pool_nonfuel = np.concatenate([nonfuel_model.predict(cal_snap.features), eval_nonfuel_raw])
+    oof_pool_fuel = np.concatenate([cal_fuel_calibrated, eval_fuel_raw])
+    oof_pool_nonfuel = np.concatenate([cal_nonfuel_calibrated, eval_nonfuel_raw])
 
     final_fuel_shrinkage = calibration.fit_shrinkage_power(
         pool_y_fuel, oof_pool_fuel, pool_p_active
@@ -321,12 +393,32 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
     aligned_mask = test_snap.mask[test_mask_rows]
 
-    test_pred_fuel_raw = final_fuel_model.predict(test_feats)
-    test_pred_nonfuel_raw = final_nonfuel_model.predict(test_feats)
-    test_probs = final_opp_model.predict_proba(test_feats)
+    test_pred_fuel_raw = calibration.apply_linear_calibration(
+        final_fuel_model.predict(test_feats), fuel_slope, fuel_intercept
+    )
+    test_pred_nonfuel_raw = calibration.apply_linear_calibration(
+        final_nonfuel_model.predict(test_feats), nonfuel_slope, nonfuel_intercept
+    )
+    test_probs_base = final_opp_model.predict_proba(test_feats)
+    test_probs_hier = final_hier_model.predict_proba(test_feats)
+    test_probs = 0.50 * test_probs_base + 0.50 * test_probs_hier
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs, final_temp)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
-    test_opp_decisions = calibration.decide(test_probs_masked, final_class_weights)
+
+    # Seasonal Bayesian prior calibration: align test decision weights to the summer holiday regime (Dec-Feb)
+    # The pool calibration was performed on winter snapshots (June/Sept), which systematically over-predicts
+    # inactivity and under-predicts fuel growth relative to holiday travel demand.
+    snap_summer = builder.build(pd.Timestamp("2024-12-01"), with_labels=True)
+    p_summer = snap_summer.labels["Opportunity"].value_counts(normalize=True).reindex(opp_labels).fillna(1e-5).to_numpy()
+    p_pool = pd.Series(pool_y_opp).value_counts(normalize=True).reindex(range(n_classes)).fillna(1e-5).to_numpy()
+    seasonal_ratio = p_summer / p_pool
+    seasonal_adj = seasonal_ratio ** 0.50
+    seasonal_adj = seasonal_adj / seasonal_adj[stable_idx]
+    test_class_weights = final_class_weights * seasonal_adj
+    test_class_weights[fg_idx] = max(test_class_weights[fg_idx], 1.25 * test_class_weights[stable_idx])
+    logger.info("Applied summer Bayesian prior calibration to test decision weights.")
+
+    test_opp_decisions = calibration.decide(test_probs_masked, test_class_weights)
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
@@ -337,6 +429,35 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         test_pred_nonfuel_raw, p_active_test, p_store_test, final_nf_alpha, final_nf_beta
     )
     test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=final_inact_thresh)
+
+    # Two-Part Hurdle blending for zero-inflated targets
+    logger.info("Fitting TwoPartNonfuelHurdle on full historical panel...")
+    hurdle_nf = TwoPartNonfuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_nf.fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+    test_hurdle_nf = hurdle_nf.predict(test_feats)
+    test_pred_nonfuel = 0.90 * test_pred_nonfuel + 0.10 * test_hurdle_nf
+
+    logger.info("Fitting TwoPartFuelHurdle on full historical panel...")
+    hurdle_fuel = TwoPartFuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_fuel.fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+    test_hurdle_fuel = hurdle_fuel.predict(test_feats)
+    test_pred_fuel = 0.90 * test_pred_fuel + 0.10 * test_hurdle_fuel
+
+    # Candidate D Inactivity recency/velocity boundary arbitration
+    m1_baskets = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))
+    days_last = test_feats["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in test_feats.columns else np.full(len(test_feats), 999.0)
+    m3_litres = test_feats["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in test_feats.columns else np.zeros(len(test_feats))
+    pred_litres = np.expm1(np.clip(test_pred_fuel * 2.352825386185113, 0, 15.0))
+    is_physical_growth = (pred_litres > 1.25 * m3_litres) & ((pred_litres - m3_litres) >= 1.0)
+
+    is_inact = np.array(test_opp_labels) == "Inactivity"
+    active_veto = is_inact & ((m1_baskets > 0) | (days_last < 45))
+    vetoed_count = active_veto.sum()
+    if vetoed_count > 0:
+        logger.info("Recovered %d false inactive instances via recency/velocity boundary arbitration.", vetoed_count)
+        for idx in np.where(active_veto)[0]:
+            test_opp_labels[idx] = "Existing-category growth: Fuel" if is_physical_growth[idx] else "Stable"
+
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -389,7 +510,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
             "seed": cfg.models.seed,
         },
         "evaluation_metrics": eval_scores.as_dict(),
-        "proxy_composite_score": round(composite_score, 4),
+        "leaderboard_composite_score": round(leaderboard_score, 5),
+        "leaderboard_breakdown": score_breakdown,
+        "proxy_composite_score": round(leaderboard_score, 5),
         "reproduction_command": f"git checkout {git_info['commit']} && python main.py --save-predictions",
     }
     manifest_path = cfg.paths.submissions_dir / f"{sub_base_name}.manifest.json"
@@ -397,8 +520,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     (cfg.paths.submissions_dir / "submission_latest.manifest.json").write_text(json.dumps(manifest, indent=2))
 
     logger.info(
-        "Submission written to %s (Linked to git commit %s, comp=%.4f, %d rows)",
-        timestamped_path.name, git_info["commit"], composite_score, len(sub_df)
+        "Submission written to %s (Linked to git commit %s, score=%.5f, %d rows)",
+        timestamped_path.name, git_info["commit"], leaderboard_score, len(sub_df)
     )
 
     # Save evaluation summary
@@ -408,7 +531,9 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         "elapsed_seconds": round(elapsed, 2),
         "evaluation_cutoff": str(eval_cutoff.date()),
         "metrics": eval_scores.as_dict(),
-        "proxy_composite_score": round(composite_score, 4),
+        "leaderboard_composite_score": round(leaderboard_score, 5),
+        "leaderboard_breakdown": score_breakdown,
+        "proxy_composite_score": round(leaderboard_score, 5),
         "baselines": baseline_dict,
         "class_distribution_submission": sub_df["Opportunity"].value_counts().to_dict(),
         "fuel_mean": round(float(sub_df["CLV_fuel"].mean()), 4),

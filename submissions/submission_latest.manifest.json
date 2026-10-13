@@ -1,16 +1,18 @@
 {
-  "submission_file": "submission_git_2873ce1_20261013_081607_comp0.5255.csv",
-  "created_at": "2026-10-13T08:16:07.461599",
-  "git_commit": "2873ce1eb2f652003b3db954363bad0e96e34cca",
-  "git_commit_short": "2873ce1",
-  "git_branch": "feat/v270-hurdle-physics-and-debiasing",
+  "submission_file": "submission_git_c54e7bb_20261013_171334_comp0.5252.csv",
+  "created_at": "2026-10-13T17:13:34.972522",
+  "git_commit": "c54e7bbb280b0807d91c00720fcfec0cbaff6c67",
+  "git_commit_short": "c54e7bb",
+  "git_branch": "feat/radical-breakthrough-058",
   "git_dirty": true,
   "feature_version": "2.7.0",
   "models": {
     "regression_members": [
       "lgbm",
       "catboost",
-      "xgb"
+      "xgb",
+      "ridge",
+      "extratrees"
     ],
     "classification_members": [
       "lgbm",
@@ -20,10 +22,11 @@
     "seed": 42
   },
   "evaluation_metrics": {
-    "rmse_fuel": 0.599141666159842,
-    "rmse_nonfuel": 0.7446600086295261,
-    "weighted_f1": 0.5149877329579108
+    "rmse_fuel": 0.5979398487770612,
+    "rmse_nonfuel": 0.7452225971101322,
+    "weighted_f1": 0.5141417638060615,
+    "macro_f1": 0.15484484564210912
   },
-  "proxy_composite_score": 0.5255,
-  "reproduction_command": "git checkout 2873ce1 && python main.py --save-predictions"
+  "proxy_composite_score": 0.5252,
+  "reproduction_command": "git checkout c54e7bb && python main.py --save-predictions"
 }

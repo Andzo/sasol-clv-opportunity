@@ -1,0 +1,20 @@
+{
+  "name": "candidate_a_summer_calibrated",
+  "filename": "submission_candidate_a_summer_calibrated_20261013_164815.csv",
+  "sha256": "85eb746d3cb3f8eb54477944e7e41a2f685b84e4d42640d7f419052a56328010",
+  "timestamp": "20261013_164815",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.4525514046958068,
+  "clv_nonfuel_mean": 0.6678784714797126,
+  "class_distribution": {
+    "Stable": 1863,
+    "Existing-category growth: Fuel": 1704,
+    "Inactivity": 1563,
+    "Existing-category growth: Other": 222,
+    "Existing-category growth: Beverages": 102,
+    "Existing-category growth: Food & beverage": 32,
+    "New category adoption: Food & beverage": 1,
+    "New category adoption: Other": 1
+  },
+  "target_zindi_threshold": "> 0.330 (Top 10) / > 0.34283 (Rank #1)"
+}

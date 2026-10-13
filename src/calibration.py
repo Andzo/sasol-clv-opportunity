@@ -12,8 +12,8 @@ from typing import Sequence
 import numpy as np
 from scipy.optimize import nnls
 
-DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 2.5, 33)
-DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.8, 1.25, 17)
+DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 12.0, 45)
+DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.85, 1.15, 17)
 
 
 def apply_eligibility_mask(probs: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -159,9 +159,9 @@ def fit_temperature_and_class_weights(
         w = np.ones(n_classes)
         for c in range(n_classes):
             if c in dom_set:
-                w[c] = trial.suggest_float(f"w_{c}", 0.80, 1.25)
+                w[c] = trial.suggest_float(f"w_{c}", 0.85, 1.15)
             else:
-                w[c] = trial.suggest_float(f"w_{c}", 0.50, 2.50)
+                w[c] = trial.suggest_float(f"w_{c}", 0.50, 12.0)
         p_s = apply_temperature_scaling(probs, t)
         if mask is not None:
             p_s = apply_eligibility_mask(p_s, mask)
@@ -209,6 +209,24 @@ def apply_shrinkage(y_pred: np.ndarray, p_active: np.ndarray, power: float) -> n
         return np.asarray(y_pred, dtype="float64")
     p_active = np.clip(np.asarray(p_active, dtype="float64"), 0.0, 1.0)
     return np.asarray(y_pred, dtype="float64") * (p_active ** power)
+
+
+def fit_linear_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
+    """Fit optimal slope a and intercept b minimizing MSE on calibration fold: y ~ a * y_pred + b."""
+    from scipy.optimize import minimize
+    y_t = np.asarray(y_true, dtype="float64")
+    y_p = np.asarray(y_pred, dtype="float64")
+    res = minimize(
+        lambda p: np.mean((y_t - (p[0] * y_p + p[1])) ** 2),
+        x0=[1.0, 0.0],
+        bounds=[(0.80, 1.25), (-0.25, 0.25)],
+    )
+    return float(res.x[0]), float(res.x[1])
+
+
+def apply_linear_calibration(y_pred: np.ndarray, slope: float, intercept: float) -> np.ndarray:
+    """Apply slope and intercept shift with non-negativity clipping."""
+    return np.clip(slope * np.asarray(y_pred, dtype="float64") + intercept, 0.0, None)
 
 
 def fit_dual_shrinkage_powers(

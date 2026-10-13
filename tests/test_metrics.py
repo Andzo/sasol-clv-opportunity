@@ -34,3 +34,10 @@ def test_score():
     assert sc.rmse_nonfuel == 0.0
     assert sc.weighted_f1 == 1.0
     assert sc.composite(1.0, 1.0) == 1.0
+    assert np.isclose(sc.leaderboard_composite(), 1.0)
+    bd = sc.leaderboard_breakdown()
+    assert np.isclose(bd["total_score"], 1.0)
+    assert np.isclose(bd["score_fuel"], 0.3)
+    assert np.isclose(bd["score_nonfuel"], 0.3)
+    assert np.isclose(bd["score_opportunity"], 0.4)
+

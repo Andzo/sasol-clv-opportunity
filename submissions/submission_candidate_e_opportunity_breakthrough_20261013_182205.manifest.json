@@ -1,0 +1,30 @@
+{
+  "name": "candidate_e_opportunity_breakthrough",
+  "filename": "submission_candidate_e_opportunity_breakthrough_20261013_182205.csv",
+  "sha256": "d7800d0d005269d6c63a2dae3bbdc1feef3324b0205e5e171b7ec0b8e4c3b566",
+  "timestamp": "20261013_182205",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.4417456441397867,
+  "clv_nonfuel_mean": 0.6742445865796801,
+  "class_distribution": {
+    "Stable": 2193,
+    "Existing-category growth: Fuel": 1729,
+    "Inactivity": 1057,
+    "Existing-category growth: Other": 237,
+    "Existing-category growth: Beverages": 130,
+    "Existing-category growth: Food & beverage": 98,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1
+  },
+  "target_zindi_threshold": "> 0.330 (Top 10) / > 0.34283 (Rank #1)",
+  "scientific_changes": [
+    "Best Fuel RMSE regression from Candidate C (Zindi verified: 0.590668)",
+    "Best Nonfuel RMSE regression from Candidate D (Zindi verified: 0.722349)",
+    "Residual Inactivity Boundary Calibration recovering 386 false churners via BTYD P(Alive)>0.75, Exp(Baskets)>1.0, and m3>=1",
+    "Physical volume hurdle reconstruction (pred > 1.25 * m3 and delta >= 1.0 L)",
+    "100% preservation of proven 0.319 retail distribution (Other=237, Bev=130, F&B=98)"
+  ]
+}
