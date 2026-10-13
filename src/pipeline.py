@@ -94,6 +94,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
 
     nonfuel_model = RegressorEnsemble(
@@ -101,6 +102,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -110,6 +112,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         weights=opp_weights,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
     logger.info("Training HierarchicalOpportunityClassifier...")
@@ -120,12 +123,14 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         inact_idx=label_to_idx["Inactivity"],
         stable_idx=label_to_idx["Stable"],
         fg_idx=label_to_idx["Existing-category growth: Fuel"],
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
 
     logger.info("Training StoreAttachmentClassifier for nonfuel zero-inflation hurdle...")
     store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
     # Fit blend weights on calibration fold
@@ -262,12 +267,25 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     full_panel = stack(full_snaps)
     logger.info("Full panel size: %d instances", len(full_panel.X))
 
+    # Seasonal sample weighting: upweight cutoffs with holiday/summer outcome windows
+    full_cutoffs_dt = pd.to_datetime(full_panel.cutoffs)
+    is_summer_cutoff = full_cutoffs_dt.isin([
+        pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
+    ])
+    full_sample_weights = np.ones(len(full_panel.X), dtype=np.float32)
+    full_sample_weights[is_summer_cutoff] = 2.0
+    logger.info(
+        "Applied seasonal sample weighting: %d summer instances weighted at 2.0x, %d baseline instances at 1.0x",
+        is_summer_cutoff.sum(), (~is_summer_cutoff).sum()
+    )
+
     final_fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
     final_fuel_model.set_weights(fuel_blend_weights)
 
     final_nonfuel_model = RegressorEnsemble(
@@ -275,7 +293,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
     final_nonfuel_model.set_weights(nonfuel_blend_weights)
 
     final_opp_model = ClassifierEnsemble(
@@ -284,7 +303,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         weights=opp_weights,
-    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Retraining final HierarchicalOpportunityClassifier on full historical panel...")
     final_hier_model = HierarchicalOpportunityClassifier(
@@ -294,12 +314,14 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         inact_idx=label_to_idx["Inactivity"],
         stable_idx=label_to_idx["Stable"],
         fg_idx=label_to_idx["Existing-category growth: Fuel"],
-    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Retraining final StoreAttachmentClassifier on full historical panel...")
     final_store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
 
     # Honest Out-of-Fold Multi-Cutoff Pooled Calibration (2025-06-01 + 2025-09-01)

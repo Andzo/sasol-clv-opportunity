@@ -59,10 +59,11 @@ class Paths:
 class ModelConfig:
     """Model-family selection and determinism controls."""
 
-    regression_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
+    regression_members: tuple[str, ...] = ("lgbm", "catboost", "xgb", "ridge")
     classification_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
     seed: int = 42
     n_jobs: int = -1
+    use_gpu: bool = False
 
 
 @dataclass(frozen=True)

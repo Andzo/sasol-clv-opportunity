@@ -32,6 +32,7 @@ class Scores:
     rmse_fuel: float
     rmse_nonfuel: float
     weighted_f1: float
+    macro_f1: float = 0.0
 
     def composite(self, x_max_fuel: float, x_max_nonfuel: float) -> float:
         return (
@@ -39,6 +40,10 @@ class Scores:
             + WEIGHTS["CLV_nonfuel"] * normalized_rmse(self.rmse_nonfuel, x_max_nonfuel)
             + WEIGHTS["Opportunity"] * self.weighted_f1
         )
+
+    def leaderboard_composite(self, x_max_fuel: float = 0.69046, x_max_nonfuel: float = 0.92955) -> float:
+        """Verified Zindi leaderboard scoring formula using persistence benchmark starter x_max."""
+        return self.composite(x_max_fuel, x_max_nonfuel)
 
     def as_dict(self) -> dict[str, float]:
         return asdict(self)
@@ -50,6 +55,7 @@ def score(labels: pd.DataFrame, fuel: np.ndarray, nonfuel: np.ndarray, opportuni
         rmse_fuel=rmse(labels["CLV_fuel"], fuel),
         rmse_nonfuel=rmse(labels["CLV_nonfuel"], nonfuel),
         weighted_f1=float(f1_score(labels["Opportunity"], opportunity, average="weighted", zero_division=0)),
+        macro_f1=float(f1_score(labels["Opportunity"], opportunity, average="macro", zero_division=0)),
     )
 
 

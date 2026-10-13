@@ -1,54 +1,60 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 1168.72,
+  "elapsed_seconds": 569.34,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5986407640392277,
-    "rmse_nonfuel": 0.745126471339512,
-    "weighted_f1": 0.5168460474090634
+    "rmse_fuel": 0.5979604629364262,
+    "rmse_nonfuel": 0.7452376504430518,
+    "weighted_f1": 0.5150184327400898,
+    "macro_f1": 0.15270577322856468
   },
-  "proxy_composite_score": 0.5262,
+  "proxy_composite_score": 0.5256,
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
       "rmse_nonfuel": 1.2240635969972369,
-      "weighted_f1": 0.11331824658452772
+      "weighted_f1": 0.11331824658452772,
+      "macro_f1": 0.02486848397895744
     },
     "persistence_last_quarter": {
       "rmse_fuel": 0.6904569455426012,
       "rmse_nonfuel": 0.9295529797287471,
-      "weighted_f1": 0.11797423750255016
+      "weighted_f1": 0.11797423750255016,
+      "macro_f1": 0.025313331805602073
     },
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Inactivity": 1721,
-    "Stable": 1638,
-    "Existing-category growth: Fuel": 1388,
-    "Existing-category growth: Other": 511,
-    "Existing-category growth: Beverages": 133,
-    "Existing-category growth: Food & beverage": 76,
-    "New category adoption: Food & beverage": 8,
-    "New category adoption: Other": 8,
-    "New category adoption: Beverages": 5
+    "Inactivity": 1761,
+    "Stable": 1654,
+    "Existing-category growth: Fuel": 1335,
+    "Existing-category growth: Other": 495,
+    "Existing-category growth: Beverages": 151,
+    "Existing-category growth: Food & beverage": 66,
+    "New category adoption: Food & beverage": 12,
+    "New category adoption: Other": 9,
+    "New category adoption: Beverages": 4,
+    "New category adoption: Lubricants": 1
   },
-  "fuel_mean": 1.4479,
-  "nonfuel_mean": 0.6702,
+  "fuel_mean": 1.4526,
+  "nonfuel_mean": 0.6679,
   "blend_weights": {
     "fuel": {
-      "lgbm": 0.2062,
-      "catboost": 0.2818,
-      "xgb": 0.512
+      "lgbm": 0.2716,
+      "catboost": 0.0355,
+      "xgb": 0.5185,
+      "ridge": 0.1745
     },
     "nonfuel": {
       "lgbm": 0.0,
-      "catboost": 0.3173,
-      "xgb": 0.6827
+      "catboost": 0.328,
+      "xgb": 0.6396,
+      "ridge": 0.0323
     }
   },
   "temperature": {
-    "validation": 1.05,
-    "final": 1.05
+    "validation": 0.95,
+    "final": 1.0
   },
   "inactivity_threshold": {
     "validation": 0.01,
@@ -58,8 +64,8 @@
     "fuel": 0.0,
     "nonfuel_alpha": 0.0,
     "nonfuel_beta": 0.05,
-    "validation_fuel": 0.0,
-    "validation_nonfuel_alpha": 0.0,
+    "validation_fuel": 0.05,
+    "validation_nonfuel_alpha": 0.05,
     "validation_nonfuel_beta": 0.05
   }
 }

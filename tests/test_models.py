@@ -110,3 +110,17 @@ def test_make_regressor_diverse_members():
         reg.fit(X, y)
         preds = reg.predict(X)
         assert preds.shape == (n_samples,)
+
+
+def test_models_with_gpu_flag():
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 40, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+
+    # Verify that make_regressor accepts use_gpu
+    reg = make_regressor("xgb", seed=42, n_jobs=1, use_gpu=True)
+    reg.fit(X, y)
+    preds = reg.predict(X)
+    assert preds.shape == (n_samples,)
+

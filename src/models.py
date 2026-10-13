@@ -19,7 +19,7 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 from xgboost import XGBClassifier, XGBRegressor
 
 
-def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.15) -> Any:
+def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.15, use_gpu: bool = False) -> Any:
     """Compound Poisson-Gamma (Tweedie) and squared-error regressors."""
     if name == "lgbm":
         return LGBMRegressor(
@@ -29,32 +29,50 @@ def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.1
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
     if name == "catboost":
-        return CatBoostRegressor(
-            iterations=550, learning_rate=0.035, depth=5, l2_leaf_reg=10.0, loss_function="RMSE",
-            random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
-        )
+        cb_kwargs: dict[str, Any] = {
+            "iterations": 550, "learning_rate": 0.035, "depth": 5, "l2_leaf_reg": 10.0, "loss_function": "RMSE",
+            "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs["task_type"] = "GPU"
+        else:
+            cb_kwargs["thread_count"] = n_jobs
+        return CatBoostRegressor(**cb_kwargs)
     if name == "xgb":
-        return XGBRegressor(
-            objective="reg:tweedie", tweedie_variance_power=tweedie_power,
-            n_estimators=550, learning_rate=0.018, max_depth=4, min_child_weight=6.5,
-            subsample=0.75, colsample_bytree=0.50, reg_lambda=14.0, tree_method="hist",
-            random_state=seed, n_jobs=n_jobs,
-        )
+        xgb_kwargs: dict[str, Any] = {
+            "objective": "reg:tweedie", "tweedie_variance_power": tweedie_power,
+            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
+            "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs["device"] = "cuda"
+        return XGBRegressor(**xgb_kwargs)
     if name == "ridge":
+        from sklearn.impute import SimpleImputer
         from sklearn.linear_model import Ridge
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
-        return Pipeline([("scaler", StandardScaler()), ("ridge", Ridge(alpha=100.0, random_state=seed))])
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("ridge", Ridge(alpha=100.0, random_state=seed)),
+        ])
     if name == "extratrees":
+        from sklearn.impute import SimpleImputer
         from sklearn.ensemble import ExtraTreesRegressor
-        return ExtraTreesRegressor(
-            n_estimators=100, max_depth=15, min_samples_leaf=5,
-            max_features="sqrt", random_state=seed, n_jobs=n_jobs,
-        )
+        from sklearn.pipeline import Pipeline
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("extratrees", ExtraTreesRegressor(
+                n_estimators=100, max_depth=15, min_samples_leaf=5,
+                max_features="sqrt", random_state=seed, n_jobs=n_jobs,
+            )),
+        ])
     raise ValueError(f"Unknown regressor {name!r}")
 
 
-def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
+def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) -> Any:
     """Multiclass probabilistic classifier."""
     if name == "lgbm":
         return LGBMClassifier(
@@ -64,16 +82,24 @@ def make_classifier(name: str, seed: int, n_jobs: int) -> Any:
             force_col_wise=True, verbose=-1,
         )
     if name == "catboost":
-        return CatBoostClassifier(
-            iterations=500, learning_rate=0.045, depth=6, l2_leaf_reg=6.0, loss_function="MultiClass",
-            random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
-        )
+        cb_kwargs: dict[str, Any] = {
+            "iterations": 500, "learning_rate": 0.045, "depth": 6, "l2_leaf_reg": 6.0, "loss_function": "MultiClass",
+            "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs["task_type"] = "GPU"
+        else:
+            cb_kwargs["thread_count"] = n_jobs
+        return CatBoostClassifier(**cb_kwargs)
     if name == "xgb":
-        return XGBClassifier(
-            objective="multi:softprob", n_estimators=350, learning_rate=0.031, max_depth=5,
-            min_child_weight=4.74, subsample=0.75, colsample_bytree=0.68, reg_lambda=9.2,
-            tree_method="hist", random_state=seed, n_jobs=n_jobs,
-        )
+        xgb_kwargs: dict[str, Any] = {
+            "objective": "multi:softprob", "n_estimators": 350, "learning_rate": 0.031, "max_depth": 5,
+            "min_child_weight": 4.74, "subsample": 0.75, "colsample_bytree": 0.68, "reg_lambda": 9.2,
+            "tree_method": "hist", "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs["device"] = "cuda"
+        return XGBClassifier(**xgb_kwargs)
     raise ValueError(f"Unknown classifier {name!r}")
 
 
@@ -81,15 +107,29 @@ class RegressorEnsemble:
     """Weighted average of non-negative regressor predictions."""
 
     def __init__(
-        self, members: Sequence[str], seed: int = 42, n_jobs: int = -1, tweedie_power: float = 1.15
+        self,
+        members: Sequence[str],
+        seed: int = 42,
+        n_jobs: int = -1,
+        tweedie_power: float = 1.15,
+        use_gpu: bool = False,
     ) -> None:
         self.members = tuple(members)
         self.tweedie_power = tweedie_power
-        self.models = [make_regressor(m, seed, n_jobs, tweedie_power=tweedie_power) for m in self.members]
+        self.models = [
+            make_regressor(m, seed, n_jobs, tweedie_power=tweedie_power, use_gpu=use_gpu)
+            for m in self.members
+        ]
         self.weights = np.full(len(self.members), 1.0 / len(self.members))
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "RegressorEnsemble":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "RegressorEnsemble":
         for model in self.models:
+            if sample_weight is not None:
+                try:
+                    model.fit(X, y, sample_weight=sample_weight)
+                    continue
+                except (TypeError, ValueError):
+                    pass
             model.fit(X, y)
         return self
 
@@ -117,10 +157,11 @@ class ClassifierEnsemble:
         seed: int = 42,
         n_jobs: int = -1,
         weights: Sequence[float] | None = None,
+        use_gpu: bool = False,
     ) -> None:
         self.members = tuple(members)
         self.n_classes = n_classes
-        self.models = [make_classifier(m, seed, n_jobs) for m in self.members]
+        self.models = [make_classifier(m, seed, n_jobs, use_gpu=use_gpu) for m in self.members]
         self.classes_: np.ndarray | None = None
         if weights is not None:
             self.set_weights(weights)
@@ -133,13 +174,19 @@ class ClassifierEnsemble:
             raise ValueError("Classifier weights must be non-negative, one per member, with positive sum")
         self.weights = w / w.sum()
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "ClassifierEnsemble":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "ClassifierEnsemble":
         y = np.asarray(y, dtype=int)
         if y.min() < 0 or y.max() >= self.n_classes:
             raise ValueError("Class indices out of range")
         self.classes_ = np.unique(y)
         encoded = np.searchsorted(self.classes_, y)  # contiguous 0..P-1 (required by XGBoost)
         for model in self.models:
+            if sample_weight is not None:
+                try:
+                    model.fit(X, encoded, sample_weight=sample_weight)
+                    continue
+                except (TypeError, ValueError):
+                    pass
             model.fit(X, encoded)
         return self
 
@@ -174,7 +221,7 @@ def lgbm_importance(model: Any, feature_names: Sequence[str]) -> pd.Series:
 class StoreAttachmentClassifier:
     """Predicts binary convenience store visitation P(CLV_nonfuel > 0 | X) using a diverse GBDT ensemble."""
 
-    def __init__(self, seed: int = 42, n_jobs: int = -1) -> None:
+    def __init__(self, seed: int = 42, n_jobs: int = -1, use_gpu: bool = False) -> None:
         self.lgbm = LGBMClassifier(
             objective="binary",
             n_estimators=400,
@@ -190,27 +237,35 @@ class StoreAttachmentClassifier:
             force_col_wise=True,
             verbose=-1,
         )
-        self.catboost = CatBoostClassifier(
-            iterations=400,
-            learning_rate=0.04,
-            depth=6,
-            loss_function="Logloss",
-            random_seed=seed,
-            thread_count=n_jobs,
-            verbose=0,
-            allow_writing_files=False,
-        )
-        self.xgb = XGBClassifier(
-            objective="binary:logistic",
-            n_estimators=350,
-            learning_rate=0.03,
-            max_depth=5,
-            subsample=0.8,
-            colsample_bytree=0.6,
-            tree_method="hist",
-            random_state=seed,
-            n_jobs=n_jobs,
-        )
+        cb_kwargs: dict[str, Any] = {
+            "iterations": 400,
+            "learning_rate": 0.04,
+            "depth": 6,
+            "loss_function": "Logloss",
+            "random_seed": seed,
+            "verbose": 0,
+            "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs["task_type"] = "GPU"
+        else:
+            cb_kwargs["thread_count"] = n_jobs
+        self.catboost = CatBoostClassifier(**cb_kwargs)
+
+        xgb_kwargs: dict[str, Any] = {
+            "objective": "binary:logistic",
+            "n_estimators": 350,
+            "learning_rate": 0.03,
+            "max_depth": 5,
+            "subsample": 0.8,
+            "colsample_bytree": 0.6,
+            "tree_method": "hist",
+            "random_state": seed,
+            "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs["device"] = "cuda"
+        self.xgb = XGBClassifier(**xgb_kwargs)
 
     def fit(self, X: pd.DataFrame, y: np.ndarray) -> "StoreAttachmentClassifier":
         y_binary = (np.asarray(y) > 0).astype(int)
@@ -244,6 +299,7 @@ class HierarchicalOpportunityClassifier:
         inact_idx: int = 4,
         stable_idx: int = 16,
         fg_idx: int = 2,
+        use_gpu: bool = False,
     ) -> None:
         self.n_classes = n_classes
         self.seed = seed
@@ -259,28 +315,43 @@ class HierarchicalOpportunityClassifier:
             n_estimators=350, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
             reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
         )
-        self.clf_inact_cb = CatBoostClassifier(
-            iterations=400, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
-            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
-        )
+        cb_kwargs_inact: dict[str, Any] = {
+            "iterations": 400, "learning_rate": 0.03, "depth": 6, "l2_leaf_reg": 6.0,
+            "loss_function": "Logloss", "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs_inact["task_type"] = "GPU"
+        else:
+            cb_kwargs_inact["thread_count"] = n_jobs
+        self.clf_inact_cb = CatBoostClassifier(**cb_kwargs_inact)
 
         self.clf_ret_lgb = LGBMClassifier(
             n_estimators=300, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
             reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
         )
-        self.clf_ret_cb = CatBoostClassifier(
-            iterations=350, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
-            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
-        )
+        cb_kwargs_ret: dict[str, Any] = {
+            "iterations": 350, "learning_rate": 0.03, "depth": 6, "l2_leaf_reg": 6.0,
+            "loss_function": "Logloss", "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs_ret["task_type"] = "GPU"
+        else:
+            cb_kwargs_ret["thread_count"] = n_jobs
+        self.clf_ret_cb = CatBoostClassifier(**cb_kwargs_ret)
 
         self.clf_fg_lgb = LGBMClassifier(
             n_estimators=350, learning_rate=0.02, num_leaves=31, colsample_bytree=0.6,
             reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
         )
-        self.clf_fg_cb = CatBoostClassifier(
-            iterations=350, learning_rate=0.03, depth=6, l2_leaf_reg=6.0,
-            loss_function="Logloss", random_seed=seed, thread_count=n_jobs, verbose=0, allow_writing_files=False,
-        )
+        cb_kwargs_fg: dict[str, Any] = {
+            "iterations": 350, "learning_rate": 0.03, "depth": 6, "l2_leaf_reg": 6.0,
+            "loss_function": "Logloss", "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs_fg["task_type"] = "GPU"
+        else:
+            cb_kwargs_fg["thread_count"] = n_jobs
+        self.clf_fg_cb = CatBoostClassifier(**cb_kwargs_fg)
 
         self.clf_ret_multi = LGBMClassifier(
             objective="multiclass", num_class=len(self.retail_indices),
@@ -288,25 +359,44 @@ class HierarchicalOpportunityClassifier:
             reg_lambda=8.0, random_state=seed, n_jobs=n_jobs, verbose=-1,
         )
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "HierarchicalOpportunityClassifier":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "HierarchicalOpportunityClassifier":
         y_arr = np.asarray(y, dtype=int)
         y_inact = (y_arr == self.inact_idx).astype(int)
-        self.clf_inact_lgb.fit(X, y_inact)
-        self.clf_inact_cb.fit(X, y_inact)
+        if sample_weight is not None:
+            sw = np.asarray(sample_weight, dtype=np.float32)
+            self.clf_inact_lgb.fit(X, y_inact, sample_weight=sw)
+            self.clf_inact_cb.fit(X, y_inact, sample_weight=sw)
 
-        m_act = y_arr != self.inact_idx
-        y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
-        self.clf_ret_lgb.fit(X[m_act], y_ret)
-        self.clf_ret_cb.fit(X[m_act], y_ret)
+            m_act = y_arr != self.inact_idx
+            y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
+            self.clf_ret_lgb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
+            self.clf_ret_cb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
 
-        m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
-        y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
-        self.clf_fg_lgb.fit(X[m_fs], y_fg)
-        self.clf_fg_cb.fit(X[m_fs], y_fg)
+            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
+            y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
+            self.clf_fg_lgb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
+            self.clf_fg_cb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
 
-        m_ret = np.isin(y_arr, self.retail_indices)
-        y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
-        self.clf_ret_multi.fit(X[m_ret], y_ret_multi)
+            m_ret = np.isin(y_arr, self.retail_indices)
+            y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
+            self.clf_ret_multi.fit(X[m_ret], y_ret_multi, sample_weight=sw[m_ret])
+        else:
+            self.clf_inact_lgb.fit(X, y_inact)
+            self.clf_inact_cb.fit(X, y_inact)
+
+            m_act = y_arr != self.inact_idx
+            y_ret = np.isin(y_arr[m_act], self.retail_indices).astype(int)
+            self.clf_ret_lgb.fit(X[m_act], y_ret)
+            self.clf_ret_cb.fit(X[m_act], y_ret)
+
+            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
+            y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
+            self.clf_fg_lgb.fit(X[m_fs], y_fg)
+            self.clf_fg_cb.fit(X[m_fs], y_fg)
+
+            m_ret = np.isin(y_arr, self.retail_indices)
+            y_ret_multi = np.array([self.retail_idx_to_local[yi] for yi in y_arr[m_ret]])
+            self.clf_ret_multi.fit(X[m_ret], y_ret_multi)
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:

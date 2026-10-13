@@ -25,9 +25,13 @@ def main() -> int:
     parser.add_argument(
         "--save-predictions", action="store_true", help="Cache evaluation and test predictions for EDA & diagnostics"
     )
+    parser.add_argument(
+        "--gpu", action="store_true", help="Enable NVIDIA GPU acceleration for CatBoost and XGBoost"
+    )
     args = parser.parse_args()
 
     cfg = PipelineConfig(
+        models=PipelineConfig().models.__class__(seed=args.seed, use_gpu=args.gpu),
         first_train_cutoff=args.first_train_cutoff,
         calibration_cutoff=args.calibration_cutoff,
         evaluation_cutoff=args.evaluation_cutoff,

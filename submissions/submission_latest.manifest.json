@@ -1,8 +1,8 @@
 {
-  "submission_file": "submission_git_76bc1c8_20261013_120437_comp0.5262.csv",
-  "created_at": "2026-10-13T12:04:37.744923",
-  "git_commit": "76bc1c8bfd928e4f66d8bfea333beda49e96dcd1",
-  "git_commit_short": "76bc1c8",
+  "submission_file": "submission_git_f776f97_20261013_161654_comp0.5256.csv",
+  "created_at": "2026-10-13T16:16:54.417404",
+  "git_commit": "f776f97cdb5529a1194e7eafb5a452770bee0b6b",
+  "git_commit_short": "f776f97",
   "git_branch": "feat/radical-breakthrough-058",
   "git_dirty": true,
   "feature_version": "2.7.0",
@@ -10,7 +10,8 @@
     "regression_members": [
       "lgbm",
       "catboost",
-      "xgb"
+      "xgb",
+      "ridge"
     ],
     "classification_members": [
       "lgbm",
@@ -20,10 +21,11 @@
     "seed": 42
   },
   "evaluation_metrics": {
-    "rmse_fuel": 0.5986407640392277,
-    "rmse_nonfuel": 0.745126471339512,
-    "weighted_f1": 0.5168460474090634
+    "rmse_fuel": 0.5979604629364262,
+    "rmse_nonfuel": 0.7452376504430518,
+    "weighted_f1": 0.5150184327400898,
+    "macro_f1": 0.15270577322856468
   },
-  "proxy_composite_score": 0.5262,
-  "reproduction_command": "git checkout 76bc1c8 && python main.py --save-predictions"
+  "proxy_composite_score": 0.5256,
+  "reproduction_command": "git checkout f776f97 && python main.py --save-predictions"
 }
