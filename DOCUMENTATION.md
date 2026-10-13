@@ -315,9 +315,9 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate N) | `cb5f8ac30040523dcf44ce4a648cb9ea7dfa0b5a3bb45b0d0ce0ce8d21c0adba` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate N) | `cb5f8ac30040523dcf44ce4a648cb9ea7dfa0b5a3bb45b0d0ce0ce8d21c0adba` |
-| `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac30040523dcf44ce4a648cb9ea7dfa0b5a3bb45b0d0ce0ce8d21c0adba` |
+| `submission.csv` | Primary active submission at project root (Candidate N) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate N) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
+| `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
 | `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
 | `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
 | `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
