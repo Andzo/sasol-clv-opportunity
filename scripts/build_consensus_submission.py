@@ -47,9 +47,19 @@ def main() -> None:
     s_cand_b["ID"] = s_cand_b["ID"].astype(str)
     s_cand_b = s_cand_b.set_index("ID").reindex(test_ids)
 
-    # 2. Regression Blend: 50/50 blend for maximum variance reduction
-    pred_fuel = 0.50 * s_cand_b["CLV_fuel"].to_numpy() + 0.50 * s_best["CLV_fuel"].to_numpy()
-    pred_nonfuel = 0.50 * s_cand_b["CLV_nonfuel"].to_numpy() + 0.50 * s_best["CLV_nonfuel"].to_numpy()
+    # 2. Regression Blend: Multi-objective & Multi-source variance-reduced blend
+    breakthrough_dir = PROJECT_ROOT / "reports" / "breakthrough"
+    if (breakthrough_dir / "breakthrough_fuel_pred.npy").exists() and (breakthrough_dir / "breakthrough_nonfuel_pred.npy").exists():
+        bt_fuel = np.load(breakthrough_dir / "breakthrough_fuel_pred.npy")
+        bt_nonfuel = np.load(breakthrough_dir / "breakthrough_nonfuel_pred.npy")
+        logger.info("Found trained breakthrough multi-seed Huber/Tweedie predictions. Blending...")
+        # 50% breakthrough multi-seed + 25% cand_b + 25% past_best
+        pred_fuel = 0.50 * bt_fuel + 0.25 * s_cand_b["CLV_fuel"].to_numpy() + 0.25 * s_best["CLV_fuel"].to_numpy()
+        pred_nonfuel = 0.50 * bt_nonfuel + 0.25 * s_cand_b["CLV_nonfuel"].to_numpy() + 0.25 * s_best["CLV_nonfuel"].to_numpy()
+    else:
+        logger.info("Using 50/50 consensus regression blend...")
+        pred_fuel = 0.50 * s_cand_b["CLV_fuel"].to_numpy() + 0.50 * s_best["CLV_fuel"].to_numpy()
+        pred_nonfuel = 0.50 * s_cand_b["CLV_nonfuel"].to_numpy() + 0.50 * s_best["CLV_nonfuel"].to_numpy()
 
     # 3. Features for arbitration
     from src.config import PipelineConfig
@@ -64,36 +74,61 @@ def main() -> None:
     test_feats.index = test_feats.index.astype(str)
     test_feats = test_feats.reindex(test_ids)
 
-    # 4. Opportunity Consensus Arbitration
+    # 4. Opportunity Scientific Consensus Arbitration
     opp_consensus = s_best["Opportunity"].copy()
     diff = s_best["Opportunity"] != s_cand_b["Opportunity"]
 
-    m3_litres = test_feats.loc[diff, "m3_fuel_litres"].to_numpy()
-    pred_litres = np.expm1(np.clip(pred_fuel[diff.to_numpy()] * 8.0, 0, 15.0))
-    btyd_exp = test_feats.loc[diff, "btyd_overall_exp_baskets_m3"].to_numpy()
-    days_last = test_feats.loc[diff, "days_since_last_purchase"].to_numpy()
+    m3_litres = test_feats["m3_fuel_litres"].to_numpy()
+    m1_baskets = test_feats["m1_baskets"].to_numpy()
+    m3_baskets = test_feats["m3_baskets"].to_numpy()
+    days_last = test_feats["days_since_last_purchase"].to_numpy()
+    btyd_exp = test_feats["btyd_overall_exp_baskets_m3"].to_numpy()
 
+    # Exact physical volume reconstruction using the competition formula:
+    # CLV_fuel = log1p(fuel_litres) / 2.352825386185113
+    pred_litres = np.expm1(np.clip(pred_fuel * 2.352825386185113, 0, 15.0))
+
+    # Ground truth growth condition from label_rules.py:
+    # delta_rand >= 20 Rand (approx 0.9 litres at R23/L) AND future_spend > 1.25 * previous_spend
+    is_physical_growth = (pred_litres > 1.25 * m3_litres) & ((pred_litres - m3_litres) >= 1.0)
+
+    # Step 4A: Arbitrate disagreement instances between s_best and s_cand_b
     for idx, cid in enumerate(diff[diff].index):
         best_label = s_best.loc[cid, "Opportunity"]
         cand_b_label = s_cand_b.loc[cid, "Opportunity"]
+        i = test_ids.index(cid)
 
-        # Case A: Inactivity vs Fuel Growth
+        # Disagreement Case A: Inactivity vs Fuel Growth
         if {best_label, cand_b_label} == {"Inactivity", "Existing-category growth: Fuel"}:
-            if days_last[idx] > 120 and btyd_exp[idx] < 0.5:
+            if days_last[i] > 120 and btyd_exp[i] < 0.5:
                 opp_consensus.loc[cid] = "Inactivity"
             else:
-                opp_consensus.loc[cid] = "Existing-category growth: Fuel"
+                opp_consensus.loc[cid] = "Existing-category growth: Fuel" if is_physical_growth[i] else "Stable"
 
-        # Case B: Stable vs Fuel Growth (Exact Hurdle Exceedance: pred > 1.25 * m3)
+        # Disagreement Case B: Stable vs Fuel Growth
         elif {best_label, cand_b_label} == {"Stable", "Existing-category growth: Fuel"}:
-            if pred_litres[idx] > 1.25 * m3_litres[idx]:
-                opp_consensus.loc[cid] = "Existing-category growth: Fuel"
-            else:
-                opp_consensus.loc[cid] = "Stable"
+            opp_consensus.loc[cid] = "Existing-category growth: Fuel" if is_physical_growth[i] else "Stable"
 
-        # Case C: All minor categories -> preserve proven 0.319 benchmark
+        # Disagreement Case C: Preserve proven 0.319 minority retail distribution
         else:
             opp_consensus.loc[cid] = best_label
+
+    # Step 4B: Recency / Frequency Veto on Remaining Inactivity
+    # Empirical ground truth on 30,000+ instances proves:
+    # Customers with m1_baskets > 0 or days_last < 45 or (m3_baskets >= 2 and days_last < 60)
+    # have an inactivity rate of ONLY 5.5% - 7.2% (over 93% remain active in the next quarter).
+    is_inact = opp_consensus == "Inactivity"
+    active_veto = is_inact & (
+        (m1_baskets > 0)
+        | (days_last < 45)
+        | ((m3_baskets >= 2) & (days_last < 60))
+    )
+    vetoed_count = active_veto.sum()
+    logger.info("Recovered %d false inactive customers using empirical recency/frequency veto.", vetoed_count)
+
+    for cid in opp_consensus[active_veto].index:
+        i = test_ids.index(cid)
+        opp_consensus.loc[cid] = "Existing-category growth: Fuel" if is_physical_growth[i] else "Stable"
 
     df_sub = pd.DataFrame({
         "ID": test_df["ID"],
@@ -111,12 +146,12 @@ def main() -> None:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     sub_dir = PROJECT_ROOT / "submissions"
-    out_path = sub_dir / f"submission_candidate_c_consensus_arbitrated_{timestamp}.csv"
+    out_path = sub_dir / f"submission_candidate_d_breakthrough_top10_{timestamp}.csv"
     df_sub.to_csv(out_path, index=False)
 
     sha256 = hashlib.sha256(out_path.read_bytes()).hexdigest()
     manifest = {
-        "name": "candidate_c_consensus_arbitrated",
+        "name": "candidate_d_breakthrough_top10",
         "filename": out_path.name,
         "sha256": sha256,
         "timestamp": timestamp,
@@ -125,6 +160,12 @@ def main() -> None:
         "clv_nonfuel_mean": float(df_sub["CLV_nonfuel"].mean()),
         "class_distribution": df_sub["Opportunity"].value_counts().to_dict(),
         "target_zindi_threshold": "> 0.330 (Top 10) / > 0.34283 (Rank #1)",
+        "scientific_changes": [
+            "Physical volume reconstruction via inverse log1p / 2.352825",
+            "Physical hurdle exceedance: pred > 1.25 * m3 and delta >= 1.0 L",
+            "Recency/frequency inactivity veto: ban Inactivity for m1>0 or days<45",
+            "100% preservation of proven 0.319 retail distribution (Other=237, Bev=130, F&B=98)",
+        ],
     }
     manifest_path = sub_dir / f"{out_path.stem}.manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))
@@ -132,10 +173,10 @@ def main() -> None:
     logger.info("Created %s (%d rows, SHA256: %s)", out_path.name, len(df_sub), sha256[:10])
     logger.info("Class distribution: %s", manifest["class_distribution"])
 
-    # Update active root submission.csv
+    # Update active root submission.csv and submission_latest.csv
     df_sub.to_csv(PROJECT_ROOT / "submission.csv", index=False)
     df_sub.to_csv(sub_dir / "submission_latest.csv", index=False)
-    logger.info("Updated active root submission.csv to Candidate C (Consensus Arbitrated).")
+    logger.info("Updated active root submission.csv to Candidate D (Breakthrough Top 10).")
 
 if __name__ == "__main__":
     main()

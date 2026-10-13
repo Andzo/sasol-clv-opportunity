@@ -20,10 +20,24 @@ from xgboost import XGBClassifier, XGBRegressor
 
 
 def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.15, use_gpu: bool = False) -> Any:
-    """Compound Poisson-Gamma (Tweedie) and squared-error regressors."""
+    """Compound Poisson-Gamma (Tweedie), Huber, and squared-error regressors."""
     if name == "lgbm":
         return LGBMRegressor(
             objective="tweedie", tweedie_variance_power=tweedie_power,
+            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
+            subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+        )
+    if name == "lgbm_huber":
+        return LGBMRegressor(
+            objective="huber", alpha=0.90,
+            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
+            subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+        )
+    if name == "lgbm_mse":
+        return LGBMRegressor(
+            objective="regression",
             n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
@@ -41,6 +55,26 @@ def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.1
     if name == "xgb":
         xgb_kwargs: dict[str, Any] = {
             "objective": "reg:tweedie", "tweedie_variance_power": tweedie_power,
+            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
+            "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs["device"] = "cuda"
+        return XGBRegressor(**xgb_kwargs)
+    if name == "xgb_huber":
+        xgb_kwargs: dict[str, Any] = {
+            "objective": "reg:pseudohubererror",
+            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
+            "random_state": seed, "n_jobs": n_jobs,
+        }
+        if use_gpu:
+            xgb_kwargs["device"] = "cuda"
+        return XGBRegressor(**xgb_kwargs)
+    if name == "xgb_mse":
+        xgb_kwargs: dict[str, Any] = {
+            "objective": "reg:squarederror",
             "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
             "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
             "random_state": seed, "n_jobs": n_jobs,

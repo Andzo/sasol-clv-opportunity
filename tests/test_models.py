@@ -105,7 +105,7 @@ def test_make_regressor_diverse_members():
     X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
     y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
 
-    for member in ["ridge", "extratrees"]:
+    for member in ["ridge", "extratrees", "lgbm_huber", "xgb_huber"]:
         reg = make_regressor(member, seed=42, n_jobs=1)
         reg.fit(X, y)
         preds = reg.predict(X)
