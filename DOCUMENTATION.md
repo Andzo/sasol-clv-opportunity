@@ -15,8 +15,9 @@
 6. [Machine Learning Modeling Architecture](#6-machine-learning-modeling-architecture)
 7. [Comprehensive Experimentation Log: What Worked vs What Failed](#7-comprehensive-experimentation-log-what-worked-vs-what-failed)
 8. [Current Production State & Artifact Registry](#8-current-production-state--artifact-registry)
-9. [How to Run, Test, and Extend This Project](#9-how-to-run-test-and-extend-this-project)
-10. [Contribution Protocol for Future Work](#10-contribution-protocol-for-future-work)
+9. [Git Workflow, Version Control & Submission Lineage Architecture](#9-git-workflow-version-control--submission-lineage-architecture)
+10. [How to Run, Test, and Extend This Project](#10-how-to-run-test-and-extend-this-project)
+11. [Contribution Protocol for Future Work](#11-contribution-protocol-for-future-work)
 
 ---
 
@@ -318,7 +319,174 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ---
 
-## 9. How to Run, Test, and Extend This Project
+---
+
+## 9. Git Workflow, Version Control & Submission Lineage Architecture
+
+The project enforces a strict, reproducible version control and submission lineage architecture designed so that any submitted CSV can be traced back to the exact code, parameters, git commit, and execution environment that generated it.
+
+### 9.1 Branching Model & Taxonomy
+
+The repository follows a trunk-based feature-branch workflow:
+
+```mermaid
+gitGraph
+   commit id: "Initial"
+   branch feat/phase-1-optimizations
+   checkout feat/phase-1-optimizations
+   commit id: "Station Profiling"
+   checkout main
+   merge feat/phase-1-optimizations
+   branch feat/radical-breakthrough-058
+   checkout feat/radical-breakthrough-058
+   commit id: "Hurdle Physics"
+   commit id: "Cand I (0.3112)"
+   commit id: "Cand J (Fuel Hurdle)"
+   checkout main
+   merge feat/radical-breakthrough-058 id: "Merge Breakthrough"
+   commit id: "Candidate J Active"
+```
+
+1. **`main`**:
+   - Production trunk containing only verified, reproducible code and benchmarks.
+   - All code on `main` must pass all 38 unit tests (`pytest -q`) and produce valid submissions.
+   - Active canonical files at root (`submission.csv`, `main.py`, `DOCUMENTATION.md`) always reflect the current production state.
+2. **`feat/<feature-name>`**:
+   - Isolated branches for specific modeling hypotheses, feature engineering blocks, or hyperparameter sweeps (e.g., `feat/radical-breakthrough-058`, `feat/phase-1-optimizations`, `feat/phase-2-architectures`).
+   - Merged into `main` **only** after out-of-time evaluation proves improvement or equality with the current best benchmark.
+3. **`research/<topic>`**:
+   - Dedicated exploratory branches for literature reviews, mathematical proofs, and diagnostic reporting (e.g., `research/zero-inflated-targets`).
+
+---
+
+### 9.2 Automated Submission Git Lineage Architecture
+
+Every execution of the production pipeline (`src/pipeline.py`) automatically queries the underlying Git repository via `_get_git_info()` to embed version control metadata directly into generated files.
+
+#### A. File Naming Convention
+Generated submissions are saved in `submissions/` with deterministic timestamps and commit hashes:
+$$\text{submission\_git\_}\\langle\text{commit\_short}\\rangle\text{\_}\\langle\text{YYYYMMDD\_HHMMSS}\\rangle\text{\_comp}\\langle\text{score}\\rangle\text{.csv}$$
+
+Example:
+`submissions/submission_git_4e4d597_20261013_213755_comp0.2894.csv`
+
+#### B. Companion Manifest Architecture (`.manifest.json`)
+Every generated CSV is paired with a companion JSON manifest of identical base name:
+
+```json
+{
+  "submission_file": "submission_git_4e4d597_20261013_213755_comp0.2894.csv",
+  "created_at": "2026-10-13T21:37:55.748392",
+  "git_commit": "4e4d5975d0f11acb5e028b14a0ecadbf950c0587",
+  "git_commit_short": "4e4d597",
+  "git_branch": "main",
+  "git_dirty": false,
+  "feature_version": "2.7.0",
+  "models": {
+    "regression_members": ["lgbm", "catboost", "xgb", "ridge", "extratrees"],
+    "classification_members": ["lgbm", "catboost", "xgb"],
+    "seed": 42
+  },
+  "evaluation_metrics": {
+    "rmse_fuel": 0.5975878,
+    "rmse_nonfuel": 0.7444701,
+    "weighted_f1": 0.5134863,
+    "macro_f1": 0.1578997
+  },
+  "leaderboard_composite_score": 0.28943,
+  "leaderboard_breakdown": {
+    "score_fuel": 0.05773,
+    "score_nonfuel": 0.02630,
+    "score_opportunity": 0.20539,
+    "total_score": 0.28943
+  },
+  "reproduction_command": "git checkout 4e4d597 && python main.py --save-predictions"
+}
+```
+
+Key Lineage Properties:
+- `git_dirty`: Flags whether uncommitted local changes were present (`false` indicates 100% clean, reproducible state).
+- `git_commit`: The exact 40-character SHA hash of the codebase used to generate the predictions.
+- `reproduction_command`: The one-liner shell command to reproduce the run.
+
+---
+
+### 9.3 100% Reproducibility & Historical Rollback Protocol
+
+If you ever need to inspect, audit, or reproduce any past submission:
+1. Locate the submission in `submissions/` (e.g., `submission_candidate_i_peak_verified_20261013_194106.csv`).
+2. Read its companion manifest `submission_candidate_i_peak_verified_20261013_194106.manifest.json`.
+3. Checkout the recorded commit:
+   ```bash
+   git checkout <git_commit_sha>
+   ```
+4. Re-run the reproduction command:
+   ```bash
+   .venv/bin/python main.py --save-predictions --gpu
+   ```
+5. Verify the SHA-256 checksum of the generated submission matches the manifest.
+
+---
+
+### 9.4 Git Merge & Gatekeeping Protocol
+
+Before merging any experimental branch into `main`:
+
+```bash
+# 1. Ensure working directory is clean
+git status
+
+# 2. Run the complete automated test suite
+.venv/bin/pytest -q
+# Gate: All 38 tests MUST pass
+
+# 3. Verify the submission artifact format
+.venv/bin/python scripts/verify_submission_breakthrough.py submission.csv
+# Gate: 5,488 rows, 0 NaNs, non-negative, correct columns
+
+# 4. Switch to main and pull latest changes
+git checkout main
+
+# 5. Merge feature branch with an explicit non-fast-forward merge commit
+git merge --no-ff <feature-branch> -m "feat(main): merge <feature-description>"
+
+# 6. Re-run full pipeline on main to confirm clean execution
+.venv/bin/python main.py --save-predictions --gpu
+
+# 7. Check working tree cleanliness
+git status
+```
+
+---
+
+### 9.5 Commit Message Standards
+
+The project follows the Conventional Commits specification:
+- `feat(<scope>)`: A new model, feature engineering block, or pipeline component (e.g., `feat(hurdle): add TwoPartFuelHurdle architecture`).
+- `fix(<scope>)`: A bug fix or scale constant correction (e.g., `fix(metrics): update competition scale constants to 0.740 and 0.816`).
+- `docs(<scope>)`: Documentation updates, experiment logs, or architectural guides (e.g., `docs: add comprehensive master documentation`).
+- `test(<scope>)`: Adding or refactoring unit tests or backtest harnesses (e.g., `test(models): add GPU device verification test`).
+- `chore(<scope>)`: Maintenance, dependency management, or report updates (e.g., `chore(eval): update evaluation report with decoded leaderboard score`).
+
+---
+
+### 9.6 Repository Hygiene & `.gitignore` Rules
+
+To keep the repository fast, lightweight, and clean:
+- **Ignored**:
+  - Virtual environments: `.venv/`, `venv/`.
+  - Heavy raw datasets: `train.csv`, `train.parquet`.
+  - Feature caches: `data_cache/`, `catboost_info/`.
+  - Generated binary plots: `reports/**/*.png`, `reports/**/*.html`.
+- **Tracked in Git**:
+  - All source code in `src/`, `scripts/`, `tests/`, and root entry points (`main.py`, `label_rules.py`).
+  - Configuration files (`label_config.json`, `pyproject.toml`).
+  - Master documentation (`DOCUMENTATION.md`).
+  - Active submission (`submission.csv`) and canonical mirrors in `submissions/`.
+  - Historical companion manifests (`submissions/*.manifest.json`).
+  - Compact evaluation summaries (`reports/evaluation_report.json`).
+
+## 10. How to Run, Test, and Extend This Project
 
 ### 9.1 Environment & Tooling
 - **Python Interpreter**: `.venv/bin/python` (Python 3.14.4 virtual environment).
@@ -351,7 +519,7 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ---
 
-## 10. Contribution Protocol for Future Work
+## 11. Contribution Protocol for Future Work
 
 When starting a new chat session, welcoming a new team member, or conducting further research:
 
