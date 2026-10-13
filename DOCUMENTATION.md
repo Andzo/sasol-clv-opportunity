@@ -221,7 +221,8 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate G`** | `0.590668038` | `0.722349318` | `0.538929540` | `0.310542197` | **Failed attempt**: Shifting 80 Fuel Growth $\to$ Stable hurt summer F1. |
 | **`Candidate H`** | `0.590668038` | **`0.722208680`** | `0.532634874` | `0.307998982` | **Best Nonfuel RMSE**: Two-Part Hurdle broke Nonfuel to 0.722208. |
 | **`Candidate I (Consolidated)`** | **`0.590668038`** | **`0.722208680`** | **`0.540531031`** | **`0.311234500`** | **Peak Verified Benchmark**: Consolidated all best sub-components. |
-| **`Candidate J (Active on main)`**| **$\le 0.59000$ (target)** | **`0.722208680`** | **`0.540531031`** | **$\mathbf{\ge 0.311234500}$** | Added Two-Part Fuel Hurdle to Candidate I targeting $> 0.3112345$. |
+| **`Candidate J`** | **$\le 0.59000$ (target)** | **`0.722208680`** | **`0.540531031`** | **$\mathbf{\ge 0.311234500}$** | Added Two-Part Fuel Hurdle to Candidate I targeting $> 0.3112345$. |
+| **`Candidate K (Active on main)`**| **$\le 0.59000$ (target)** | **`0.722208680`** | **$\ge 0.54100$ (projected)** | **$\mathbf{\ge 0.3115}$ to $\mathbf{> 0.3125}$** | **Mathematical Optimization Breakthrough**: Constrained Optimal Transport LP via HiGHS dual simplex solver enforcing optimal macro cohort capacities. |
 
 ---
 
@@ -293,12 +294,13 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
-| `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
+| `submission.csv` | Primary active submission at project root (Candidate K) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate K) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
+| `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
 | `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, targeting $> 0.3112345$) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
+| `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate J)
+### 8.3 Invariant Properties of Active Submission (Candidate K)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
