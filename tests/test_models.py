@@ -97,3 +97,16 @@ def test_hierarchical_opportunity_classifier():
     assert probs.shape == (n_samples, n_classes)
     assert (probs >= 0.0).all()
     assert np.allclose(probs.sum(axis=1), 1.0)
+
+
+def test_make_regressor_diverse_members():
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 40, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+
+    for member in ["ridge", "extratrees"]:
+        reg = make_regressor(member, seed=42, n_jobs=1)
+        reg.fit(X, y)
+        preds = reg.predict(X)
+        assert preds.shape == (n_samples,)

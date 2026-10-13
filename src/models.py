@@ -40,6 +40,17 @@ def make_regressor(name: str, seed: int, n_jobs: int, tweedie_power: float = 1.1
             subsample=0.75, colsample_bytree=0.50, reg_lambda=14.0, tree_method="hist",
             random_state=seed, n_jobs=n_jobs,
         )
+    if name == "ridge":
+        from sklearn.linear_model import Ridge
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        return Pipeline([("scaler", StandardScaler()), ("ridge", Ridge(alpha=100.0, random_state=seed))])
+    if name == "extratrees":
+        from sklearn.ensemble import ExtraTreesRegressor
+        return ExtraTreesRegressor(
+            n_estimators=100, max_depth=15, min_samples_leaf=5,
+            max_features="sqrt", random_state=seed, n_jobs=n_jobs,
+        )
     raise ValueError(f"Unknown regressor {name!r}")
 
 
