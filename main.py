@@ -48,7 +48,14 @@ def main() -> int:
         print(f"CLV_fuel RMSE:          {summary['metrics']['rmse_fuel']:.4f}")
         print(f"CLV_nonfuel RMSE:       {summary['metrics']['rmse_nonfuel']:.4f}")
         print(f"Opportunity Weighted F1:{summary['metrics']['weighted_f1']:.4f}")
-        print(f"Proxy Composite Score:  {summary['proxy_composite_score']:.4f}")
+        lb_score = summary.get('leaderboard_composite_score', summary.get('proxy_composite_score', 0.0))
+        print(f"Leaderboard Score:      {lb_score:.5f}")
+        if 'leaderboard_breakdown' in summary:
+            bd = summary['leaderboard_breakdown']
+            print(f"  > Fuel Contribution:    {bd.get('score_fuel', 0.0):.5f} (30% weight, max=0.740)")
+            print(f"  > Nonfuel Contribution: {bd.get('score_nonfuel', 0.0):.5f} (30% weight, max=0.816)")
+            print(f"  > Opportunity Contrib:  {bd.get('score_opportunity', 0.0):.5f} (40% weight)")
+        print(f"Legacy Proxy Score:     {summary['proxy_composite_score']:.4f}")
         print("=" * 60)
         return 0
     except Exception as e:
