@@ -286,27 +286,39 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ### 8.1 Git Repository State
 - **Active Branch**: `main`
-- **Latest Commit**: `5a97f9e`
+- **Latest Commit**: `b45c012`
 - **Clean Working Tree**: All code committed, zero unstaged source modifications.
-- **Unit Tests**: All **38 unit tests pass** in 6.07s (`.venv/bin/pytest -q`).
+- **Unit Tests**: All **40 unit tests pass** in 5.87s (`.venv/bin/pytest -q`).
 
 ### 8.2 Active Submission Files
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate K) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate K) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
+| `submission.csv` | Primary active submission at project root (Candidate L) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate L) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
+| `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
 | `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
 | `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, targeting $> 0.3112345$) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
 | `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate K)
+### 8.3 Invariant Properties of Active Submission (Candidate L)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
 - **CLV Fuel**: Mean = `1.4425`, Max = `3.2904`.
 - **CLV Nonfuel**: Mean = `0.6765`, Max = `3.1401`.
 - **Opportunity Distribution**:
+  - `Stable`: **1,984** (36.15%)
+  - `Existing-category growth: Fuel`: **1,552** (28.28%)
+  - `Inactivity`: **1,443** (26.29% — locks optimal empirical band)
+  - `Existing-category growth: Other`: **237** (4.32%)
+  - `Existing-category growth: Beverages`: **130** (2.37%)
+  - `Existing-category growth: Food & beverage`: **98** (1.79%)
+  - `New category adoption: Food & beverage`: **17** (0.31%)
+  - `New category adoption: Other`: **17** (0.31%)
+  - `New category adoption: Beverages`: **6** (0.11%)
+  - `New category adoption: Lubricants`: **3** (0.05%)
+  - `New category adoption: Confectionary`: **1** (0.02%)
   - `Stable`: **1,960** (35.71%)
   - `Existing-category growth: Fuel`: **1,576** (28.72%)
   - `Inactivity`: **1,443** (26.29% — locks optimal empirical band)
