@@ -124,3 +124,19 @@ def test_models_with_gpu_flag():
     preds = reg.predict(X)
     assert preds.shape == (n_samples,)
 
+
+def test_two_part_nonfuel_hurdle():
+    from src.hurdle import TwoPartNonfuelHurdle
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 60, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    # 50% zero-inflated target
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+    y[:30] = 0.0
+
+    hurdle = TwoPartNonfuelHurdle(seed=42, n_jobs=1)
+    hurdle.fit(X, y)
+    preds = hurdle.predict(X)
+    assert preds.shape == (n_samples,)
+    assert (preds >= 0.0).all()
+

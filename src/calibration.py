@@ -12,8 +12,8 @@ from typing import Sequence
 import numpy as np
 from scipy.optimize import nnls
 
-DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 2.5, 33)
-DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.8, 1.25, 17)
+DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 12.0, 45)
+DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.85, 1.15, 17)
 
 
 def apply_eligibility_mask(probs: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -159,9 +159,9 @@ def fit_temperature_and_class_weights(
         w = np.ones(n_classes)
         for c in range(n_classes):
             if c in dom_set:
-                w[c] = trial.suggest_float(f"w_{c}", 0.80, 1.25)
+                w[c] = trial.suggest_float(f"w_{c}", 0.85, 1.15)
             else:
-                w[c] = trial.suggest_float(f"w_{c}", 0.50, 2.50)
+                w[c] = trial.suggest_float(f"w_{c}", 0.50, 12.0)
         p_s = apply_temperature_scaling(probs, t)
         if mask is not None:
             p_s = apply_eligibility_mask(p_s, mask)
