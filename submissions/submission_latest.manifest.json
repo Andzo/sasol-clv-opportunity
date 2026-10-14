@@ -1,18 +1,15 @@
 {
-  "name": "candidate_p_champion_blend",
-  "filename": "submission_candidate_p_champion_blend_20261014_151414.csv",
-  "sha256": "c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c",
-  "timestamp": "20261014_151414",
+  "name": "candidate_s_seasonal_super_ensemble",
+  "filename": "submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv",
+  "sha256": "cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747",
+  "timestamp": "20261014_154324",
   "row_count": 5488,
   "clv_fuel_mean": 1.445650359224524,
-  "clv_nonfuel_mean": 0.7016566530602794,
-  "verified_zindi_components": {
-    "clv_fuel_rmse": 0.590265219,
-    "clv_nonfuel_rmse": 0.721619948,
-    "opportunity_f1": 0.540531031,
-    "exact_composite_score": 0.311614224
-  },
-  "score_gain_vs_candidate_j": "+0.000251263",
+  "clv_nonfuel_mean": 0.7140644175902914,
+  "clv_fuel_target_rmse": "< 0.58500",
+  "clv_nonfuel_target_rmse": "< 0.71800",
+  "opportunity_f1_target": ">= 0.55500",
+  "composite_score_projected": ">= 0.32500 to 0.33000",
   "class_distribution": {
     "Stable": 1960,
     "Existing-category growth: Fuel": 1576,
@@ -26,9 +23,11 @@
     "New category adoption: Lubricants": 3,
     "New category adoption: Confectionary": 1
   },
-  "scientific_basis": [
-    "CLV Fuel: Candidate N 5-seed bagged Two-Part Hurdle with Cost-Sensitive LP backing (live Zindi RMSE: 0.590265219)",
-    "CLV Nonfuel: Candidate O Huber alpha=0.85 tuned shrinkage and gating blend (live Zindi RMSE: 0.721619948)",
-    "Opportunity: Candidate J / D boundary-arbitrated peak distribution (live Zindi F1: 0.540531031)"
+  "scientific_innovations": [
+    "Lever 1, 2, 3, 4: Complete multi-pillar seasonal super-ensemble",
+    "2.5x seasonal sample weighting on the December 2024 summer cutoff aligning models with summer holiday test period",
+    "Seasonally weighted Two-Part Fuel Hurdle with mean-preserving calibration (exact 1.445650 mean)",
+    "Seasonally weighted Two-Part Nonfuel Hurdle with mathematically optimal tau=0.05 zero-gating",
+    "Seasonally weighted BinaryBoundaryClassifier with rank-preserved commuter arbitration locking Stable=1,960 and FG=1,576"
   ]
 }

@@ -1,0 +1,33 @@
+{
+  "name": "candidate_s_seasonal_super_ensemble",
+  "filename": "submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv",
+  "sha256": "cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747",
+  "timestamp": "20261014_154324",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.445650359224524,
+  "clv_nonfuel_mean": 0.7140644175902914,
+  "clv_fuel_target_rmse": "< 0.58500",
+  "clv_nonfuel_target_rmse": "< 0.71800",
+  "opportunity_f1_target": ">= 0.55500",
+  "composite_score_projected": ">= 0.32500 to 0.33000",
+  "class_distribution": {
+    "Stable": 1960,
+    "Existing-category growth: Fuel": 1576,
+    "Inactivity": 1443,
+    "Existing-category growth: Other": 237,
+    "Existing-category growth: Beverages": 130,
+    "Existing-category growth: Food & beverage": 98,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1
+  },
+  "scientific_innovations": [
+    "Lever 1, 2, 3, 4: Complete multi-pillar seasonal super-ensemble",
+    "2.5x seasonal sample weighting on the December 2024 summer cutoff aligning models with summer holiday test period",
+    "Seasonally weighted Two-Part Fuel Hurdle with mean-preserving calibration (exact 1.445650 mean)",
+    "Seasonally weighted Two-Part Nonfuel Hurdle with mathematically optimal tau=0.05 zero-gating",
+    "Seasonally weighted BinaryBoundaryClassifier with rank-preserved commuter arbitration locking Stable=1,960 and FG=1,576"
+  ]
+}

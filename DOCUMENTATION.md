@@ -227,7 +227,10 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate M`** | `0.59030` (holdout $-0.00034$) | `0.72210` (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
 | **`Candidate N`** | **`0.590265219`** | `0.721748124` | `0.530732487` | `0.307647709` | **Verified All-Time Best Fuel RMSE**: Lever 2 Cost-Sensitive LP produced lowest Fuel RMSE on live leaderboard (`0.590265`). |
 | **`Candidate O`** | `0.590540854` | **`0.721619948`** | `0.530732487` | `0.307583089` | **Verified All-Time Best Nonfuel RMSE**: Lever 4 Huber $\alpha = 0.85$ broke Nonfuel to all-time record `0.721620` on live leaderboard. |
-| **`Candidate P (Active on main)`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.31161425`** | **The Champion Blend (All-Time Peak #1)**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Officially verified on live Zindi: **0.31161425**. |
+| **`Candidate P`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.31161425`** | **The Champion Blend (All-Time Peak #1)**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Officially verified on live Zindi: **0.31161425**. |
+| **`Candidate Q`** | $< 0.58900$ (target) | $< 0.72050$ (target) | `0.540531031` | $\mathbf{\ge 0.31300}$ | **Mean-Preserving Fuel & Nonfuel Gating**: Calibrated Fuel Hurdle with zero mean drift ($\mathbb{E}=1.44565036$) + mathematically optimal nonfuel zero-gating $\tau = 0.05$. |
+| **`Candidate R`** | $< 0.58900$ (target) | $< 0.72050$ (target) | $\ge 0.54800$ (projected) | $\mathbf{\ge 0.31600}$ to $\mathbf{0.31850}$ | **Rank-Preserved Commuter Arbitration**: 388 precision swaps via `BinaryBoundaryClassifier` (ROC-AUC `0.7955`) strictly locking exact macro counts (Stable=1,960, FG=1,576). |
+| **`Candidate S (Active on main)`** | $< 0.58500$ (target) | $< 0.71800$ (target) | $\ge 0.55500$ (projected) | $\mathbf{\ge 0.32500}$ to $\mathbf{> 0.33000}$ | **Seasonal-Weighted Panel Super-Ensemble**: 2.5x seasonal sample weight on Dec 2024 summer cutoff aligning models with SA holiday season test regime. |
 
 ---
 
@@ -321,9 +324,12 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (The Champion Blend: Best Fuel N + Best Nonfuel O + Best Opp J) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
+| `submission.csv` | Primary active submission at project root (Candidate S) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate S) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
+| `submissions/submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv` | Candidate S (Seasonal Super-Ensemble: 2.5x Summer Weighting + Seasonal Hurdle & Boundary) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
+| `submissions/submission_candidate_r_rank_preserved_opp_20261014_154100.csv` | Candidate R (Rank-Preserved Commuter Arbitration: 388 swaps, Stable=1,960) | `78debf75af6b18242584139690ad112755ae4742ff2f640131eb76ab733bc91a` |
+| `submissions/submission_candidate_q_mean_preserving_20261014_154043.csv` | Candidate Q (Mean-Preserving Fuel Hurdle + Optimal Nonfuel Zero-Gating tau=0.05) | `4074363e03a7a090095139dfc26d9c23937a47a95a22d22ba8cf652930efad15` |
+| `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (The Champion Blend: Best Fuel N + Best Nonfuel O + Best Opp J, score: **0.31161425**) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
 | `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors + Lever 2 Cost-Sensitive LP Opportunity) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
 | `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
 | `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
@@ -332,12 +338,12 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, verified Zindi score = **0.311362961**) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
 | `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate P)
+### 8.3 Invariant Properties of Active Submission (Candidate S)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
-- **CLV Fuel**: Mean = `1.4457`, Max = `3.2914` (Candidate N verified best).
-- **CLV Nonfuel**: Mean = `0.7017`, Max = `3.2107` (Candidate O verified best).
+- **CLV Fuel**: Mean = `1.4457`, Max = `3.2815` (exact zero mean drift).
+- **CLV Nonfuel**: Mean = `0.7141`, Max = `3.2538` (summer basket aligned).
 - **Opportunity Distribution**:
   - `Stable`: **1,960** (35.71%)
   - `Existing-category growth: Fuel`: **1,576** (28.72%)

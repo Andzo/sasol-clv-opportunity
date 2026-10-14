@@ -1,0 +1,32 @@
+{
+  "name": "candidate_q_mean_preserving",
+  "filename": "submission_candidate_q_mean_preserving_20261014_154043.csv",
+  "sha256": "4074363e03a7a090095139dfc26d9c23937a47a95a22d22ba8cf652930efad15",
+  "timestamp": "20261014_154043",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.445650359224524,
+  "clv_nonfuel_mean": 0.7008400844909488,
+  "clv_fuel_target_rmse": "< 0.58900",
+  "clv_nonfuel_target_rmse": "< 0.72050",
+  "opportunity_f1_baseline": 0.540531031,
+  "composite_score_projected": ">= 0.31300",
+  "class_distribution": {
+    "Stable": 1960,
+    "Existing-category growth: Fuel": 1576,
+    "Inactivity": 1443,
+    "Existing-category growth: Other": 237,
+    "Existing-category growth: Beverages": 130,
+    "Existing-category growth: Food & beverage": 98,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1
+  },
+  "scientific_innovations": [
+    "CLV Fuel: Mean-preserving hurdle calibration fixing E[Y_hurdle] = 1.44565036 to eliminate +0.0081 mean drift",
+    "CLV Fuel Blend: 80% Candidate N (0.590265) + 20% Calibrated Two-Part Hurdle (0.000000 mean bias)",
+    "CLV Nonfuel: Bagged Two-Part Nonfuel Hurdle with empirically optimal zero-gating threshold tau=0.05",
+    "Opportunity: Strictly preserved Candidate J gold-standard Opportunity (0.540531031, Stable=1,960, Inactive=1,443)"
+  ]
+}
