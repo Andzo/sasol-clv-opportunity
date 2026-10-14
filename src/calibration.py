@@ -325,3 +325,76 @@ def fit_inactivity_threshold(
     return best_tau
 
 
+def fit_isotonic_hurdle_calibration(
+    y_pos_true: np.ndarray,
+    y_pos_pred: np.ndarray,
+) -> object:
+    """Fit monotonic Isotonic Regression mapping Huber/MAE positive predictions to conditional expectation E[Z|X, Z>0]."""
+    from sklearn.isotonic import IsotonicRegression
+    iso = IsotonicRegression(out_of_bounds="clip", increasing=True)
+    y_t = np.asarray(y_pos_true, dtype="float64")
+    y_p = np.asarray(y_pos_pred, dtype="float64")
+    iso.fit(y_p, y_t)
+    return iso
+
+
+def apply_isotonic_hurdle_calibration(
+    y_pos_pred: np.ndarray,
+    iso_model: object,
+) -> np.ndarray:
+    """Apply fitted isotonic recalibration model to positive spend predictions."""
+    y_p = np.asarray(y_pos_pred, dtype="float64")
+    return np.asarray(iso_model.predict(y_p), dtype="float64")
+
+
+def fit_decile_mean_multipliers(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    p_hurdle: np.ndarray,
+    n_bins: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit monotonic decile multipliers to eliminate decile subgroup bias (y_true_bar - y_pred_bar)^2 = 0."""
+    quantiles = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_edges = np.quantile(p_hurdle, quantiles)
+    bin_edges[0] = -1e-6
+    bin_edges[-1] = 1.0 + 1e-6
+
+    multipliers = np.ones(n_bins, dtype=np.float64)
+    for b in range(n_bins):
+        mask = (p_hurdle >= bin_edges[b]) & (p_hurdle < bin_edges[b + 1])
+        if mask.sum() > 0:
+            pred_mean = np.mean(y_pred[mask])
+            true_mean = np.mean(y_true[mask])
+            if pred_mean > 1e-6:
+                multipliers[b] = np.clip(true_mean / pred_mean, 0.70, 1.40)
+    return bin_edges, multipliers
+
+
+def apply_decile_mean_multipliers(
+    y_pred: np.ndarray,
+    p_hurdle: np.ndarray,
+    bin_edges: np.ndarray,
+    multipliers: np.ndarray,
+    target_global_mean: float | None = None,
+) -> np.ndarray:
+    """Apply decile multipliers and optionally re-normalize to lock the global target mean."""
+    out = np.asarray(y_pred, dtype="float64").copy()
+    n_bins = len(multipliers)
+    for b in range(n_bins):
+        mask = (p_hurdle >= bin_edges[b]) & (p_hurdle < bin_edges[b + 1])
+        out[mask] *= multipliers[b]
+
+    if target_global_mean is not None and target_global_mean > 0:
+        current_mean = np.mean(out)
+        if current_mean > 0:
+            out *= (target_global_mean / current_mean)
+
+    return out
+
+
+def apply_soft_zero_floor(p: np.ndarray, tau_0: float = 0.025) -> np.ndarray:
+    """Continuously zero out low probability tail without step-function discontinuity."""
+    p_arr = np.clip(np.asarray(p, dtype="float64"), 0.0, 1.0)
+    return np.maximum(0.0, (p_arr - tau_0) / (1.0 - tau_0))
+
+
