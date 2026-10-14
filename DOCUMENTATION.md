@@ -313,7 +313,7 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ### 8.1 Git Repository State
 - **Active Branch**: `main`
-- **Latest Commit**: `5397252`
+- **Latest Commit**: `a6b3b9f`
 - **Clean Working Tree**: All code committed, zero unstaged source modifications.
 - **Unit Tests**: All **44 unit tests pass** in 7.03s (`.venv/bin/pytest -q`).
 
