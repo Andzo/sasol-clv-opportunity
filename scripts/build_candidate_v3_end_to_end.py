@@ -31,7 +31,6 @@ from src.config import PipelineConfig
 from src.data import load_transactions, load_test_ids
 from src.eligibility import opportunity_mask, ever_purchased
 from src.features_v3 import V3FeatureExtractor
-from src.regression_v3 import ExactL2TwoPartHurdle
 from src.opportunity_sim_v3 import VectorizedMonteCarloSimulator
 from src.nn_v3 import MultiTaskNeuralNetwork
 from src.f1_optimizer_v3 import ExpectedF1AssignmentSolver, combine_probabilities
@@ -125,21 +124,8 @@ def build_candidate_v3() -> Path:
     X_test_df, _, X_test_seq = extractor.extract_cutoff(test_cutoff, ids=test_ids, with_labels=False, use_cache=True)
     assert len(X_test_df) == N_test
 
-    # 2. Module 2: Exact L2 Two-Part Hurdle Regression
-    logger.info("=== STEP 2: Training Module 2 (Exact L2 Two-Part Hurdle Regressors) ===")
-    reg_fuel = ExactL2TwoPartHurdle(target_name="CLV_fuel", seed=42, n_jobs=4)
-    reg_fuel.fit(X_train_df, labels_train_df["CLV_fuel"].values, sample_weight=weights_train, is_summer=summer_train)
-
-    reg_nonfuel = ExactL2TwoPartHurdle(target_name="CLV_nonfuel", seed=42, n_jobs=4)
-    reg_nonfuel.fit(X_train_df, labels_train_df["CLV_nonfuel"].values, sample_weight=weights_train, is_summer=summer_train)
-
-    # Predict test CLV (summer indicator = 1.0 for Dec-Feb outcome period)
-    summer_test = np.ones(N_test, dtype=np.float64)
-    pred_fuel_v3 = reg_fuel.predict(X_test_df, is_summer=summer_test)
-    pred_nonfuel_v3 = reg_nonfuel.predict(X_test_df, is_summer=summer_test)
-
-    logger.info("Module 2 Raw Predictions: Fuel mean=%.4f (max=%.4f), Nonfuel mean=%.4f (max=%.4f)",
-                pred_fuel_v3.mean(), pred_fuel_v3.max(), pred_nonfuel_v3.mean(), pred_nonfuel_v3.max())
+    # 2. Module 2: Regression Champion delegated directly to Candidate W2
+    logger.info("=== STEP 2: Regression Champion delegated to Candidate W2 (bypassing legacy Module 2) ===")
 
     # 3. Module 3: Decomposed 24-Category Opportunity Simulator
     logger.info("=== STEP 3: Training Module 3 (24-Category Monte Carlo Simulator) ===")
