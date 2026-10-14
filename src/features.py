@@ -554,6 +554,83 @@ def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _longitudinal_panel_block(win: pd.DataFrame, recency: pd.DataFrame, ids: pd.Index) -> pd.DataFrame:
+    """Longitudinal lagged outcomes, tenure censoring, and hurdle clearing dynamics."""
+    out = pd.DataFrame(index=ids)
+    out["lag1_clv_fuel"] = np.log1p(win["m3_fuel_litres"]) / 2.352825386185113
+    out["lag1_clv_nonfuel"] = np.log1p(win["m3_nonfuel_rand"]) / 2.4200904988927476
+    out["lag2_clv_fuel"] = np.log1p(win["q2_fuel_litres"]) / 2.352825386185113
+    out["lag2_clv_nonfuel"] = np.log1p(win["q2_nonfuel_rand"]) / 2.4200904988927476
+    out["delta_lag_clv_fuel"] = out["lag1_clv_fuel"] - out["lag2_clv_fuel"]
+    out["delta_lag_clv_nonfuel"] = out["lag1_clv_nonfuel"] - out["lag2_clv_nonfuel"]
+
+    tenure = recency["days_since_first_seen_capped"]
+    out["tenure_days_capped_90"] = np.minimum(tenure, 90.0)
+    out["is_left_censored_m3"] = (tenure < 90).astype("float64")
+    annual_mult = 90.0 / np.maximum(np.minimum(tenure, 90.0), 7.0)
+    out["m3_annualized_rate_fuel"] = win["m3_fuel_litres"] * annual_mult
+    out["m3_annualized_rate_nonfuel"] = win["m3_nonfuel_rand"] * annual_mult
+    out["cleared_lag_fuel_growth"] = (
+        (win["m3_fuel_litres"] > 1.25 * win["q2_fuel_litres"])
+        & ((win["m3_fuel_litres"] - win["q2_fuel_litres"]) >= 1.0)
+    ).astype("float64")
+    out["dip_ratio_fuel"] = (win["m3_fuel_litres"] + 5.0) / (np.maximum(win["q2_fuel_litres"], 5.0) + 5.0)
+    out["dip_ratio_nonfuel"] = (win["m3_nonfuel_rand"] + 50.0) / (np.maximum(win["q2_nonfuel_rand"], 50.0) + 50.0)
+    return out
+
+
+def _granular_basket_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFrame:
+    """Forecourt SKU habituality, fill properties, and basket structure."""
+    out = pd.DataFrame(index=ids)
+    # 1. Fuel fill properties in m6
+    fuel_tx = hist[hist["is_fuel_sale"] & (hist["_time"] >= t - pd.DateOffset(months=6))]
+    out["max_single_fill_litres"] = fuel_tx.groupby("ID")["qty"].max().reindex(ids).fillna(0.0)
+    is_round = ((fuel_tx["_amount"] % 5000 == 0) | (fuel_tx["_amount"] % 10000 == 0)).astype(float)
+    round_share = (
+        fuel_tx.groupby("ID")
+        .apply(lambda df: is_round.loc[df.index].mean(), include_groups=False)
+        .reindex(ids)
+        .fillna(0.0)
+    )
+    out["full_tank_fill_share"] = 1.0 - round_share
+
+    # 2. SKU Repeat rate on non-fuel merchandise
+    if "StockItemId" in hist.columns:
+        store_tx = hist[hist["is_nonfuel"] & hist["is_qualifying"] & (hist["_time"] >= t - pd.DateOffset(months=6))]
+        unique_skus = store_tx.groupby("ID")["StockItemId"].nunique().reindex(ids).fillna(0.0)
+        total_skus = store_tx.groupby("ID")["StockItemId"].count().reindex(ids).fillna(0.0)
+        out["sku_repeat_rate"] = np.where(total_skus > 1, 1.0 - (unique_skus / total_skus), 0.0)
+    else:
+        out["sku_repeat_rate"] = 0.0
+
+    # 3. Line sequence max per basket
+    if "LineItemSequence" in hist.columns:
+        seq_num = pd.to_numeric(hist["LineItemSequence"], errors="coerce").fillna(1.0)
+        baskets_max_seq = hist.assign(seq_num=seq_num).groupby(["ID", "TransactionId"])["seq_num"].max().reset_index()
+        out["mean_line_sequence_max"] = baskets_max_seq.groupby("ID")["seq_num"].mean().reindex(ids).fillna(1.0)
+        out["multi_item_basket_share"] = (
+            baskets_max_seq.groupby("ID")
+            .apply(lambda df: (df["seq_num"] > 1).mean(), include_groups=False)
+            .reindex(ids)
+            .fillna(0.0)
+        )
+    else:
+        out["mean_line_sequence_max"] = 1.0
+        out["multi_item_basket_share"] = 0.0
+
+    # 4. Total wallet share: in-scope spend vs TransactionTotalInclAmount
+    if "TransactionTotalInclAmount" in hist.columns:
+        tx_incl_num = pd.to_numeric(hist["TransactionTotalInclAmount"], errors="coerce").fillna(0.0)
+        tx_totals = hist.assign(tx_incl_num=tx_incl_num).groupby(["ID", "TransactionId"])[["tx_incl_num", "_amount"]].first().reset_index()
+        total_incl_sum = tx_totals.groupby("ID")["tx_incl_num"].sum().reindex(ids).fillna(0.0)
+        amount_sum = hist.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+        out["wallet_in_scope_share"] = np.where(total_incl_sum > 0, np.clip(amount_sum / total_incl_sum, 0.0, 1.0), 1.0)
+    else:
+        out["wallet_in_scope_share"] = 1.0
+
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -588,6 +665,8 @@ def build_features(
         _category_block(hist, ids, t, cats, observed_months),
         _behaviour_block(hist, ids, t, label_config),
         _btyd_block(hist, ids, t),
+        _longitudinal_panel_block(win, recency, ids),
+        _granular_basket_block(hist, ids, t),
     ]
     feats = pd.concat(blocks, axis=1)
     hurdle_block = _hurdle_physics_block(feats)
