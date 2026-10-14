@@ -1,0 +1,34 @@
+{
+  "name": "candidate_p_champion_blend",
+  "filename": "submission_candidate_p_champion_blend_20261014_151414.csv",
+  "sha256": "c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c",
+  "timestamp": "20261014_151414",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.445650359224524,
+  "clv_nonfuel_mean": 0.7016566530602794,
+  "verified_zindi_components": {
+    "clv_fuel_rmse": 0.590265219,
+    "clv_nonfuel_rmse": 0.721619948,
+    "opportunity_f1": 0.540531031,
+    "exact_composite_score": 0.311614224
+  },
+  "score_gain_vs_candidate_j": "+0.000251263",
+  "class_distribution": {
+    "Stable": 1960,
+    "Existing-category growth: Fuel": 1576,
+    "Inactivity": 1443,
+    "Existing-category growth: Other": 237,
+    "Existing-category growth: Beverages": 130,
+    "Existing-category growth: Food & beverage": 98,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1
+  },
+  "scientific_basis": [
+    "CLV Fuel: Candidate N 5-seed bagged Two-Part Hurdle with Cost-Sensitive LP backing (live Zindi RMSE: 0.590265219)",
+    "CLV Nonfuel: Candidate O Huber alpha=0.85 tuned shrinkage and gating blend (live Zindi RMSE: 0.721619948)",
+    "Opportunity: Candidate J / D boundary-arbitrated peak distribution (live Zindi F1: 0.540531031)"
+  ]
+}

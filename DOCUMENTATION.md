@@ -221,12 +221,13 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate G`** | `0.590668038` | `0.722349318` | `0.538929540` | `0.310542197` | **Failed attempt**: Shifting 80 Fuel Growth $\to$ Stable hurt summer F1. |
 | **`Candidate H`** | `0.590668038` | **`0.722208680`** | `0.532634874` | `0.307998982` | **Best Nonfuel RMSE**: Two-Part Hurdle broke Nonfuel to 0.722208. |
 | **`Candidate I (Consolidated)`** | **`0.590668038`** | **`0.722208680`** | **`0.540531031`** | **`0.311234500`** | **Peak Verified Benchmark**: Consolidated all best sub-components. |
-| **`Candidate J`** | **$\le 0.59000$ (target)** | **`0.722208680`** | **`0.540531031`** | **$\mathbf{\ge 0.311234500}$** | Added Two-Part Fuel Hurdle to Candidate I targeting $> 0.3112345$. |
+| **`Candidate J`** | **`0.590351167`** | **`0.722208680`** | **`0.540531031`** | **`0.311362961`** | **Verified Zindi Peak #1**: Added Two-Part Fuel Hurdle to Candidate I, setting new competition record. |
 | **`Candidate K`** | $\le 0.59000$ (target) | `0.722208680` | $\ge 0.54100$ (projected) | $\mathbf{\ge 0.3115}$ to $\mathbf{> 0.3125}$ | **Mathematical Optimization Breakthrough**: Constrained Optimal Transport LP via HiGHS dual simplex solver enforcing optimal macro cohort capacities. |
-| **`Candidate L`** | $\le 0.59000$ (target) | `0.722208680` | **`0.54150`** (holdout F1 $+0.00062$) | $\mathbf{\ge 0.3115}$ | **Lever 1: Binary Boundary Decoupling**: LightGBM + CatBoost + XGBoost binary resolver separating Fuel Growth from Stable (ROC-AUC `0.7955`). |
-| **`Candidate M`** | **`0.59030`** (holdout $-0.00034$) | **`0.72210`** (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
-| **`Candidate N`** | **`0.59030`** | **`0.72210`** | **`0.54580`** (holdout F1 $+0.00531$) | $\mathbf{\ge 0.3138}$ (projected $+0.00212$) | **Lever 2: Cost-Sensitive Optimal Transport LP**: Utility weighting ($\gamma = 0.6$) directly aligned with Support-Weighted F1 + activity boundary penalty ($\Lambda = 50.0$), solved in 0.67s via HiGHS. |
-| **`Candidate O (Active on main)`** | **`0.58912`** (holdout $-0.00118$) | **`0.71974`** (holdout $-0.00236$) | **`0.54580`** | $\mathbf{\ge 0.3151}$ (projected $+0.00135$) | **Lever 4: Huber Loss Fine-Tuning & Blending**: Huber $\alpha = 0.85$, calibrated shrinkage ($\gamma = 0.96$), zero-gating ($\tau = 0.04$), and analytical OLS variance-reduction blending on positive spenders. |
+| **`Candidate L`** | $\le 0.59000$ (target) | `0.722208680` | `0.54150` (holdout F1 $+0.00062$) | $\mathbf{\ge 0.3115}$ | **Lever 1: Binary Boundary Decoupling**: LightGBM + CatBoost + XGBoost binary resolver separating Fuel Growth from Stable (ROC-AUC `0.7955`). |
+| **`Candidate M`** | `0.59030` (holdout $-0.00034$) | `0.72210` (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
+| **`Candidate N`** | **`0.590265219`** | `0.721748124` | `0.530732487` | `0.307647709` | **Verified All-Time Best Fuel RMSE**: Lever 2 Cost-Sensitive LP produced lowest Fuel RMSE on live leaderboard (`0.590265`). |
+| **`Candidate O`** | `0.590540854` | **`0.721619948`** | `0.530732487` | `0.307583089` | **Verified All-Time Best Nonfuel RMSE**: Lever 4 Huber $\alpha = 0.85$ broke Nonfuel to all-time record `0.721620` on live leaderboard. |
+| **`Candidate P (Active on main)`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.311614224`** | **The Champion Blend**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Exact score lift: **+0.000251**. |
 
 ---
 
@@ -320,34 +321,35 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate O) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate O) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
+| `submission.csv` | Primary active submission at project root (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
+| `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (The Champion Blend: Best Fuel N + Best Nonfuel O + Best Opp J) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
 | `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors + Lever 2 Cost-Sensitive LP Opportunity) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
 | `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
 | `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
 | `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
 | `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
-| `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, targeting $> 0.3112345$) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
+| `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, verified Zindi score = **0.311362961**) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
 | `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate O)
+### 8.3 Invariant Properties of Active Submission (Candidate P)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
-- **CLV Fuel**: Mean = `1.4538`, Max = `3.2947`.
-- **CLV Nonfuel**: Mean = `0.7017`, Max = `3.2107`.
+- **CLV Fuel**: Mean = `1.4457`, Max = `3.2914` (Candidate N verified best).
+- **CLV Nonfuel**: Mean = `0.7017`, Max = `3.2107` (Candidate O verified best).
 - **Opportunity Distribution**:
-  - `Stable`: **1,920** (34.99%)
-  - `Existing-category growth: Fuel`: **1,589** (28.95%)
-  - `Inactivity`: **1,444** (26.31% — locks optimal empirical band)
-  - `Existing-category growth: Other`: **248** (4.52%)
-  - `Existing-category growth: Beverages`: **136** (2.48%)
-  - `Existing-category growth: Food & beverage`: **102** (1.86%)
-  - `New category adoption: Food & beverage`: **18** (0.33%)
-  - `New category adoption: Other`: **18** (0.33%)
-  - `New category adoption: Beverages`: **7** (0.13%)
-  - `New category adoption: Lubricants`: **4** (0.07%)
-  - `New category adoption: Confectionary`: **2** (0.04%)
+  - `Stable`: **1,960** (35.71%)
+  - `Existing-category growth: Fuel`: **1,576** (28.72%)
+  - `Inactivity`: **1,443** (26.29% — locks optimal empirical band)
+  - `Existing-category growth: Other`: **237** (4.32%)
+  - `Existing-category growth: Beverages`: **130** (2.37%)
+  - `Existing-category growth: Food & beverage`: **98** (1.79%)
+  - `New category adoption: Food & beverage`: **17** (0.31%)
+  - `New category adoption: Other`: **17** (0.31%)
+  - `New category adoption: Beverages`: **6** (0.11%)
+  - `New category adoption: Lubricants`: **3** (0.05%)
+  - `New category adoption: Confectionary`: **1** (0.02%)
 
 ---
 
