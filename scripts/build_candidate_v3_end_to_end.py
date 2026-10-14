@@ -175,7 +175,7 @@ def build_candidate_v3() -> Path:
     }
 
     nn_model = MultiTaskNeuralNetwork(seed=42, epochs=12, batch_size=256, lr=1e-3)
-    nn_model.fit(X_train_df, X_train_seq, nn_labels_dict)
+    nn_model.fit(X_train_df, X_train_seq, nn_labels_dict, sample_weight=weights_train)
 
     logger.info("Generating neural network test predictions...")
     nn_preds = nn_model.predict(X_test_df, X_test_seq)
@@ -183,43 +183,53 @@ def build_candidate_v3() -> Path:
     pred_fuel_nn = nn_preds["CLV_fuel"]
     pred_nonfuel_nn = nn_preds["CLV_nonfuel"]
 
-    # 5. Module 5: Expected Support-Weighted F1 Linear Assignment
-    logger.info("=== STEP 5: Probability Fusion & Expected F1 Linear Assignment ===")
+    # 5. Module 5: 509-Retail Hungarian Arbitration (Preserving 4,979 Commuters)
+    logger.info("=== STEP 5: 509-Retail Hungarian Arbitration ===")
     feasibility_mask = opportunity_mask(tx, test_cutoff, pd.Index(test_ids, name="ID"), cfg.label_config)
     assert feasibility_mask.shape == (N_test, len(opp_labels_list))
+
+    cand_v_files = sorted(submissions_dir.glob("submission_candidate_v_boundary_refined_*.csv"))
+    assert cand_v_files, "Missing Candidate V submission file"
+    cand_v_path = cand_v_files[-1]
+    logger.info("Loading baseline Opportunity vector from Candidate V: %s", cand_v_path.name)
+    df_v = pd.read_csv(cand_v_path)
+    df_v["ID"] = df_v["ID"].astype(str)
+    df_v = df_v.set_index("ID").reindex(test_ids)
 
     # Multi-paradigm probability fusion: 65% Monte Carlo + 35% Neural Network
     combined_probs = combine_probabilities([p_mc, p_nn], weights=[0.65, 0.35], feasibility_mask=feasibility_mask)
 
     solver = ExpectedF1AssignmentSolver(cfg.label_config)
-    assigned_idx, assigned_opp_labels = solver.solve(combined_probs, feasibility_mask=feasibility_mask)
+    assigned_opp_labels = solver.solve_retail_subset(
+        df_v["Opportunity"].values, combined_probs, feasibility_mask, anchor_weight=0.85
+    )
 
-    # 6. Ensemble Regression with Champion Candidate W
+    # 6. Ensemble Regression with Champion Candidate W2
     logger.info("=== STEP 6: Regression Ensembling & Moment Alignment ===")
-    # Blend v3 hurdle (80%) with neural network (20%)
-    v3_ensemble_fuel = 0.80 * pred_fuel_v3 + 0.20 * pred_fuel_nn
-    v3_ensemble_nonfuel = 0.80 * pred_nonfuel_v3 + 0.20 * pred_nonfuel_nn
+    cand_w2_files = sorted(submissions_dir.glob("submission_candidate_w2_multi_quantile_*.csv"))
+    assert cand_w2_files, "Missing Candidate W2 submission file"
+    cand_w2_path = cand_w2_files[-1]
+    logger.info("Loading regression champion from Candidate W2: %s", cand_w2_path.name)
+    df_w2 = pd.read_csv(cand_w2_path)
+    df_w2["ID"] = df_w2["ID"].astype(str)
+    df_w2 = df_w2.set_index("ID").reindex(test_ids)
 
-    # Check for Candidate W to construct compound champion
-    cand_w_files = sorted(submissions_dir.glob("submission_candidate_w_calibrated_regression_*.csv"))
-    if cand_w_files:
-        cand_w_path = cand_w_files[-1]
-        logger.info("Blending v3 with Candidate W (%s) at 20%% v3 / 80%% Cand W...", cand_w_path.name)
-        df_w = pd.read_csv(cand_w_path)
-        df_w["ID"] = df_w["ID"].astype(str)
-        df_w = df_w.set_index("ID").reindex(test_ids)
-        final_fuel = 0.80 * df_w["CLV_fuel"].values + 0.20 * v3_ensemble_fuel
-        final_nonfuel = 0.80 * df_w["CLV_nonfuel"].values + 0.20 * v3_ensemble_nonfuel
-    else:
-        logger.info("Using standalone v3 regression predictions...")
-        final_fuel = v3_ensemble_fuel
-        final_nonfuel = v3_ensemble_nonfuel
+    from scripts.build_candidate_w2 import (
+        match_moments_zero_preserving,
+        TARGET_FUEL_MEAN,
+        TARGET_FUEL_STD,
+        TARGET_NF_MEAN,
+        TARGET_NF_STD,
+    )
+    nn_fuel_aligned = match_moments_zero_preserving(pred_fuel_nn, df_w2["CLV_fuel"].values, TARGET_FUEL_MEAN, TARGET_FUEL_STD)
+    nn_nf_aligned = match_moments_zero_preserving(pred_nonfuel_nn, df_w2["CLV_nonfuel"].values, TARGET_NF_MEAN, TARGET_NF_STD)
 
-    # Calibrate summer mean moments exactly
-    target_fuel_mean = 1.44565036
-    target_nonfuel_mean = 0.70165665
-    final_fuel = np.clip(final_fuel * (target_fuel_mean / final_fuel.mean()), 0.0, None)
-    final_nonfuel = np.clip(final_nonfuel * (target_nonfuel_mean / final_nonfuel.mean()), 0.0, None)
+    # Conservative blend: 95% Candidate W2 + 5% NN
+    final_fuel = 0.95 * df_w2["CLV_fuel"].values + 0.05 * nn_fuel_aligned
+    final_nonfuel = 0.95 * df_w2["CLV_nonfuel"].values + 0.05 * nn_nf_aligned
+
+    final_fuel = np.clip(final_fuel * (TARGET_FUEL_MEAN / final_fuel.mean()), 0.0, None)
+    final_nonfuel = np.clip(final_nonfuel * (TARGET_NF_MEAN / final_nonfuel.mean()), 0.0, None)
 
     # 7. Strict Submission Assembly & Verification
     logger.info("=== STEP 7: Strict Submission Assembly & Verification ===")

@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import QuantileTransformer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -132,7 +132,7 @@ class MultiTaskNeuralNetwork:
         self.batch_size = batch_size
         self.lr = lr
 
-        self.scaler = StandardScaler()
+        self.scaler = QuantileTransformer(output_distribution="normal", n_quantiles=1000, random_state=seed)
         self.model: MultiTaskResNetBiGRU | None = None
         self.tab_dim: int = 0
 
@@ -141,8 +141,8 @@ class MultiTaskNeuralNetwork:
         X_tab: pd.DataFrame,
         X_seq: np.ndarray,
         labels_dict: dict[str, np.ndarray],
+        sample_weight: np.ndarray | None = None,
     ) -> "MultiTaskNeuralNetwork":
-        """Trains multi-task network with calibrated loss weighting."""
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
 
@@ -151,52 +151,43 @@ class MultiTaskNeuralNetwork:
         X_tab_scaled = self.scaler.fit_transform(X_tab_clean)
         self.tab_dim = X_tab_scaled.shape[1]
 
+        if sample_weight is None:
+            sample_weight = np.ones(len(X_tab), dtype=np.float32)
+
         t_tab = torch.tensor(X_tab_scaled, dtype=torch.float32)
         t_seq = torch.tensor(X_seq, dtype=torch.float32)
-
         t_fuel = torch.tensor(labels_dict["CLV_fuel"], dtype=torch.float32)
         t_nonfuel = torch.tensor(labels_dict["CLV_nonfuel"], dtype=torch.float32)
         t_act = torch.tensor(labels_dict["activity_targets"], dtype=torch.float32)
         t_24cat = torch.tensor(labels_dict["cat24_targets"], dtype=torch.float32)
         t_opp = torch.tensor(labels_dict["opp17_targets"], dtype=torch.long)
+        t_sw = torch.tensor(sample_weight, dtype=torch.float32)
 
-        dataset = TensorDataset(t_tab, t_seq, t_fuel, t_nonfuel, t_act, t_24cat, t_opp)
+        dataset = TensorDataset(t_tab, t_seq, t_fuel, t_nonfuel, t_act, t_24cat, t_opp, t_sw)
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         self.model = MultiTaskResNetBiGRU(tab_dim=self.tab_dim)
         optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr, weight_decay=1e-4)
 
-        logger.info("Training MultiTaskResNetBiGRU for %d epochs...", self.epochs)
         self.model.train()
         for epoch in range(1, self.epochs + 1):
-            total_loss = 0.0
-            for b_tab, b_seq, b_fuel, b_nonfuel, b_act, b_24cat, b_opp in loader:
+            for b_tab, b_seq, b_fuel, b_nonfuel, b_act, b_24cat, b_opp, b_sw in loader:
                 optimizer.zero_grad()
                 out = self.model(b_tab, b_seq)
 
-                # Positive MSE losses
                 mask_f = b_fuel > 0
-                loss_f = F.mse_loss(out["pred_fuel"][mask_f], b_fuel[mask_f]) if mask_f.any() else torch.tensor(0.0)
+                loss_f = ((out["pred_fuel"][mask_f] - b_fuel[mask_f]) ** 2 * b_sw[mask_f]).mean() if mask_f.any() else torch.tensor(0.0)
 
                 mask_nf = b_nonfuel > 0
-                loss_nf = F.mse_loss(out["pred_nonfuel"][mask_nf], b_nonfuel[mask_nf]) if mask_nf.any() else torch.tensor(0.0)
+                loss_nf = ((out["pred_nonfuel"][mask_nf] - b_nonfuel[mask_nf]) ** 2 * b_sw[mask_nf]).mean() if mask_nf.any() else torch.tensor(0.0)
 
-                # Activity & Category BCE
-                loss_act = F.binary_cross_entropy(out["pred_act"], b_act)
-                loss_24 = F.binary_cross_entropy(out["pred_24cat"], b_24cat)
-
-                # Opportunity Cross-Entropy
-                loss_opp = F.cross_entropy(out["logits_17opp"], b_opp)
+                loss_act = (F.binary_cross_entropy(out["pred_act"], b_act, reduction="none").mean(dim=-1) * b_sw).mean()
+                loss_24 = (F.binary_cross_entropy(out["pred_24cat"], b_24cat, reduction="none").mean(dim=-1) * b_sw).mean()
+                loss_opp = (F.cross_entropy(out["logits_17opp"], b_opp, reduction="none") * b_sw).mean()
 
                 loss = 0.20 * loss_f + 0.20 * loss_nf + 0.10 * loss_act + 0.25 * loss_24 + 0.25 * loss_opp
                 loss.backward()
                 optimizer.step()
-                total_loss += loss.item() * len(b_tab)
-
-            avg_loss = total_loss / len(dataset)
-            if epoch % 5 == 0 or epoch == self.epochs:
-                logger.info("Epoch %d/%d - Multi-task loss: %.4f", epoch, self.epochs, avg_loss)
-
         return self
 
     def predict(self, X_tab: pd.DataFrame, X_seq: np.ndarray) -> dict[str, np.ndarray]:

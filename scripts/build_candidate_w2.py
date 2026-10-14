@@ -432,6 +432,9 @@ def extract_enriched_snapshot(
     with_labels: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     snap = builder.build(cutoff, with_labels=with_labels)
+    snap.features.index = snap.features.index.astype(str)
+    if snap.labels is not None:
+        snap.labels.index = snap.labels.index.astype(str)
     if ids is not None:
         base_feats = snap.features.reindex(ids)
         labels = snap.labels.reindex(ids) if with_labels and snap.labels is not None else None

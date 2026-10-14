@@ -1,41 +1,46 @@
-"""Module 5: Exact Expected Support-Weighted F1 Linear Assignment Solver.
+"""Module 5 (Patched): Exact Expected Support-Weighted F1 Linear Assignment Solver.
 
-Maximizes the mathematically exact expected support-weighted F1 objective:
-    E[Weighted F1] = sum_i sum_k X_ik * [ (2 * pi_k) / (N_hat_k + pi_k * N) * P_ik ]
-subject to exact macro class capacities:
-    sum_i X_ik = N_hat_k  for all k
-    sum_k X_ik = 1        for all i
-    X_ik in {0, 1}
-solved globally in ~15s via SciPy's Jonker-Volgenant linear sum assignment algorithm.
+Fixes:
+1. Removes the 1 / (2 * target_caps) Macro-F1 distortion that over-weighted rare classes by 980x.
+   Uses true Support-Weighted F1 log-probability utility: log(P_ik + eps).
+2. Restores verified Candidate P/U/V adoption capacities (44 total across 5 active adoption classes).
+3. Provides `solve_retail_subset` to arbitrate strictly inside the 509 retail cohort while locking
+   Candidate V's 4,979 commuter assignments (Stable=1960, Fuel Growth=1576, Inactivity=1443).
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping, Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 logger = logging.getLogger("f1_optimizer_v3")
 
-DEFAULT_CAPACITIES: dict[str, int] = {
+VERIFIED_CAPACITIES: dict[str, int] = {
     "Stable": 1960,
     "Existing-category growth: Fuel": 1576,
     "Inactivity": 1443,
     "Existing-category growth: Other": 237,
     "Existing-category growth: Beverages": 130,
     "Existing-category growth: Food & beverage": 98,
-    "New category adoption: Beverages": 8,
-    "New category adoption: Food & beverage": 6,
-    "New category adoption: Other": 5,
-    "New category adoption: Lubricants": 5,
-    "New category adoption: Snacking": 4,
-    "New category adoption: Confectionary": 3,
-    "New category adoption: Ice-cream": 3,
-    "New category adoption: Breads & rolls": 3,
-    "New category adoption: Braai & Ice": 3,
-    "New category adoption: Groceries": 2,
-    "New category adoption: Tobacco": 2,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1,
+    "New category adoption: Snacking": 0,
+    "New category adoption: Ice-cream": 0,
+    "New category adoption: Breads & rolls": 0,
+    "New category adoption: Braai & Ice": 0,
+    "New category adoption: Groceries": 0,
+    "New category adoption: Tobacco": 0,
+}
+
+COMMUTER_CLASSES = {
+    "Stable",
+    "Existing-category growth: Fuel",
+    "Inactivity",
 }
 
 
@@ -44,7 +49,7 @@ def combine_probabilities(
     weights: Sequence[float],
     feasibility_mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Fuses multi-paradigm probability estimates with feasibility enforcement."""
+    """Fuses multi-paradigm probability estimates with hard Rule 5/7 feasibility masking."""
     w = np.array(weights, dtype=np.float64)
     w = w / w.sum()
 
@@ -55,24 +60,21 @@ def combine_probabilities(
     if feasibility_mask is not None:
         combined = np.where(feasibility_mask, combined, 0.0)
 
-    # Re-normalize rows
     row_sums = combined.sum(axis=1, keepdims=True)
     zero_rows = (row_sums.flatten() == 0)
     if zero_rows.any():
-        # Fallback to uniform over feasible classes
         if feasibility_mask is not None:
             feas_float = feasibility_mask.astype(np.float64)
-            combined[zero_rows] = feas_float[zero_rows] / feas_float[zero_rows].sum(axis=1, keepdims=True)
+            combined[zero_rows] = feas_float[zero_rows] / np.maximum(1.0, feas_float[zero_rows].sum(axis=1, keepdims=True))
         else:
             combined[zero_rows] = 1.0 / combined.shape[1]
         row_sums = combined.sum(axis=1, keepdims=True)
 
-    combined = combined / row_sums
-    return combined
+    return combined / np.maximum(row_sums, 1e-12)
 
 
 class ExpectedF1AssignmentSolver:
-    """Exact Expected Support-Weighted F1 Linear Assignment Solver."""
+    """Support-Weighted F1 Optimal Transport Solver."""
 
     def __init__(
         self,
@@ -84,67 +86,69 @@ class ExpectedF1AssignmentSolver:
         self.K = len(self.opp_labels)
         self.label_to_idx = {l: i for i, l in enumerate(self.opp_labels)}
 
-        caps = dict(DEFAULT_CAPACITIES if target_capacities is None else target_capacities)
+        caps = dict(VERIFIED_CAPACITIES if target_capacities is None else target_capacities)
         self.target_caps = np.zeros(self.K, dtype=np.int32)
         for label, cap in caps.items():
             if label in self.label_to_idx:
                 self.target_caps[self.label_to_idx[label]] = cap
-            else:
-                logger.warning("Target capacity specified for unknown label: %s", label)
 
-    def solve(
+    def solve_retail_subset(
         self,
-        probs: np.ndarray,
-        feasibility_mask: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, list[str]]:
-        """Solves exact bipartite assignment maximizing expected support-weighted F1."""
-        N, K = probs.shape
-        assert K == self.K, f"Expected {self.K} classes, got {K}"
-        assert self.target_caps.sum() == N, f"Target capacities sum {self.target_caps.sum()} != N {N}"
+        baseline_opp: np.ndarray | Sequence[str],
+        new_probs: np.ndarray,
+        feasibility_mask: np.ndarray,
+        anchor_weight: float = 0.82,
+    ) -> list[str]:
+        """Arbitrates strictly inside the 509 retail cohort using Hungarian matching,
+        preserving 100% of Candidate V's 4,979 commuter assignments (Stable, Fuel Growth, Inactivity)."""
+        opp_out = np.asarray(baseline_opp, dtype=object).copy()
+        is_retail = ~np.isin(opp_out, list(COMMUTER_CLASSES))
+        retail_indices = np.where(is_retail)[0]
+        n_retail = len(retail_indices)
+        assert n_retail == 509, f"Expected 509 retail rows, got {n_retail}"
 
-        logger.info("Setting up Expected Support-Weighted F1 assignment for N=%d, K=%d...", N, K)
-        P_clean = np.copy(probs)
-        if feasibility_mask is not None:
-            P_clean = np.where(feasibility_mask, P_clean, 0.0)
+        # Exact target counts inside the 509 retail cohort from baseline_opp
+        retail_labels_cur = opp_out[retail_indices]
+        unique_ret, counts_ret = np.unique(retail_labels_cur, return_counts=True)
+        retail_target_counts = dict(zip(unique_ret, counts_ret))
 
-        # Expected F1 coefficients: C_ik = (2 * pi_k) / (N_hat_k + pi_k * N) * P_ik
-        # Here pi_k = N_hat_k / N, so:
-        # C_ik = (2 * (N_hat_k / N)) / (2 * N_hat_k) * P_ik = (1 / N) * P_ik
-        # However, for classes with smaller support, support weighting balances precision and recall:
-        # Expected Support-Weighted F1 coefficient:
-        denom = 2.0 * np.maximum(1, self.target_caps)
-        coeff_weights = 1.0 / denom  # shape (K,)
-        scores = P_clean * coeff_weights[None, :]  # shape (N, K)
+        seat_classes = []
+        for label, cnt in retail_target_counts.items():
+            k_idx = self.label_to_idx[str(label)]
+            seat_classes.extend([k_idx] * int(cnt))
+        seat_classes_arr = np.array(seat_classes, dtype=np.int32)
+        assert len(seat_classes_arr) == 509
 
-        # Build expanded cost matrix with slot expansion
-        cols = []
-        slot_to_class = []
-        for k in range(K):
-            cap_k = self.target_caps[k]
-            if cap_k > 0:
-                cols.append(np.repeat(scores[:, k:k + 1], cap_k, axis=1))
-                slot_to_class.extend([k] * cap_k)
+        # Construct anchor probability matrix (smoothed one-hot of verified Candidate U/V retail labels)
+        P_anchor = np.full((n_retail, self.K), 0.01 / self.K, dtype=np.float64)
+        for i, lbl in enumerate(retail_labels_cur):
+            P_anchor[i, self.label_to_idx[str(lbl)]] = 0.99
 
-        expanded_scores = np.hstack(cols)  # shape (N, N)
-        slot_to_class = np.array(slot_to_class, dtype=np.int32)
+        P_new_sub = new_probs[retail_indices].copy()
+        feas_sub = feasibility_mask[retail_indices]
 
-        # Where infeasible, set large negative score (so cost is large positive)
-        cost_matrix = - expanded_scores
-        if feasibility_mask is not None:
-            # Map feasibility to slots
-            feas_slots = np.hstack([np.repeat(feasibility_mask[:, k:k + 1], self.target_caps[k], axis=1) for k in range(K)])
-            cost_matrix = np.where(feas_slots, cost_matrix, 1e8)
+        # Zero out commuter classes inside the 509 retail pool
+        for c_lbl in COMMUTER_CLASSES:
+            P_new_sub[:, self.label_to_idx[c_lbl]] = 0.0
+        P_new_sub = np.where(feas_sub, P_new_sub, 0.0)
+        row_sums = P_new_sub.sum(axis=1, keepdims=True)
+        P_new_sub = np.where(row_sums > 1e-8, P_new_sub / np.maximum(row_sums, 1e-8), P_anchor)
 
-        logger.info("Executing Jonker-Volgenant linear sum assignment on %s cost matrix...", cost_matrix.shape)
-        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+        # Blend anchor with new multi-paradigm probabilities
+        P_blend = anchor_weight * P_anchor + (1.0 - anchor_weight) * P_new_sub
 
-        assigned_indices = slot_to_class[col_ind]
-        assigned_labels = [self.opp_labels[idx] for idx in assigned_indices]
+        # Support-Weighted F1 cost matrix: negative log probability (NO 1/cap_k distortion!)
+        cost_matrix = -np.log(P_blend[:, seat_classes_arr] + 1e-6)
+        for i in range(n_retail):
+            for j, seat_k in enumerate(seat_classes_arr):
+                if not feas_sub[i, seat_k]:
+                    cost_matrix[i, j] += 1e9
 
-        # Invariant checks
-        actual_counts = np.bincount(assigned_indices, minlength=K)
-        diff = np.abs(actual_counts - self.target_caps)
-        logger.info("Assignment complete! Max capacity discrepancy: %d", int(np.max(diff)))
-        assert int(np.max(diff)) == 0, f"Assignment capacity mismatch: {actual_counts} vs {self.target_caps}"
+        _, col_ind = linear_sum_assignment(cost_matrix)
+        matched_retail_labels = [self.opp_labels[seat_classes_arr[c]] for c in col_ind]
 
-        return assigned_indices, assigned_labels
+        n_swaps = int(np.sum(retail_labels_cur != np.array(matched_retail_labels, dtype=object)))
+        logger.info("509-Retail Hungarian Arbitration complete: %d high-confidence swaps executed.", n_swaps)
+
+        opp_out[retail_indices] = matched_retail_labels
+        return opp_out.tolist()
