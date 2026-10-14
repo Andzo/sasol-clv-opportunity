@@ -227,7 +227,7 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate M`** | `0.59030` (holdout $-0.00034$) | `0.72210` (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
 | **`Candidate N`** | **`0.590265219`** | `0.721748124` | `0.530732487` | `0.307647709` | **Verified All-Time Best Fuel RMSE**: Lever 2 Cost-Sensitive LP produced lowest Fuel RMSE on live leaderboard (`0.590265`). |
 | **`Candidate O`** | `0.590540854` | **`0.721619948`** | `0.530732487` | `0.307583089` | **Verified All-Time Best Nonfuel RMSE**: Lever 4 Huber $\alpha = 0.85$ broke Nonfuel to all-time record `0.721620` on live leaderboard. |
-| **`Candidate P (Active on main)`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.311614224`** | **The Champion Blend**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Exact score lift: **+0.000251**. |
+| **`Candidate P (Active on main)`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.31161425`** | **The Champion Blend (All-Time Peak #1)**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Officially verified on live Zindi: **0.31161425**. |
 
 ---
 
