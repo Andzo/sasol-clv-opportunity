@@ -38,13 +38,13 @@ Ground truth targets are transformed via logarithmic scaling to stabilize heavy-
 
 $$\text{CLV}_{\text{fuel}} = \frac{\ln(1 + \text{fuel\_litres})}{2.352825386185113}$$
 
-$$\text{CLV}_{\text{nonfuel}} = \frac{\ln(1 + \text{nonfuel\_rand})}{3.491684347895315}$$
+$$\text{CLV}_{\text{nonfuel}} = \frac{\ln(1 + \text{nonfuel\_rand})}{2.4200904988927476}$$
 
 Where:
 - $\text{fuel\_litres}$: Net volume of fuel purchased in litres during the outcome quarter (strictly positive sales).
 - $\text{nonfuel\_rand}$: Net South African Rand (ZAR) spend on non-fuel merchandise (excluding fuel, lottery, tobacco exclusions, and rounding adjustments).
 - $2.352825...$: $\ln(1 + \text{fuel\_litres}_{p95})$ competition scale normalizer.
-- $3.491684...$: $\ln(1 + \text{nonfuel\_rand}_{p95})$ competition scale normalizer.
+- $2.420090...$: $\ln(1 + \text{nonfuel\_rand}_{p95})$ competition scale normalizer (`label_config.json`).
 
 ---
 
@@ -118,7 +118,7 @@ For each customer, the forward 3-month purchases are evaluated against historica
    - Condition: Future qualifying transactions across all categories is exactly 0 (`future_purchases.sum() == 0`).
    - Ground truth share: **~26%–27%** of eligible customers.
 2. **New Category Adoption**:
-   - Condition: Customer had **0 lifetime purchases** in category $C$ before cutoff $T$, but made $\ge 1$ purchase in $C$ during the outcome quarter with future spend $\ge \text{R20.00}$.
+   - Condition: Customer had **0 lifetime purchases** in category $C$ before cutoff $T$, made $\ge 1$ qualifying purchase in $C$ during the outcome quarter with positive net spend ($> \text{R0.00}$).
    - Magnitude: $A_C = \text{future\_spend}_C$.
 3. **Existing Category Growth**:
    - Condition: Customer had $> 0$ historical purchases in category $C$, made $\ge 1$ purchase in $C$ during outcome quarter, future spend exceeds previous quarter spend by $\ge \text{R20.00}$, **AND** future spend $> 1.25 \times \text{previous\_quarter\_spend}_C$.
@@ -156,12 +156,11 @@ Feature engineering is implemented in `src/features.py` with strict embargo guar
 | Feature Block | Count | Description & Key Signals |
 | :--- | :---: | :--- |
 | **Window Aggregates** (`_window_block`) | 28 | Baskets, fuel baskets, nonfuel baskets, fuel litres, fuel rand, nonfuel rand, distinct categories across `m1`, `m3`, `m6`, `q2`. |
-| **Derived Momentum** (`_derived_block`) | 14 | `mom_m3_q2_baskets`, `delta_m3_q2_fuel_rand`, `m1_share_of_m3_baskets`, `rel_fuel_price_m3`, `fuel_m1_m3_ratio`, `nonfuel_m1_m3_ratio`, `fuel_reversion_ratio`, `store_attachment_rate`, `has_visited_m1`. |
+| **Derived Momentum** (`_derived_block`) | 17 | `mom_m3_q2_baskets`, `delta_m3_q2_fuel_rand`, `m1_share_of_m3_baskets`, `rel_fuel_price_m3`, `fuel_m1_m3_ratio`, `nonfuel_m1_m3_ratio`, `fuel_reversion_ratio`, `store_attachment_rate`, `has_visited_m1`. |
 | **Recency & Regularity** (`_recency_block`) | 15 | `days_since_last_purchase`, `days_since_last_fuel`, `days_since_last_nonfuel`, `gap_mean`, `gap_median`, `gap_std`, `overdue_ratio`, `exp_churn_hazard` ($1 - e^{-t/\mu}$), lifetime per-month rates. |
 | **Monthly Lags & Trends** (`_trend_block`) | 19 | Lags 2 through 6 for baskets, litres, nonfuel rand; OLS linear trend slopes over 6 months (`baskets_trend_slope`, `fuel_litres_trend_slope`, `nonfuel_rand_trend_slope`), `active_months_6`. |
-| **Per-Category History** (`_category_block`) | 56 | Across all 11 categories: `ever_<cat>`, `rate_<cat>`, `recency_<cat>`, `m3spend_<cat>`, `m3baskets_<cat>`, `n_categories_ever`. |
-| **Forecourt Behavior** (`_behaviour_block`) | 28 | `m6_distinct_locations`, station profiling (`m6_top_loc_mean_litres`, `m6_top_loc_store_attach`, `m6_top_loc_weekend_share`, `m6_top_loc_log_volume`), `m6_commuter_share`, `m6_dow_entropy`, `m6_fuel_mean_litres`, `m6_fuel_std_litres`. |
-| **Promotions & Modifiers** (`_behaviour_block`) | 8 | `m6_discount_lines`, `m6_discount_line_share`, `m6_discount_savings_rand`, `ever_discount_shopper`, `m6_excluded_baskets`, `m6_excluded_rand`, `ever_adj_total_rounding_disco`. |
+| **Per-Category History** (`_category_block`) | 96 | Across all 19 active included categories (excluding 5 dead categories): `ever_<cat>`, `rate_<cat>`, `recency_<cat>`, `m3spend_<cat>`, `m3baskets_<cat>`, plus `n_categories_ever`. |
+| **Forecourt Behavior** (`_behaviour_block`) | 23 | `m6_distinct_locations`, station profiling (`m6_top_loc_mean_litres`, `m6_top_loc_store_attach`, `m6_top_loc_weekend_share`, `m6_top_loc_log_volume`), `m6_commuter_share`, discounts & adjustments. |
 | **Buy-'Til-You-Die (BTYD)** (`_btyd_block`) | 9 | Log-space L-BFGS-B fitted BG/NBD parameters: $P(\text{Alive})$ overall, fuel, and nonfuel; expected repeat baskets $\mathbb{E}[B_{m3}]$; Gamma-Gamma expected monetary spend per basket $\mathbb{E}[M]$; expected CLV monetary spend. |
 | **Statistical Hurdle Physics** (`_hurdle_physics_block`) | 17 | Rolling spend volatility (CV & std), hurdle tail exceedance Z-scores ($Z_{\text{fuel}}$, $Z_{\text{nonfuel}}$), attainability ratios vs historical capacity, relative competitive Z-difference ($Z_{\text{fuel}} - Z_{\text{nonfuel}}$). |
 | **Calendar & Surge** (`build_features`) | 7 | `cutoff_month_sin`, `cutoff_month_cos`, `is_holiday_quarter`, `cutoff_quarter`, `hist_december_active`, `hist_december_spend_log`, `dec24_surge_ratio`. |
