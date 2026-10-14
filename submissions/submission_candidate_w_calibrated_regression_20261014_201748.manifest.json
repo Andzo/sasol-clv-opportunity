@@ -1,0 +1,44 @@
+{
+  "name": "candidate_w_calibrated_regression",
+  "filename": "submission_candidate_w_calibrated_regression_20261014_201748.csv",
+  "sha256": "d1917dbbd7a2761b235a116873eb26a4aeb805e26b540749211cabbcac36d609",
+  "timestamp": "20261014_201748",
+  "row_count": 5488,
+  "blend_weight": 0.12,
+  "pruned_features_count": 168,
+  "clv_fuel_mean": 1.445650359224524,
+  "clv_fuel_std": 0.898505809828763,
+  "clv_nonfuel_mean": 0.7016566530602794,
+  "clv_nonfuel_std": 0.6895321593989707,
+  "correlation_with_candidate_v": {
+    "fuel_rho": 0.998268830331459,
+    "nonfuel_rho": 0.9966895630606804
+  },
+  "macro_counts": {
+    "Stable": 1960,
+    "Existing-category growth: Fuel": 1576,
+    "Inactivity": 1443,
+    "Existing-category growth: Other": 237,
+    "Existing-category growth: Beverages": 130,
+    "Existing-category growth: Food & beverage": 98,
+    "New category adoption: Food & beverage": 17,
+    "New category adoption: Other": 17,
+    "New category adoption: Beverages": 6,
+    "New category adoption: Lubricants": 3,
+    "New category adoption: Confectionary": 1
+  },
+  "verified_zindi_components": {
+    "opportunity_f1_candidate_v": 0.541843185,
+    "target_fuel_rmse": "< 0.5895",
+    "target_nonfuel_rmse": "< 0.7210"
+  },
+  "scientific_basis": [
+    "Strict feature pruning to top 168 non-collinear features protecting tree split probability",
+    "Seasonal sample weight = 2.0x on 2024-12-01 summer cutoff (exact parity with Candidate N)",
+    "Dual-architecture super-ensemble: 3-seed BaggedTwoPartHurdle + loss-diverse RegressorEnsemble",
+    "Derivative-guarded quadratic calibrator (|beta_2| <= 0.025) ensuring strictly monotonic slopes",
+    "Analytical moment-matched blend (w = 0.12) reducing continuous RMSE without seasonal drift",
+    "100% preservation of Candidate V verified peak Opportunity distribution (F1 = 0.541843185)",
+    "Macro invariants: Stable=1960, FG=1576, Inactivity=1443, Retail=509"
+  ]
+}
