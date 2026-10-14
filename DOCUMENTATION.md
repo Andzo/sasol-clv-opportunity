@@ -162,9 +162,11 @@ Feature engineering is implemented in `src/features.py` with strict embargo guar
 | **Per-Category History** (`_category_block`) | 96 | Across all 19 active included categories (excluding 5 dead categories): `ever_<cat>`, `rate_<cat>`, `recency_<cat>`, `m3spend_<cat>`, `m3baskets_<cat>`, plus `n_categories_ever`. |
 | **Forecourt Behavior** (`_behaviour_block`) | 23 | `m6_distinct_locations`, station profiling (`m6_top_loc_mean_litres`, `m6_top_loc_store_attach`, `m6_top_loc_weekend_share`, `m6_top_loc_log_volume`), `m6_commuter_share`, discounts & adjustments. |
 | **Buy-'Til-You-Die (BTYD)** (`_btyd_block`) | 9 | Log-space L-BFGS-B fitted BG/NBD parameters: $P(\text{Alive})$ overall, fuel, and nonfuel; expected repeat baskets $\mathbb{E}[B_{m3}]$; Gamma-Gamma expected monetary spend per basket $\mathbb{E}[M]$; expected CLV monetary spend. |
+| **Longitudinal Panel Lags** (`_longitudinal_panel_block`) | 13 | Realized CLV targets at $T-3\text{m}$ and $T-6\text{m}$, delta realized CLV, tenure censoring flags, annualized rates for newly eligible customers, historical hurdle clearing flags, baseline dip ratios. |
+| **Granular SKU & Forecourt Basket** (`_granular_basket_block`) | 6 | Max single fill volume, full-tank fill share (non-round spend proportion), non-fuel SKU repeat concentration rate, mean max line item sequence, multi-item basket share, in-scope wallet share. |
 | **Statistical Hurdle Physics** (`_hurdle_physics_block`) | 17 | Rolling spend volatility (CV & std), hurdle tail exceedance Z-scores ($Z_{\text{fuel}}$, $Z_{\text{nonfuel}}$), attainability ratios vs historical capacity, relative competitive Z-difference ($Z_{\text{fuel}} - Z_{\text{nonfuel}}$). |
 | **Calendar & Surge** (`build_features`) | 7 | `cutoff_month_sin`, `cutoff_month_cos`, `is_holiday_quarter`, `cutoff_quarter`, `hist_december_active`, `hist_december_spend_log`, `dec24_surge_ratio`. |
-| **Total Features** | **231** | **Strictly numeric float64, deterministic column order, 100% leak-free.** |
+| **Total Features** | **250** | **Strictly numeric float64, deterministic column order, 100% leak-free.** |
 
 ---
 
