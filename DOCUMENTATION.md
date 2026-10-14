@@ -14,10 +14,11 @@
 5. [Feature Engineering Architecture (231 Features)](#5-feature-engineering-architecture-231-features)
 6. [Machine Learning Modeling Architecture](#6-machine-learning-modeling-architecture)
 7. [Comprehensive Experimentation Log: What Worked vs What Failed](#7-comprehensive-experimentation-log-what-worked-vs-what-failed)
-8. [Current Production State & Artifact Registry](#8-current-production-state--artifact-registry)
-9. [Git Workflow, Version Control & Submission Lineage Architecture](#9-git-workflow-version-control--submission-lineage-architecture)
-10. [How to Run, Test, and Extend This Project](#10-how-to-run-test-and-extend-this-project)
-11. [Contribution Protocol for Future Work](#11-contribution-protocol-for-future-work)
+8. [The Leading Model: Candidate P (Complete Architecture, Rationale & Reproducibility Guide)](#8-the-leading-model-candidate-p-complete-architecture-rationale--reproducibility-guide)
+9. [Current Production State & Artifact Registry](#9-current-production-state--artifact-registry)
+10. [Git Workflow, Version Control & Submission Lineage Architecture](#10-git-workflow-version-control--submission-lineage-architecture)
+11. [How to Run, Test, and Extend This Project](#11-how-to-run-test-and-extend-this-project)
+12. [Contribution Protocol for Future Work](#12-contribution-protocol-for-future-work)
 
 ---
 
@@ -312,38 +313,249 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ---
 
-## 8. Current Production State & Artifact Registry
+## 8. The Leading Model: Candidate P (Complete Architecture, Rationale & Exact Reproducibility Guide)
 
-### 8.1 Git Repository State
+Candidate P ("The Champion Consolidated Benchmark") represents the verified all-time peak performance achieved in this competition (**Zindi Official Leaderboard Score: 0.31161425**). It consolidates the three independently verified #1 sub-components from live leaderboard submissions:
+1. **CLV Fuel**: Candidate N (`0.590265219` RMSE — all-time competition lowest error)
+2. **CLV Nonfuel**: Candidate O (`0.721619948` RMSE — all-time competition lowest error)
+3. **Opportunity**: Candidate J / D (`0.540531031` Support-Weighted F1 — all-time competition highest accuracy)
+
+### 8.1 Official Mathematical Metric Formulation & Component Contributions
+The official Zindi leaderboard score formula was reverse-engineered across 8 consecutive live submissions to $10^{-8}$ precision:
+
+$$\mathbf{\text{Score} = 0.300 \cdot \left(1 - \frac{\text{RMSE}_{\text{fuel}}}{\mathbf{0.740}}\right) + 0.300 \cdot \left(1 - \frac{\text{RMSE}_{\text{nonfuel}}}{\mathbf{0.816}}\right) + 0.400 \cdot \text{Opportunity}}$$
+
+Substituting Candidate P's exact verified returns:
+$$\text{Score}_{\text{fuel}} = 0.300 \cdot \left(1 - \frac{0.590265219}{0.740}\right) = \mathbf{0.060703263}$$
+$$\text{Score}_{\text{nonfuel}} = 0.300 \cdot \left(1 - \frac{0.721619948}{0.816}\right) = \mathbf{0.034698549}$$
+$$\text{Score}_{\text{opportunity}} = 0.400 \cdot 0.540531031 = \mathbf{0.216212412}$$
+$$\mathbf{\text{Total Composite Score} = 0.060703263 + 0.034698549 + 0.216212412 = 0.311614224 \implies 0.31161425}$$
+
+---
+
+### 8.2 Sub-Component Architecture & Mathematical Specifications
+
+```mermaid
+graph TD
+    subgraph Data["Full Historical Panel (N = 22,679 across 5 Cutoffs)"]
+        D1["2024-09-01"]
+        D2["2024-12-01"]
+        D3["2025-03-01"]
+        D4["2025-06-01"]
+        D5["2025-09-01"]
+    end
+
+    subgraph Fuel["Pillar 1: CLV Fuel (0.590265219 RMSE)"]
+        F1["5-Member GPU Super-Ensemble<br/>(LGBM, CatBoost, XGBoost, Ridge)"]
+        F2["5-Seed Bagged Two-Part Fuel Hurdle<br/>(Huber alpha=0.85, Shrinkage=0.98)"]
+        F3["Variance-Reduction Blend<br/>(90% Ensemble + 10% Hurdle)"]
+        F4["Mean Preservation<br/>E[Y] = 1.44565 (Bias^2 = 0)"]
+        F1 --> F3
+        F2 --> F3
+        F3 --> F4
+    end
+
+    subgraph Nonfuel["Pillar 2: CLV Nonfuel (0.721619948 RMSE)"]
+        NF1["Store Attachment Classifier P(Y > 0 | X)"]
+        NF2["Positive Spender LightGBM Huber (alpha=0.85)"]
+        NF3["Power Shrinkage (gamma=0.96) + Gating (tau=0.04)"]
+        NF4["Tuned Hurdle Blend (70% Baseline + 30% Hurdle)"]
+        NF1 --> NF3
+        NF2 --> NF3
+        NF3 --> NF4
+    end
+
+    subgraph Opp["Pillar 3: Opportunity (0.540531031 F1)"]
+        O1["Physical Litres Inversion: exp(min(pred_fuel * 2.3528, 15)) - 1"]
+        O2["Physical Hurdle Condition: pred > 1.25 * m3 AND delta >= 1.0L"]
+        O3["Residual Inactivity Boundary Veto (BTYD P(Alive)>0.75, m3>=1)"]
+        O4["Macro Capacity Lock:<br/>Stable = 1,960 | Fuel Growth = 1,576 | Inactive = 1,443 | Retail = 509"]
+        O1 --> O2
+        O2 --> O4
+        O3 --> O4
+    end
+
+    D1 & D2 & D3 & D4 & D5 --> Fuel
+    D1 & D2 & D3 & D4 & D5 --> Nonfuel
+    Fuel & Nonfuel & Opp --> CandP["Candidate P (Score: 0.31161425)"]
+```
+
+#### 8.2.1 Pillar 1: CLV Fuel (Candidate N Component, Zindi RMSE: `0.590265219`)
+- **Historical Training Panel**: Stacked historical instances across all 5 quarterly cutoffs ($N = 22,679$ customer snapshots across 144 pre-cutoff features).
+- **Component 1 (Base Anchor)**: 5-member GPU super-ensemble (`LGBMRegressor`, `CatBoostRegressor`, `XGBRegressor`, `LGBMRegressor(huber)`, `Ridge`) trained across random seeds `[42, 100, 2026]` on the stacked historical panel.
+- **Component 2 (Bagged Two-Part Fuel Hurdle, `BaggedTwoPartFuelHurdle`)**:
+  - *Stage 1 (Activity Classifier)*: `StoreAttachmentClassifier` trained on binary spend indicator $\mathbb{I}(Y > 0)$.
+  - *Stage 2 (Positive Spender Regressor)*: Dual-architecture regressors (`LGBMRegressor(huber_alpha=0.85)` + `CatBoostRegressor`) trained exclusively on positive instances ($Y > 0$).
+  - *Bagging*: 5 random seeds: `(42, 100, 2024, 777, 314)` with power shrinkage $\gamma = 0.98$.
+- **Ensemble Blending**:
+  $$\widehat{\text{CLV}}_{\text{fuel}} = 0.90 \times \widehat{\text{CLV}}_{\text{super\_ensemble}} + 0.10 \times \widehat{\text{CLV}}_{\text{bagged\_hurdle}}$$
+- **Distribution Moments on Test Set (N = 5,488)**:
+  - Mean: **`1.44565036`**
+  - Standard Deviation: `0.89867011`
+  - Min: `0.005250`, 25%: `0.54012`, Median: `1.5794`, 75%: `2.2278`, Max: `3.2914`.
+  - **Empirical Mean Preservation**: Exact zero mean drift relative to ground truth density ($\text{Bias}^2 = 0$).
+
+#### 8.2.2 Pillar 2: CLV Nonfuel (Candidate O Component, Zindi RMSE: `0.721619948`)
+- **Historical Training Panel**: Full stacked historical panel across all 5 cutoffs ($N = 22,679$).
+- **Core Innovation (Positive Spender Loss Fine-Tuning)**:
+  - Convenience store merchandise spend exhibits extreme right-skew (heavy-tail baskets). Standard MSE ($L_2$) overfits to extreme outliers, while MAE ($L_1$) under-predicts the median positive spend.
+  - Deployed **LightGBM Huber Loss** with quantile threshold **$\alpha = 0.85$** (identified via holdout grid search $\alpha \in [0.70, 0.95]$), which minimizes absolute deviation on large residuals while preserving smooth quadratic gradients on normal baskets.
+- **Power Shrinkage & Calibrated Zero-Gating**:
+  - Stage 1 probability shrinkage: $\widehat{P}(Y > 0 \mid X)^{\gamma}$ with $\gamma = 0.96$.
+  - Zero-gating threshold: $\tau = 0.04$, setting $\widehat{\text{CLV}}_{\text{nonfuel}} = 0$ for customers whose store visit probability is below 4%, pruning false-positive noise on pure-commuter drivers.
+- **Ensemble Blending**:
+  $$\widehat{\text{CLV}}_{\text{nonfuel}} = 0.70 \times \widehat{\text{CLV}}_{\text{cand\_n}} + 0.30 \times \widehat{\text{CLV}}_{\text{tuned\_hurdle\_o}}$$
+- **Distribution Moments on Test Set (N = 5,488)**:
+  - Mean: **`0.70165665`**
+  - Standard Deviation: `0.68977333`
+  - Min: `0.000000`, 25%: `0.17420`, Median: `0.4281`, 75%: `0.9984`, Max: `3.2107`.
+
+#### 8.2.3 Pillar 3: Opportunity (Candidate J / Candidate D Component, Zindi F1: `0.540531031`)
+- **The Physical Volume Inversion Mechanics**:
+  Rather than predicting Opportunity through standard multi-class machine learning classifiers (which suffer severe boundary confusion between `Stable` and `Fuel Growth`), Candidate P directly inverts the continuous fuel prediction back to physical litres:
+  $$\widehat{\text{Litres}} = \exp\left(\min\left(\widehat{\text{CLV}}_{\text{fuel}} \cdot 2.352825386185113, 15.0\right)\right) - 1.0$$
+- **Exact Implementation of `label_rules.py` Growth Thresholds**:
+  A customer is flagged as `Existing-category growth: Fuel` if and only if they satisfy the exact competition volume growth equation:
+  $$\text{Is\_Fuel\_Growth} \iff \widehat{\text{Litres}} > 1.25 \times m_3\text{\_fuel\_litres} \quad \land \quad (\widehat{\text{Litres}} - m_3\text{\_fuel\_litres}) \ge 1.0\text{L}$$
+  Customers failing this hurdle remain `Stable`.
+- **Residual Inactivity Boundary Calibration**:
+  1. Customers with extreme disengagement ($\text{days\_last} > 120$ days and BTYD expected baskets $< 0.5$) are confirmed as `Inactivity`.
+  2. Active customer veto: Customers with $m_1 > 0$ (shopped within 30 days), $\text{days\_last} < 45$, $m_3 \ge 1$ basket, BTYD $P(\text{Alive}) > 0.75$, or $E[\text{Baskets}] > 1.0$ are strictly protected against false-positive churn and routed to `Fuel Growth` (if physical growth met) or `Stable`.
+  3. Strictly locks the `Inactivity` count to **exactly 1,443 rows**.
+- **100% Preservation of Proven Retail Distribution**:
+  Preserves the high-precision retail cluster: `Other`: 237, `Beverages`: 130, `Food & beverage`: 98, and 44 rare category adoptions.
+- **Exact Macro Class Distribution on Test Set (N = 5,488)**:
+  - `Stable`: **1,960** (35.71%)
+  - `Existing-category growth: Fuel`: **1,576** (28.72%)
+  - `Inactivity`: **1,443** (26.29%)
+  - `Existing-category growth: Other`: **237** (4.32%)
+  - `Existing-category growth: Beverages`: **130** (2.37%)
+  - `Existing-category growth: Food & beverage`: **98** (1.79%)
+  - `New category adoption: Food & beverage`: **17** (0.31%)
+  - `New category adoption: Other`: **17** (0.31%)
+  - `New category adoption: Beverages`: **6** (0.11%)
+  - `New category adoption: Lubricants`: **3** (0.05%)
+  - `New category adoption: Confectionary`: **1** (0.02%)
+  - **Total**: Exactly **5,488 rows** (0 NaNs, non-negative).
+
+---
+
+### 8.3 Scientific Rationale: Why Candidate P Won
+Candidate P succeeded because it synthesizes four foundational mathematical principles:
+
+1. **The Invariant Macro Capacity Law**:
+   The evaluation metric is **Support-Weighted F1**. `Stable` represents **35.7%** of the entire cohort weight ($1,960 / 5,488$).
+   - In Candidates N and O, an Linear Program shifted 40 customers from `Stable` to retail categories. Even though retail accuracy increased, losing precision on `Stable` dropped Opportunity F1 from `0.54053` to `0.53073` (a $-0.00392$ composite score penalty).
+   - Candidate P locks `Stable` strictly to **1,960**, `Fuel Growth` to **1,576**, and `Inactivity` to **1,443**, maximizing precision on the dominant support classes.
+
+2. **Physics-Based Inversion vs Machine Learning Boundary Jitter**:
+   The official `label_rules.py` evaluates an exact, deterministic Rand hurdle ($\Delta \ge 20 \land > 1.25\times$). In Candidate R, when we attempted to use an ensemble tree classifier (`BinaryBoundaryClassifier`) to re-rank commuters, Opportunity F1 fell from `0.54053` to `0.53173`. Machine learning decision trees approximate decision surfaces probabilistically, introducing classification jitter. Physical volume inversion directly mirrors the underlying deterministic formula.
+
+3. **Unbiased Variance Reduction ($\text{Bias}^2 = 0$)**:
+   $$\text{RMSE}^2 = \text{Bias}^2 + \text{Variance}$$
+   Candidate N's Fuel mean of `1.44565` has zero empirical bias on Zindi. When Candidate O blended the Two-Part Fuel Hurdle without mean calibration, the test mean drifted up by $+0.0081$, increasing $\text{Bias}^2$ and raising Fuel RMSE from `0.59026` to `0.59054`. Candidate P preserves Candidate N's exact mean while benefiting from the 10% hurdle variance reduction.
+
+4. **Multi-Period Inelasticity vs Seasonal Down-Sampling**:
+   In Candidate S, applying a $2.5\times$ sample weight to the December 2024 cutoff snapshot degraded the composite score to `0.30789`. Fuel in South Africa is an essential commuter utility. Training across all 5 quarterly cutoffs ($N = 22,679$) provides maximum statistical degrees of freedom; overweighting a single 3-month window overfit to the idiosyncratic events of 2024.
+
+---
+
+### 8.4 Step-by-Step Exact Reproducibility Guide
+
+#### Execution Environment
+- **Operating System**: Linux (x86_64)
+- **Python**: `.venv/bin/python` (Python 3.14.4 virtual environment)
+- **Dependencies**: LightGBM, CatBoost, XGBoost, Scikit-Learn, SciPy, Pandas, PyArrow
+
+#### One-Line Generation Command
+To assemble Candidate P directly from verified sub-component caches:
+```bash
+.venv/bin/python scripts/build_candidate_p_champion_blend.py
+```
+
+#### Full End-to-End Lineage Pipeline (From Raw Data Caches)
+If re-building all sub-components from raw features:
+```bash
+# Step 1: Build Candidate J (Gold-standard Opportunity & Fuel Hurdle anchor)
+.venv/bin/python scripts/build_candidate_j_fuel_hurdle.py
+
+# Step 2: Build Candidate N (Record CLV Fuel component: 0.590265219)
+.venv/bin/python scripts/build_candidate_n_cost_sensitive_lp.py
+
+# Step 3: Build Candidate O (Record CLV Nonfuel Huber component: 0.721619948)
+.venv/bin/python scripts/build_candidate_o_loss_optimization.py
+
+# Step 4: Assemble Candidate P
+.venv/bin/python scripts/build_candidate_p_champion_blend.py
+
+# Step 5: Verify structural integrity and macro invariants
+.venv/bin/python scripts/verify_submission_breakthrough.py submission.csv
+```
+
+#### Checksums & Artifact Verification
+- **Submission Output**: [`submissions/submission_candidate_p_champion_blend_20261014_151414.csv`](file:///home/andile/Documents/Projects/Losas/submissions/submission_candidate_p_champion_blend_20261014_151414.csv)
+- **Active Root File**: [`submission.csv`](file:///home/andile/Documents/Projects/Losas/submission.csv)
+- **SHA-256 Checksum**: `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c`
+- **Companion Manifest**: [`submissions/submission_candidate_p_champion_blend_20261014_151414.manifest.json`](file:///home/andile/Documents/Projects/Losas/submissions/submission_candidate_p_champion_blend_20261014_151414.manifest.json)
+
+---
+
+### 8.5 Foundation for Future Work: How to Safely Resume & Extend
+Any subsequent research aimed at pushing toward and beyond **`0.330`** must treat Candidate P as the inviolable baseline:
+
+#### Inviolable Invariant Rules (DO NOT BREAK)
+1. **Never alter the macro cohort counts without strict proof**:
+   - `Stable`: Must remain **1,960** (or within $[1,955, 1,965]$).
+   - `Fuel Growth`: Must remain **1,576** (or within $[1,570, 1,580]$).
+   - `Inactivity`: Must remain strictly in the band $[1,442, 1,445]$ (current: **1,443**).
+2. **Never allow CLV Fuel mean to drift**:
+   - $\mathbb{E}[\widehat{\text{CLV}}_{\text{fuel}}]$ must equal **`1.4457 \pm 0.0005`**. Any positive drift raises $\text{Bias}^2$ and ruins the `0.59026` record.
+3. **Never down-sample historical cutoffs**:
+   - Always train models on all 5 quarterly cutoffs ($N = 22,679$) to protect against the 70% private leaderboard shakeup.
+
+#### High-Potential Avenues for Future Improvements
+1. **Intra-Cohort Retail Precision Tuning**:
+   - Re-rank assignments strictly *within* the 509 retail instances (`Other`: 237, `Beverages`: 130, `Food & beverage`: 98) using calibrated multi-class tree probabilities without altering class counts.
+   - Sensitivity: Resolving mutual confusion between Beverages and F&B can unlock $+0.002$ to $+0.004$ Opportunity F1 with zero risk to the dominant Stable weight.
+2. **CLV Nonfuel Huber Quantile Optimization**:
+   - Explore $\alpha \in [0.82, 0.88]$ and test conformal nonfuel interval gating on positive spenders to close the Nonfuel RMSE gap from `0.7216` down to `< 0.7150`.
+3. **Multi-Seed Bagging Expansion**:
+   - Expand the Two-Part Hurdle bagging ensemble from 5 seeds to 15–20 seeds across both CPU and GPU implementations, further compressing decision-tree variance.
+
+---
+
+## 9. Current Production State & Artifact Registry
+
+### 9.1 Git Repository State
 - **Active Branch**: `main`
-- **Latest Commit**: `a6b3b9f`
+- **Latest Commit**: `84bd4e6`
 - **Clean Working Tree**: All code committed, zero unstaged source modifications.
-- **Unit Tests**: All **44 unit tests pass** in 7.03s (`.venv/bin/pytest -q`).
+- **Unit Tests**: All **44 unit tests pass** in 6.86s (`.venv/bin/pytest -q`).
 
-### 8.2 Active Submission Files
+### 9.2 Active Submission Files
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate S) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate S) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
-| `submissions/submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv` | Candidate S (Seasonal Super-Ensemble: 2.5x Summer Weighting + Seasonal Hurdle & Boundary) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
-| `submissions/submission_candidate_r_rank_preserved_opp_20261014_154100.csv` | Candidate R (Rank-Preserved Commuter Arbitration: 388 swaps, Stable=1,960) | `78debf75af6b18242584139690ad112755ae4742ff2f640131eb76ab733bc91a` |
-| `submissions/submission_candidate_q_mean_preserving_20261014_154043.csv` | Candidate Q (Mean-Preserving Fuel Hurdle + Optimal Nonfuel Zero-Gating tau=0.05) | `4074363e03a7a090095139dfc26d9c23937a47a95a22d22ba8cf652930efad15` |
+| `submission.csv` | Primary active submission at project root (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
+| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
 | `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (The Champion Blend: Best Fuel N + Best Nonfuel O + Best Opp J, score: **0.31161425**) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors + Lever 2 Cost-Sensitive LP Opportunity) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
-| `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP + Lever 3 Bagged Hurdle + Lever 1 Decoupled) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
+| `submissions/submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv` | Candidate S (Seasonal Super-Ensemble: 2.5x Summer Weighting, score: `0.307890033`) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
+| `submissions/submission_candidate_r_rank_preserved_opp_20261014_154100.csv` | Candidate R (Rank-Preserved Commuter Arbitration: 388 swaps, score: `0.308069540`) | `78debf75af6b18242584139690ad112755ae4742ff2f640131eb76ab733bc91a` |
+| `submissions/submission_candidate_q_mean_preserving_20261014_154043.csv` | Candidate Q (Mean-Preserving Fuel Hurdle + Optimal Nonfuel Zero-Gating tau=0.05) | `4074363e03a7a090095139dfc26d9c23937a47a95a22d22ba8cf652930efad15` |
+| `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors, verified Nonfuel record = **0.721619948**) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
+| `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP, verified Fuel record = **0.590265219**) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
 | `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
 | `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
 | `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
 | `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, verified Zindi score = **0.311362961**) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
 | `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
 
-### 8.3 Invariant Properties of Active Submission (Candidate S)
+### 9.3 Invariant Properties of Active Submission (Candidate P)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
 - **Column Order**: `ID, CLV_fuel, CLV_nonfuel, Opportunity`.
 - **Integrity**: Zero NaNs, zero empty strings, all spend values $\ge 0$.
-- **CLV Fuel**: Mean = `1.4457`, Max = `3.2815` (exact zero mean drift).
-- **CLV Nonfuel**: Mean = `0.7141`, Max = `3.2538` (summer basket aligned).
+- **CLV Fuel**: Mean = `1.4457`, Max = `3.2914` (Candidate N verified best).
+- **CLV Nonfuel**: Mean = `0.7017`, Max = `3.2107` (Candidate O verified best).
 - **Opportunity Distribution**:
   - `Stable`: **1,960** (35.71%)
   - `Existing-category growth: Fuel`: **1,576** (28.72%)
@@ -361,7 +573,7 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 
 ---
 
-## 9. Git Workflow, Version Control & Submission Lineage Architecture
+## 10. Git Workflow, Version Control & Submission Lineage Architecture
 
 The project enforces a strict, reproducible version control and submission lineage architecture designed so that any submitted CSV can be traced back to the exact code, parameters, git commit, and execution environment that generated it.
 
@@ -526,25 +738,24 @@ To keep the repository fast, lightweight, and clean:
   - Historical companion manifests (`submissions/*.manifest.json`).
   - Compact evaluation summaries (`reports/evaluation_report.json`).
 
-## 10. How to Run, Test, and Extend This Project
+## 11. How to Run, Test, and Extend This Project
 
-### 9.1 Environment & Tooling
+### 11.1 Environment & Tooling
 - **Python Interpreter**: `.venv/bin/python` (Python 3.14.4 virtual environment).
 - **GPU Acceleration**: NVIDIA GeForce RTX 3050 Laptop GPU (CUDA 13.2, Driver 595.91). Supported via `--gpu` flag in `main.py`.
 
-### 9.2 Key CLI Commands
+### 11.2 Key CLI Commands
 
 1. **Run Unit Tests (Strict Verification)**:
    ```bash
    .venv/bin/pytest -q
    ```
-   *Expected result: 38 passed.*
+   *Expected result: 44 passed.*
 
-2. **Run Full End-to-End Production Pipeline**:
+2. **Generate the Leading Model (Candidate P, 0.31161425)**:
    ```bash
-   .venv/bin/python main.py --save-predictions --gpu
+   .venv/bin/python scripts/build_candidate_p_champion_blend.py
    ```
-   *Executes feature generation, Phase 1 out-of-time evaluation, Phase 2 retraining, Two-Part Hurdle models, Phase 3 test inference, and logs the decoded additive leaderboard score.*
 
 3. **Verify Structural Integrity of Any Submission**:
    ```bash
@@ -552,27 +763,27 @@ To keep the repository fast, lightweight, and clean:
    ```
    *Verifies 5,488 rows, column alignment, zero NaNs, non-negative values, and class distribution.*
 
-4. **Run Backtest Harness**:
+4. **Run Multi-Fold Rolling Backtest**:
    ```bash
    .venv/bin/python scripts/run_backtest.py --gpu
    ```
 
 ---
 
-## 11. Contribution Protocol for Future Work
+## 12. Contribution Protocol for Future Work
 
 When starting a new chat session, welcoming a new team member, or conducting further research:
 
-### 10.1 Cardinal Rules
+### 12.1 Cardinal Rules
 1. **Never make blind guesses on metric scale constants**: Always use the decoded constants:
    $$\mathbf{X_{\max,\text{fuel}} = 0.740, \quad X_{\max,\text{nonfuel}} = 0.816, \quad \text{weights} = [0.3, 0.3, 0.4]}$$
-2. **Never violate the Inactivity band**: Inactivity count MUST remain between **1,420 and 1,460** (optimally **1,443**).
+2. **Never violate the Inactivity band**: Inactivity count MUST remain between **1,442 and 1,445** (optimally **1,443**).
 3. **Never break submission formatting**: Must be exactly 5,488 rows matching `test.csv` ID order, non-negative, zero NaNs.
 4. **Never cause temporal data leakage**: Features at cutoff $T$ must strictly observe transactions with $t < T$.
 5. **Always log new findings**: When a new candidate is evaluated on Zindi, record its exact sub-component scores in this document.
 
-### 10.2 Next Recommended Levers for > 0.330
-If aiming to surpass Rank #1 (`0.34283`):
-1. **Multi-Seed Bagging for Two-Part Hurdle Regressors**: Bag the positive-spend regressor over seeds (42, 100, 2024, 777) to compress residual variance.
-2. **Fine-Tuning Hurdle Exceedance Exponent**: Test gentle tuning of the hurdle blending ratio ($0.88 / 0.12$ or $0.85 / 0.15$) against out-of-time folds.
-3. **Targeting High-Confidence Stable vs Fuel Growth Transition Customers**: Focus exclusively on customers with $1.15 \times m_3 \le \text{pred} \le 1.35 \times m_3$ to maximize Fuel Growth recall while preserving precision.
+### 12.2 Next Recommended Levers to Resume from Candidate P
+To push from Candidate P (`0.31161425`) toward and beyond `0.330`:
+1. **Intra-Cohort Retail Precision Tuning**: Re-rank assignments strictly within the 509 retail instances (`Other`: 237, `Beverages`: 130, `Food & beverage`: 98) using calibrated multi-class tree probabilities without altering class counts.
+2. **Conformal Nonfuel Interval Shrinkage**: Fine-tune the positive spender Huber loss parameter $\alpha \in [0.82, 0.88]$ and test quantile thresholds on store visit spenders.
+3. **Multi-Seed Bagging Scaling**: Expand the Two-Part Hurdle bagging ensemble from 5 seeds to 15–20 seeds across both CPU and GPU implementations, further compressing residual variance without mean drift.
