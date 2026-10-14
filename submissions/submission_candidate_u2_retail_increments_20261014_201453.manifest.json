@@ -1,0 +1,56 @@
+{
+  "name": "candidate_u2_retail_increments",
+  "filename": "submission_candidate_u2_retail_increments_20261014_201453.csv",
+  "sha256": "1f5bed19b6ecda50c435b41bff8921e8d12ad6499c603f7e306f15613bb35e39",
+  "timestamp": "20261014_201453",
+  "row_count": 5488,
+  "clv_fuel_mean": 1.445650359224524,
+  "clv_nonfuel_mean": 0.7016566530602794,
+  "macro_counts": {
+    "Stable": 1960,
+    "Existing-category growth: Fuel": 1576,
+    "Inactivity": 1443,
+    "Retail Cohort Total": 509
+  },
+  "swaps_performed_in_retail": 5,
+  "swapped_customers": [
+    {
+      "ID": "4001000000584",
+      "Candidate_V_Label": "Existing-category growth: Other",
+      "Candidate_U2_Label": "Existing-category growth: Beverages"
+    },
+    {
+      "ID": "4001000000875",
+      "Candidate_V_Label": "Existing-category growth: Beverages",
+      "Candidate_U2_Label": "Existing-category growth: Other"
+    },
+    {
+      "ID": "4001000003086",
+      "Candidate_V_Label": "Existing-category growth: Food & beverage",
+      "Candidate_U2_Label": "Existing-category growth: Other"
+    },
+    {
+      "ID": "4001000005360",
+      "Candidate_V_Label": "Existing-category growth: Other",
+      "Candidate_U2_Label": "New category adoption: Other"
+    },
+    {
+      "ID": "4001000005377",
+      "Candidate_V_Label": "New category adoption: Other",
+      "Candidate_U2_Label": "Existing-category growth: Food & beverage"
+    }
+  ],
+  "verified_zindi_components": {
+    "clv_fuel_rmse": 0.590265219,
+    "clv_nonfuel_rmse": 0.721619948,
+    "opportunity_f1_candidate_v": 0.541843185
+  },
+  "scientific_basis": [
+    "Category-specific historical monthly spend rate (m6_spend / 6.0) replacing global avg_basket",
+    "Rule 5 & Rule 6 physical qualification hurdle: R_future >= max(1.25 * m3_spend, m3_spend + 20)",
+    "Expected log monetary increment score S_{i, c} rewarding genuine high-increment categories",
+    "509x509 Hungarian optimal transport matching preserving exact retail seat counts",
+    "100% preservation of Candidate V's 9 verified commuter swaps (Stable=1960, FG=1576)",
+    "100% preservation of Candidate V's verified regression outputs (0.590265 fuel, 0.721620 nonfuel)"
+  ]
+}
