@@ -47,13 +47,17 @@ class DecomposedCategoryModel:
         delta_grow_rand: np.ndarray,
         y_adopt: np.ndarray,
         spend_adopt_rand: np.ndarray,
+        is_active: np.ndarray | None = None,
         sample_weight: np.ndarray | None = None,
     ) -> "DecomposedCategoryModel":
         num_cols = X.select_dtypes(include=[np.number]).columns
         X_df = X[num_cols].fillna(0.0)
 
-        # 1. Growth model (trained on customers with prior history h_ever == True)
-        mask_grow_eligible = (h_ever == 1)
+        if is_active is None:
+            is_active = np.ones(len(h_ever), dtype=int)
+
+        # 1. Growth model: strictly condition on (h_ever == 1) AND (is_active == 1)
+        mask_grow_eligible = (h_ever == 1) & (is_active == 1)
         if mask_grow_eligible.sum() > 20 and y_grow[mask_grow_eligible].sum() >= 5:
             X_g = X_df.iloc[mask_grow_eligible]
             y_g = y_grow[mask_grow_eligible]
@@ -91,12 +95,12 @@ class DecomposedCategoryModel:
                 )
                 self.reg_grow.fit(X_pos_g, log_inc, sample_weight=sw_pos_g)
                 resids = log_inc - self.reg_grow.predict(X_pos_g)
-                self.sigma_grow = float(np.std(resids)) if len(resids) > 1 else 0.5
+                self.sigma_grow = float(np.std(resids) * 1.35) if len(resids) > 1 else 0.5
         else:
             self.base_rate_grow = float(y_grow[mask_grow_eligible].mean()) if mask_grow_eligible.sum() > 0 else 0.0
 
-        # 2. Adoption model (trained on customers without prior history h_ever == False)
-        mask_adopt_eligible = (h_ever == 0)
+        # 2. Adoption model: strictly condition on (h_ever == 0) AND (is_active == 1)
+        mask_adopt_eligible = (h_ever == 0) & (is_active == 1)
         if mask_adopt_eligible.sum() > 20 and y_adopt[mask_adopt_eligible].sum() >= 5:
             X_a = X_df.iloc[mask_adopt_eligible]
             y_a = y_adopt[mask_adopt_eligible]
@@ -134,7 +138,7 @@ class DecomposedCategoryModel:
                 )
                 self.reg_adopt.fit(X_pos_a, log_spend, sample_weight=sw_pos_a)
                 resids = log_spend - self.reg_adopt.predict(X_pos_a)
-                self.sigma_adopt = float(np.std(resids)) if len(resids) > 1 else 0.5
+                self.sigma_adopt = float(np.std(resids) * 1.35) if len(resids) > 1 else 0.5
         else:
             self.base_rate_adopt = float(y_adopt[mask_adopt_eligible].mean()) if mask_adopt_eligible.sum() > 0 else 0.0
 
@@ -309,6 +313,7 @@ class VectorizedMonteCarloSimulator:
                 delta_g[:, i],
                 y_adopt[:, i],
                 spend_a[:, i],
+                is_active=gt_train["is_active"],
                 sample_weight=sample_weight,
             )
         logger.info("Fitted all 24 sub-category models successfully.")
