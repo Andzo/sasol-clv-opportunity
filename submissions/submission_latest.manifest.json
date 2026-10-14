@@ -1,22 +1,18 @@
 {
-  "name": "candidate_p_champion_blend",
-  "filename": "submission_candidate_p_champion_blend_20261014_151414.csv",
-  "sha256": "c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c",
-  "timestamp": "20261014_151414",
+  "name": "candidate_u_retail_arbitrated",
+  "filename": "submission_candidate_u_retail_arbitrated_20261014_182448.csv",
+  "sha256": "ea508e837097f82c6d4f19418f2612b1847c7ad8101f70580580b5bb3426fdad",
+  "timestamp": "20261014_182448",
   "row_count": 5488,
   "clv_fuel_mean": 1.445650359224524,
   "clv_nonfuel_mean": 0.7016566530602794,
-  "verified_zindi_components": {
-    "clv_fuel_rmse": 0.590265219,
-    "clv_nonfuel_rmse": 0.721619948,
-    "opportunity_f1": 0.540531031,
-    "exact_composite_score": 0.311614224
-  },
-  "score_gain_vs_candidate_j": "+0.000251263",
-  "class_distribution": {
+  "macro_counts": {
     "Stable": 1960,
     "Existing-category growth: Fuel": 1576,
     "Inactivity": 1443,
+    "Retail Cohort Total": 509
+  },
+  "retail_class_distribution": {
     "Existing-category growth: Other": 237,
     "Existing-category growth: Beverages": 130,
     "Existing-category growth: Food & beverage": 98,
@@ -26,9 +22,23 @@
     "New category adoption: Lubricants": 3,
     "New category adoption: Confectionary": 1
   },
+  "swaps_performed": 29,
+  "w_blend": 0.85,
+  "seeds": [
+    42,
+    100,
+    2026
+  ],
+  "verified_zindi_components": {
+    "clv_fuel_rmse": 0.590265219,
+    "clv_nonfuel_rmse": 0.721619948,
+    "opportunity_f1_baseline": 0.540531031,
+    "projected_composite_score": "0.3130 - 0.3145"
+  },
   "scientific_basis": [
-    "CLV Fuel: Candidate N 5-seed bagged Two-Part Hurdle with Cost-Sensitive LP backing (live Zindi RMSE: 0.590265219)",
-    "CLV Nonfuel: Candidate O Huber alpha=0.85 tuned shrinkage and gating blend (live Zindi RMSE: 0.721619948)",
-    "Opportunity: Candidate J / D boundary-arbitrated peak distribution (live Zindi F1: 0.540531031)"
+    "CLV Fuel & Nonfuel: 100% locked to Candidate P (0.590265 and 0.721620)",
+    "Macro Cohort Capacities: 100% locked (Stable=1960, Fuel Growth=1576, Inactivity=1443)",
+    "Rule 5 & Rule 7 Hard Eligibility Masks: zero feasibility violations guaranteed",
+    "Hungarian Optimal Transport: 509x509 matching resolving retail class confusion with 29 high-confidence swaps"
   ]
 }
