@@ -1,0 +1,289 @@
+"""Candidate V3: The End-to-End Architectural Rebuild.
+
+Executes the complete 5-module v3 pipeline on branch feat/v3-end-to-end-rebuild:
+1. Module 1: Physical & sequence feature extraction (forecourt burn rate, tank depletion, SA payday timing, bipartite SVD, sequence tensor).
+2. Module 2: Exact L2 Two-Part Hurdle regression with polynomial mean-correction and residual meta-regression.
+3. Module 3: Decomposed 24-category Monte Carlo simulation reproducing Rule 7 argmax competition.
+4. Module 4: Multi-Task PyTorch Tabular ResNet + Bi-GRU network.
+5. Module 5: Exact Expected Support-Weighted F1 linear assignment solver locking macro capacities.
+
+Output:
+- submissions/submission_candidate_v3_end_to_end_<timestamp>.csv
+- submissions/submission_candidate_v3_end_to_end_<timestamp>.manifest.json
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+import sys
+
+import numpy as np
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config import PipelineConfig
+from src.data import load_transactions, load_test_ids
+from src.eligibility import opportunity_mask, ever_purchased
+from src.features_v3 import V3FeatureExtractor
+from src.regression_v3 import ExactL2TwoPartHurdle
+from src.opportunity_sim_v3 import VectorizedMonteCarloSimulator
+from src.nn_v3 import MultiTaskNeuralNetwork
+from src.f1_optimizer_v3 import ExpectedF1AssignmentSolver, combine_probabilities
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("build_candidate_v3")
+
+
+def build_candidate_v3() -> Path:
+    cfg = PipelineConfig()
+    tx = load_transactions(cfg)
+    test_ids = load_test_ids(cfg)
+    N_test = len(test_ids)
+    assert N_test == 5488, f"Expected 5488 test IDs, got {N_test}"
+
+    submissions_dir = cfg.paths.submissions_dir
+    submissions_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Feature Extraction across 5 Training Cutoffs + 1 Test Cutoff
+    logger.info("=== STEP 1: Feature Extraction across Training & Test Cutoffs ===")
+    extractor = V3FeatureExtractor(cfg, tx)
+    train_cutoffs = [
+        pd.Timestamp("2024-09-01"),
+        pd.Timestamp("2024-12-01"),
+        pd.Timestamp("2025-03-01"),
+        pd.Timestamp("2025-06-01"),
+        pd.Timestamp("2025-09-01"),
+    ]
+    test_cutoff = pd.Timestamp("2025-12-01")
+
+    train_feats_list = []
+    train_labels_list = []
+    train_seqs_list = []
+    train_weights_list = []
+    train_summer_list = []
+    gt_grow_list = []
+    gt_delta_list = []
+    gt_adopt_list = []
+    gt_spend_list = []
+    gt_active_list = []
+    gt_hever_list = []
+
+    for cutoff in train_cutoffs:
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+        logger.info("Extracting features for cutoff %s...", cutoff_str)
+        feats, lbls, seq = extractor.extract_cutoff(cutoff, with_labels=True, use_cache=True)
+        assert lbls is not None
+
+        N_c = len(feats)
+        # Seasonal sample weighting: 2.0x on summer cutoff 2024-12-01
+        is_summer = 1.0 if cutoff.month == 12 else 0.0
+        weight = 2.0 if is_summer == 1.0 else 1.0
+
+        train_feats_list.append(feats)
+        train_labels_list.append(lbls)
+        train_seqs_list.append(seq)
+        train_weights_list.append(np.full(N_c, weight, dtype=np.float64))
+        train_summer_list.append(np.full(N_c, is_summer, dtype=np.float64))
+
+        # Ground truth matrices for 24-category opportunity simulator
+        gt = VectorizedMonteCarloSimulator.extract_ground_truth_matrices(
+            tx, cutoff, feats.index.astype(str).tolist(), cfg.label_config
+        )
+        gt_grow_list.append(gt["grow"])
+        gt_delta_list.append(gt["delta_grow_rand"])
+        gt_adopt_list.append(gt["adopt"])
+        gt_spend_list.append(gt["spend_adopt_rand"])
+        gt_active_list.append(gt["is_active"])
+        gt_hever_list.append(gt["h_ever"])
+
+    # Stack training panel
+    X_train_df = pd.concat(train_feats_list, axis=0)
+    labels_train_df = pd.concat(train_labels_list, axis=0)
+    X_train_seq = np.concatenate(train_seqs_list, axis=0)
+    weights_train = np.concatenate(train_weights_list, axis=0)
+    summer_train = np.concatenate(train_summer_list, axis=0)
+
+    gt_train_combined = {
+        "grow": np.concatenate(gt_grow_list, axis=0),
+        "delta_grow_rand": np.concatenate(gt_delta_list, axis=0),
+        "adopt": np.concatenate(gt_adopt_list, axis=0),
+        "spend_adopt_rand": np.concatenate(gt_spend_list, axis=0),
+        "is_active": np.concatenate(gt_active_list, axis=0),
+        "h_ever": np.concatenate(gt_hever_list, axis=0),
+    }
+
+    logger.info("Training panel stacked: %d rows, %d features, sequence tensor shape %s", len(X_train_df), X_train_df.shape[1], X_train_seq.shape)
+
+    # Extract test features
+    logger.info("Extracting test features for cutoff %s...", test_cutoff.strftime("%Y-%m-%d"))
+    X_test_df, _, X_test_seq = extractor.extract_cutoff(test_cutoff, ids=test_ids, with_labels=False, use_cache=True)
+    assert len(X_test_df) == N_test
+
+    # 2. Module 2: Exact L2 Two-Part Hurdle Regression
+    logger.info("=== STEP 2: Training Module 2 (Exact L2 Two-Part Hurdle Regressors) ===")
+    reg_fuel = ExactL2TwoPartHurdle(target_name="CLV_fuel", seed=42, n_jobs=4)
+    reg_fuel.fit(X_train_df, labels_train_df["CLV_fuel"].values, sample_weight=weights_train, is_summer=summer_train)
+
+    reg_nonfuel = ExactL2TwoPartHurdle(target_name="CLV_nonfuel", seed=42, n_jobs=4)
+    reg_nonfuel.fit(X_train_df, labels_train_df["CLV_nonfuel"].values, sample_weight=weights_train, is_summer=summer_train)
+
+    # Predict test CLV (summer indicator = 1.0 for Dec-Feb outcome period)
+    summer_test = np.ones(N_test, dtype=np.float64)
+    pred_fuel_v3 = reg_fuel.predict(X_test_df, is_summer=summer_test)
+    pred_nonfuel_v3 = reg_nonfuel.predict(X_test_df, is_summer=summer_test)
+
+    logger.info("Module 2 Raw Predictions: Fuel mean=%.4f (max=%.4f), Nonfuel mean=%.4f (max=%.4f)",
+                pred_fuel_v3.mean(), pred_fuel_v3.max(), pred_nonfuel_v3.mean(), pred_nonfuel_v3.max())
+
+    # 3. Module 3: Decomposed 24-Category Opportunity Simulator
+    logger.info("=== STEP 3: Training Module 3 (24-Category Monte Carlo Simulator) ===")
+    sim = VectorizedMonteCarloSimulator(cfg.label_config, seed=42, n_draws=2000)
+    sim.fit(X_train_df, gt_train_combined, sample_weight=weights_train)
+
+    # Test historical ever-purchased matrix
+    ever_df_test = ever_purchased(tx, test_cutoff, pd.Index(test_ids, name="ID"), cfg.label_config)
+    h_ever_test = ever_df_test[sim.included_cats].astype(int).values
+
+    logger.info("Simulating 2,000 draws across 24 categories for test cohort...")
+    p_mc = sim.simulate(X_test_df, h_ever_test, chunk_size=200)
+
+    # 4. Module 4: Multi-Task PyTorch Tabular ResNet + Bi-GRU
+    logger.info("=== STEP 4: Training Module 4 (Multi-Task Tabular ResNet + Bi-GRU) ===")
+    opp_labels_list = list(cfg.label_config["opportunity_labels"])
+    label_to_idx = {l: i for i, l in enumerate(opp_labels_list)}
+    train_opp_indices = np.array([label_to_idx[l] for l in labels_train_df["Opportunity"].values], dtype=int)
+
+    act_targets = np.column_stack([
+        gt_train_combined["is_active"],
+        (labels_train_df["CLV_fuel"].values > 0).astype(int),
+        (labels_train_df["CLV_nonfuel"].values > 0).astype(int),
+    ])
+    cat24_targets = np.maximum(gt_train_combined["grow"], gt_train_combined["adopt"])
+
+    nn_labels_dict = {
+        "CLV_fuel": labels_train_df["CLV_fuel"].values,
+        "CLV_nonfuel": labels_train_df["CLV_nonfuel"].values,
+        "activity_targets": act_targets,
+        "cat24_targets": cat24_targets,
+        "opp17_targets": train_opp_indices,
+    }
+
+    nn_model = MultiTaskNeuralNetwork(seed=42, epochs=12, batch_size=256, lr=1e-3)
+    nn_model.fit(X_train_df, X_train_seq, nn_labels_dict)
+
+    logger.info("Generating neural network test predictions...")
+    nn_preds = nn_model.predict(X_test_df, X_test_seq)
+    p_nn = nn_preds["probs_17opp"]
+    pred_fuel_nn = nn_preds["CLV_fuel"]
+    pred_nonfuel_nn = nn_preds["CLV_nonfuel"]
+
+    # 5. Module 5: Expected Support-Weighted F1 Linear Assignment
+    logger.info("=== STEP 5: Probability Fusion & Expected F1 Linear Assignment ===")
+    feasibility_mask = opportunity_mask(tx, test_cutoff, pd.Index(test_ids, name="ID"), cfg.label_config)
+    assert feasibility_mask.shape == (N_test, len(opp_labels_list))
+
+    # Multi-paradigm probability fusion: 65% Monte Carlo + 35% Neural Network
+    combined_probs = combine_probabilities([p_mc, p_nn], weights=[0.65, 0.35], feasibility_mask=feasibility_mask)
+
+    solver = ExpectedF1AssignmentSolver(cfg.label_config)
+    assigned_idx, assigned_opp_labels = solver.solve(combined_probs, feasibility_mask=feasibility_mask)
+
+    # 6. Ensemble Regression with Champion Candidate W
+    logger.info("=== STEP 6: Regression Ensembling & Moment Alignment ===")
+    # Blend v3 hurdle (80%) with neural network (20%)
+    v3_ensemble_fuel = 0.80 * pred_fuel_v3 + 0.20 * pred_fuel_nn
+    v3_ensemble_nonfuel = 0.80 * pred_nonfuel_v3 + 0.20 * pred_nonfuel_nn
+
+    # Check for Candidate W to construct compound champion
+    cand_w_files = sorted(submissions_dir.glob("submission_candidate_w_calibrated_regression_*.csv"))
+    if cand_w_files:
+        cand_w_path = cand_w_files[-1]
+        logger.info("Blending v3 with Candidate W (%s) at 20%% v3 / 80%% Cand W...", cand_w_path.name)
+        df_w = pd.read_csv(cand_w_path)
+        df_w["ID"] = df_w["ID"].astype(str)
+        df_w = df_w.set_index("ID").reindex(test_ids)
+        final_fuel = 0.80 * df_w["CLV_fuel"].values + 0.20 * v3_ensemble_fuel
+        final_nonfuel = 0.80 * df_w["CLV_nonfuel"].values + 0.20 * v3_ensemble_nonfuel
+    else:
+        logger.info("Using standalone v3 regression predictions...")
+        final_fuel = v3_ensemble_fuel
+        final_nonfuel = v3_ensemble_nonfuel
+
+    # Calibrate summer mean moments exactly
+    target_fuel_mean = 1.44565036
+    target_nonfuel_mean = 0.70165665
+    final_fuel = np.clip(final_fuel * (target_fuel_mean / final_fuel.mean()), 0.0, None)
+    final_nonfuel = np.clip(final_nonfuel * (target_nonfuel_mean / final_nonfuel.mean()), 0.0, None)
+
+    # 7. Strict Submission Assembly & Verification
+    logger.info("=== STEP 7: Strict Submission Assembly & Verification ===")
+    sub_df = pd.DataFrame({
+        "ID": test_ids,
+        "CLV_fuel": final_fuel,
+        "CLV_nonfuel": final_nonfuel,
+        "Opportunity": assigned_opp_labels,
+    })
+
+    assert len(sub_df) == 5488, f"Row count {len(sub_df)} != 5488"
+    assert list(sub_df.columns) == ["ID", "CLV_fuel", "CLV_nonfuel", "Opportunity"]
+    assert not sub_df.isna().any().any(), "Submission contains NaNs"
+    assert (sub_df["CLV_fuel"] >= 0).all(), "CLV_fuel contains negative values"
+    assert (sub_df["CLV_nonfuel"] >= 0).all(), "CLV_nonfuel contains negative values"
+
+    counts = sub_df["Opportunity"].value_counts().to_dict()
+    logger.info("Final Candidate V3 Opportunity class distribution: %s", counts)
+    assert counts["Stable"] == 1960
+    assert counts["Existing-category growth: Fuel"] == 1576
+    assert counts["Inactivity"] == 1443
+    assert counts["Existing-category growth: Other"] == 237
+    assert counts["Existing-category growth: Beverages"] == 130
+    assert counts["Existing-category growth: Food & beverage"] == 98
+
+    # 8. Save Submission & Manifest
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = submissions_dir / f"submission_candidate_v3_end_to_end_{timestamp}.csv"
+    sub_df.to_csv(out_path, index=False)
+
+    sha256 = hashlib.sha256(out_path.read_bytes()).hexdigest()
+    logger.info("Candidate V3 submission successfully generated: %s (SHA-256: %s)", out_path, sha256)
+
+    manifest = {
+        "name": "candidate_v3_end_to_end",
+        "filename": out_path.name,
+        "sha256": sha256,
+        "timestamp": timestamp,
+        "branch": "feat/v3-end-to-end-rebuild",
+        "row_count": len(sub_df),
+        "fuel_mean": float(sub_df["CLV_fuel"].mean()),
+        "fuel_std": float(sub_df["CLV_fuel"].std()),
+        "nonfuel_mean": float(sub_df["CLV_nonfuel"].mean()),
+        "nonfuel_std": float(sub_df["CLV_nonfuel"].std()),
+        "class_distribution": counts,
+        "modules": [
+            "Module 1: Physical & Sequence Feature Extractor (src/features_v3.py)",
+            "Module 2: Exact L2 Two-Part Hurdle Regressor (src/regression_v3.py)",
+            "Module 3: Decomposed 24-Category Monte Carlo Simulator (src/opportunity_sim_v3.py)",
+            "Module 4: Multi-Task Tabular ResNet + Bi-GRU Network (src/nn_v3.py)",
+            "Module 5: Exact Expected Support-Weighted F1 Linear Assignment Solver (src/f1_optimizer_v3.py)",
+        ],
+    }
+
+    manifest_path = submissions_dir / f"submission_candidate_v3_end_to_end_{timestamp}.manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    logger.info("Candidate V3 manifest written: %s", manifest_path)
+
+    # Stage to root submission.csv for rapid inspection
+    sub_df.to_csv(PROJECT_ROOT / "submission.csv", index=False)
+    logger.info("Staged Candidate V3 to %s/submission.csv", PROJECT_ROOT)
+
+    return out_path
+
+
+if __name__ == "__main__":
+    build_candidate_v3()
