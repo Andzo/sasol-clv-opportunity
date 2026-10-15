@@ -120,9 +120,10 @@ class ExpectedF1AssignmentSolver:
         assert len(seat_classes_arr) == 509
 
         # Construct anchor probability matrix (smoothed one-hot of verified Candidate U/V retail labels)
-        P_anchor = np.full((n_retail, self.K), 0.01 / self.K, dtype=np.float64)
+        p_base = 0.65
+        P_anchor = np.full((n_retail, self.K), (1.0 - p_base) / (self.K - 1), dtype=np.float64)
         for i, lbl in enumerate(retail_labels_cur):
-            P_anchor[i, self.label_to_idx[str(lbl)]] = 0.99
+            P_anchor[i, self.label_to_idx[str(lbl)]] = p_base
 
         P_new_sub = new_probs[retail_indices].copy()
         feas_sub = feasibility_mask[retail_indices]
@@ -132,7 +133,7 @@ class ExpectedF1AssignmentSolver:
             P_new_sub[:, self.label_to_idx[c_lbl]] = 0.0
         P_new_sub = np.where(feas_sub, P_new_sub, 0.0)
         row_sums = P_new_sub.sum(axis=1, keepdims=True)
-        P_new_sub = np.where(row_sums > 1e-8, P_new_sub / np.maximum(row_sums, 1e-8), P_anchor)
+        P_new_sub = np.where(row_sums > 1e-8, P_new_sub / np.maximum(row_sums, 1e-8), 1.0 / self.K)
 
         # Blend anchor with new multi-paradigm probabilities
         P_blend = anchor_weight * P_anchor + (1.0 - anchor_weight) * P_new_sub
