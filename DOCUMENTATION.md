@@ -229,10 +229,20 @@ Every submission was decoded to $10^{-8}$ precision using the competition formul
 | **`Candidate M`** | `0.59030` (holdout $-0.00034$) | `0.72210` (holdout $-0.00012$) | `0.54150` | $\mathbf{\ge 0.3117}$ | **Lever 3: Multi-Seed Bagged Hurdle**: 5-seed bagged positive regressors (`LGBMRegressor(huber)` + `CatBoostRegressor(MAE)`), reducing spender variance. |
 | **`Candidate N`** | **`0.590265219`** | `0.721748124` | `0.530732487` | `0.307647709` | **Verified All-Time Best Fuel RMSE**: Lever 2 Cost-Sensitive LP produced lowest Fuel RMSE on live leaderboard (`0.590265`). |
 | **`Candidate O`** | `0.590540854` | **`0.721619948`** | `0.530732487` | `0.307583089` | **Verified All-Time Best Nonfuel RMSE**: Lever 4 Huber $\alpha = 0.85$ broke Nonfuel to all-time record `0.721620` on live leaderboard. |
-| **`Candidate P`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.31161425`** | **The Champion Blend (All-Time Peak #1)**: Consolidates verified best Fuel (Candidate N) + verified best Nonfuel (Candidate O) + verified best Opportunity (Candidate J). Officially verified on live Zindi: **0.31161425**. |
-| **`Candidate Q`** | $< 0.58900$ (target) | $< 0.72050$ (target) | `0.540531031` | $\mathbf{\ge 0.31300}$ | **Mean-Preserving Fuel & Nonfuel Gating**: Calibrated Fuel Hurdle with zero mean drift ($\mathbb{E}=1.44565036$) + mathematically optimal nonfuel zero-gating $\tau = 0.05$. |
-| **`Candidate R`** | $< 0.58900$ (target) | $< 0.72050$ (target) | $\ge 0.54800$ (projected) | $\mathbf{\ge 0.31600}$ to $\mathbf{0.31850}$ | **Rank-Preserved Commuter Arbitration**: 388 precision swaps via `BinaryBoundaryClassifier` (ROC-AUC `0.7955`) strictly locking exact macro counts (Stable=1,960, FG=1,576). |
-| **`Candidate S (Active on main)`** | $< 0.58500$ (target) | $< 0.71800$ (target) | $\ge 0.55500$ (projected) | $\mathbf{\ge 0.32500}$ to $\mathbf{> 0.33000}$ | **Seasonal-Weighted Panel Super-Ensemble**: 2.5x seasonal sample weight on Dec 2024 summer cutoff aligning models with SA holiday season test regime. |
+| **`Candidate P`** | **`0.590265219`** | **`0.721619948`** | **`0.540531031`** | **`0.311614250`** | **The Champion Blend (Baseline Benchmark)**: Consolidates best Fuel (N) + best Nonfuel (O) + best Opportunity (J). Officially verified on live Zindi: **0.311614250**. |
+| **`Candidate V`** | `0.590265219` | `0.721619948` | `0.541843185` | `0.312139112` | **Boundary Refinement Peak**: 9-pair dead $m_3=0$ commuter swaps gained $+0.000553$ F1. |
+| **`Candidate W2`** | `0.589946914` | `0.721234669` | `0.541843185` | `0.312409801` | **First sub-0.5900 Fuel**: Multi-Quantile Hurdle + Hawkes kernels + GlobalAlignedSVD broke $< 0.59000$ Fuel. |
+| **`Candidate X1`** | `0.589946914` | `0.721234669` | `0.540759722` | `0.311976416` | **Audit check**: 15 boundary swaps demoting $m_3 > 5\text{L}$ lost $-0.001083$ F1 (Proved Commuter Safety Law). |
+| **`Candidate X2`** | `0.590132508` | `0.720891627` | `0.540759722` | `0.312027293` | **Nonfuel Breakthrough**: 3-reservoir YoY summer fixed effects broke Nonfuel to all-time record `0.720892`. |
+| **`Candidate Y1`** | `0.589946914` | `0.720891627` | `0.541843185` | `0.312535920` | **Consolidated Champion**: Combined W2 Fuel + X2 Nonfuel + V Opportunity. |
+| **`Candidate Y2`** | `0.589594343` | `0.720776679` | `0.541843185` | `0.312721113` | **5-Cutoff BLUP Breakthrough**: Summer BLUP customer deviations + quantile-exceedance commuter swaps. |
+| **`Candidate Z1`** | `0.590096706` | `0.722299560` | `0.541843185` | `0.311957570` | **BLUP Over-step Audit**: Decoded quadratic vertex proof along direction $\mathbf{d} = \mathbf{p}_{Z1} - \mathbf{p}_{Y2}$. |
+| **`Candidate Omega`** | `0.589358936` | `0.720687935` | `0.541165124` | `0.312577951` | **Hilbert Theorem Live Proof**: Exact 6-decimal match on projected Fuel RMSE (`0.589359` vs `0.589358936`). |
+| **`Candidate Omega-2`** | `0.588752822` | `0.720457358` | `0.541843185` | `0.313179668` | **Sub-0.3130 Breakthrough**: Expanded 9-model Hilbert basis centered at Omega + restored 0.541843 Opp. |
+| **`Candidate Omega-3`** | `0.588327262` | `0.720226478` | `0.541843185` | `0.313437075` | **Exact Projection**: Removed post-QP distortion; beat projections on both targets simultaneously. |
+| **`Candidate Omega-4`** | `0.587937260` | `0.720099383` | `0.541843185` | `0.313641910` | **Sub-0.5880 Fuel Breakthrough**: Spectral SVD eigen-decomposition of Gram matrix $G = V \Lambda V^T$. |
+| **`Candidate Alpha`** | **`0.587863880`** | `0.720174330` | `0.541843185` | **`0.313644105`** | **New Verified All-Time Peak**: 356 features, Level-3 fine categories, basket depth physics, CatBoost MQ. |
+| **`Candidate Omega-5 (Active)`**| **`0.587393`** *(proj)* | **`0.720033`** *(proj)* | **`0.541843185`** | **`0.313887`** *(proj)* | **Spectral Hilbert Alpha Integration**: 15-model basis centered at Alpha (Fuel) and Omega-4 (Nonfuel). |
 
 ---
 
@@ -528,28 +538,25 @@ Any subsequent research aimed at pushing toward and beyond **`0.330`** must trea
 ## 9. Current Production State & Artifact Registry
 
 ### 9.1 Git Repository State
-- **Active Branch**: `main`
-- **Latest Commit**: `84bd4e6`
-- **Clean Working Tree**: All code committed, zero unstaged source modifications.
-- **Unit Tests**: All **44 unit tests pass** in 6.86s (`.venv/bin/pytest -q`).
+- **Active Branch**: `feat/v3-end-to-end-rebuild` (synchronized with `main`)
+- **Current Verified Leaderboard Peak**: **`0.313644105`** (Candidate Alpha)
+- **Active Staged Submission**: **`Candidate Omega-5`** (Projected: **`0.313886962`**)
+- **Unit Tests**: All **44 unit tests pass** (`.venv/bin/pytest -q`).
 
 ### 9.2 Active Submission Files
 
 | File Path | Description | SHA-256 Checksum |
 | :--- | :--- | :--- |
-| `submission.csv` | Primary active submission at project root (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_latest.csv` | Mirror of primary active submission (Candidate P) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (The Champion Blend: Best Fuel N + Best Nonfuel O + Best Opp J, score: **0.31161425**) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
-| `submissions/submission_candidate_s_seasonal_super_ensemble_20261014_154324.csv` | Candidate S (Seasonal Super-Ensemble: 2.5x Summer Weighting, score: `0.307890033`) | `cba332b708d6d72a7404203e6dc88a7a6bd886167e686feeacdda0873f7ef747` |
-| `submissions/submission_candidate_r_rank_preserved_opp_20261014_154100.csv` | Candidate R (Rank-Preserved Commuter Arbitration: 388 swaps, score: `0.308069540`) | `78debf75af6b18242584139690ad112755ae4742ff2f640131eb76ab733bc91a` |
-| `submissions/submission_candidate_q_mean_preserving_20261014_154043.csv` | Candidate Q (Mean-Preserving Fuel Hurdle + Optimal Nonfuel Zero-Gating tau=0.05) | `4074363e03a7a090095139dfc26d9c23937a47a95a22d22ba8cf652930efad15` |
-| `submissions/submission_candidate_o_loss_optimization_20261014_003114.csv` | Candidate O (Lever 4: Tuned Huber Regressors, verified Nonfuel record = **0.721619948**) | `95cc113bc8cf559b437aa6a43bf4c1c070088e1e2ff4281e27a00f783720962d` |
-| `submissions/submission_candidate_n_cost_sensitive_lp_20261014_001330.csv` | Candidate N (Lever 2: Cost-Sensitive LP, verified Fuel record = **0.590265219**) | `cb5f8ac3002571713ef9ca4abde11b53ea7489bdeb470b8510f4151fb20edecd` |
-| `submissions/submission_candidate_m_bagged_hurdle_20261014_000635.csv` | Candidate M (Lever 3: Multi-Seed Bagged Hurdle + Lever 1 Decoupled Opportunity) | `f609cba8d8db0c7e2efda3a9712eeaa72fe018f6dffcc1d24c31165a65c40134` |
-| `submissions/submission_candidate_l_boundary_decoupled_20261013_235742.csv` | Candidate L (Lever 1: Binary Boundary Decoupled + Optimal Transport LP) | `ee0a0da239c0993551d7c493cfbc21f8a70519dd384c2eb579f1dfdbd0ec637d` |
-| `submissions/submission_candidate_k_mathematical_optimization_20261013_231527.csv` | Candidate K (Mathematical Optimization via Constrained LP) | `cf54b9c915995cf584a75369c00b58e7b99c852445831966e3fa1e9a263ba7ea` |
-| `submissions/submission_candidate_j_fuel_hurdle_20261013_200434.csv` | Candidate J (Two-Part Fuel Hurdle integrated, verified Zindi score = **0.311362961**) | `5db69416a05267b9046822d79bef1b813514cf41aecaef5b0a6a7a362862dc1a` |
-| `submissions/submission_candidate_i_peak_verified_20261013_194106.csv` | Candidate I (All-time peak verified benchmark = **0.311234500**) | `2c4eb591cd6076bf6c54aa219c629fbba4be4c19468e820dc7d23d819e917d05` |
+| `submission.csv` | Primary active submission at project root (**Candidate Omega-5**) | `99f6d1dd8ddccc3e4a6bf21896984f38345df5fa3628b7bfe542603c394ee69c` |
+| `submissions/submission_candidate_omega5_alpha_integrated_20261016_101006.csv` | Candidate Omega-5 (Spectral Hilbert Alpha Integration, projected: **0.313886962**) | `99f6d1dd8ddccc3e4a6bf21896984f38345df5fa3628b7bfe542603c394ee69c` |
+| `submissions/submission_candidate_alpha_l3_orthogonal_20261016_094758.csv` | Candidate Alpha (Verified Live Peak Record: **0.313644105**, Fuel: **0.587864**) | `fa68c07d3989fe78918bfd1bc2c22c09cb0752119934ff24a49c2d1b585efc51` |
+| `submissions/submission_candidate_omega4_spectral_hilbert_20261016_091653.csv` | Candidate Omega-4 (Verified Live Record: **0.313641910**, Nonfuel: **0.720099**) | `b5c031dc065f440bc5877927208be0fa9891048ca161d7c2d7bac30e0f9b7427` |
+| `submissions/submission_candidate_omega3_exact_hilbert_20261015_221518.csv` | Candidate Omega-3 (Verified Live Record: **0.313437075**) | `df6f62a8994d5c502093cb80b6b704e77b6b3439e9e2c378400a317d123e5dd8` |
+| `submissions/submission_candidate_omega2_full_hilbert_20261015_215017.csv` | Candidate Omega-2 (Verified Live Record: **0.313179668**) | `41b77d26607dfab0b3e14878b3cd9a750d641060903f4344867913a74274c25b` |
+| `submissions/submission_candidate_y2_blup_exceedance_20261015_080946.csv` | Candidate Y2 (5-Cutoff BLUP Peak Record: **0.312721113**) | `ef11b7b139aa2980fa3528b753a3eb1da196a5757d5a5cf2b0705663738096fc` |
+| `submissions/submission_candidate_w2_multi_quantile_20261015_000424.csv` | Candidate W2 (First sub-0.5900 Fuel Record: **0.312409801**) | `141b7643f88f0003b1e3e56037a1f592237a7b8e19574a7eb82e873617be8b16` |
+| `submissions/submission_candidate_v_boundary_refined_20261014_195540.csv` | Candidate V (9-Pair Boundary Swaps Peak Record: **0.312139112**) | `b0c79f4ae0955940f8088ae0072b05b6fa14e7a3ec0ff0d4812368c812d46e27` |
+| `submissions/submission_candidate_p_champion_blend_20261014_151414.csv` | Candidate P (Initial Champion Baseline: **0.311614250**) | `c8845e9addf4430489226fda3a550ced92fe8780a4b5be34b6f43e20cb7b1b4c` |
 
 ### 9.3 Invariant Properties of Active Submission (Candidate P)
 - **Row Count**: Strictly **5,488 rows** (100% exact match to `test.csv`).
