@@ -55,7 +55,7 @@ def main() -> int:
             print(f"  > Fuel Contribution:    {bd.get('score_fuel', 0.0):.5f} (30% weight, max=0.740)")
             print(f"  > Nonfuel Contribution: {bd.get('score_nonfuel', 0.0):.5f} (30% weight, max=0.816)")
             print(f"  > Opportunity Contrib:  {bd.get('score_opportunity', 0.0):.5f} (40% weight)")
-        print(f"Legacy Proxy Score:     {summary['proxy_composite_score']:.4f}")
+        print(f"Legacy Proxy Score:     {summary.get('proxy_composite_score', lb_score):.4f}")
         print("=" * 60)
         return 0
     except Exception as e:

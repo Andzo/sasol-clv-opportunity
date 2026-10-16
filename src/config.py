@@ -59,7 +59,12 @@ class Paths:
 class ModelConfig:
     """Model-family selection and determinism controls."""
 
-    regression_members: tuple[str, ...] = ("lgbm_mse", "xgb_mse", "catboost", "ridge", "extratrees")
+    regression_members: tuple[str, ...] = (
+        "lgbm_mse", "lgbm_huber", "lgbm_tweedie",
+        "xgb_mse", "xgb_huber",
+        "catboost", "catboost_huber",
+        "ridge", "extratrees",
+    )
     classification_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
     seed: int = 42
     n_jobs: int = -1

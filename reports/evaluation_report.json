@@ -1,21 +1,40 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 559.8,
+  "elapsed_seconds": 5152.01,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5975878365449352,
-    "rmse_nonfuel": 0.7444700566221018,
-    "weighted_f1": 0.5134862870675534,
-    "macro_f1": 0.15789971217203572
+    "rmse_fuel": 0.5968473183027541,
+    "rmse_nonfuel": 0.7455681813747159,
+    "weighted_f1": 0.5199719962292892,
+    "macro_f1": 0.16836718235729886
   },
-  "leaderboard_composite_score": 0.28943,
+  "leaderboard_composite_score": 0.29192,
   "leaderboard_breakdown": {
-    "score_fuel": 0.05773466086016139,
-    "score_nonfuel": 0.026297773300697855,
-    "score_opportunity": 0.20539451482702137,
-    "total_score": 0.28942694898788063
+    "score_fuel": 0.05803487095834294,
+    "score_nonfuel": 0.02589405096517795,
+    "score_opportunity": 0.2079887984917157,
+    "total_score": 0.29191772041523656
   },
-  "proxy_composite_score": 0.28943,
+  "tournament_folds": {
+    "Summer_2024-12-01": {
+      "rmse_fuel": 0.6017,
+      "rmse_nonfuel": 0.7948,
+      "weighted_f1": 0.4694,
+      "leaderboard_composite": 0.2516
+    },
+    "Winter_2025-06-01": {
+      "rmse_fuel": 0.5923,
+      "rmse_nonfuel": 0.7337,
+      "weighted_f1": 0.5087,
+      "leaderboard_composite": 0.2936
+    },
+    "Spring_2025-09-01": {
+      "rmse_fuel": 0.5979,
+      "rmse_nonfuel": 0.7453,
+      "weighted_f1": 0.4971,
+      "leaderboard_composite": 0.2825
+    }
+  },
   "baselines": {
     "sample_submission_zero": {
       "rmse_fuel": 1.8344871663064635,
@@ -32,58 +51,56 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1760,
-    "Existing-category growth: Fuel": 1723,
-    "Inactivity": 1377,
-    "Existing-category growth: Other": 323,
-    "Existing-category growth: Beverages": 194,
-    "New category adoption: Snacking": 26,
-    "Existing-category growth: Food & beverage": 23,
-    "New category adoption: Beverages": 17,
-    "New category adoption: Lubricants": 15,
-    "New category adoption: Other": 10,
-    "New category adoption: Food & beverage": 7,
-    "New category adoption: Groceries": 6,
-    "New category adoption: Confectionary": 3,
-    "New category adoption: Tobacco": 3,
-    "New category adoption: Breads & rolls": 1
+    "Stable": 1841,
+    "Existing-category growth: Fuel": 1538,
+    "Inactivity": 1450,
+    "Existing-category growth: Other": 365,
+    "Existing-category growth: Food & beverage": 110,
+    "Existing-category growth: Beverages": 110,
+    "New category adoption: Beverages": 22,
+    "New category adoption: Food & beverage": 18,
+    "New category adoption: Lubricants": 17,
+    "New category adoption: Tobacco": 6,
+    "New category adoption: Groceries": 5,
+    "New category adoption: Snacking": 3,
+    "New category adoption: Breads & rolls": 2,
+    "New category adoption: Other": 1
   },
-  "fuel_mean": 1.449,
-  "nonfuel_mean": 0.6702,
+  "fuel_mean": 1.4396,
+  "nonfuel_mean": 0.6775,
   "blend_weights": {
     "fuel": {
-      "lgbm": 0.2027,
+      "lgbm_mse": 0.0,
       "lgbm_huber": 0.0,
+      "lgbm_tweedie": 0.2534,
+      "xgb_mse": 0.0,
+      "xgb_huber": 0.0986,
       "catboost": 0.0,
-      "xgb": 0.4255,
-      "xgb_huber": 0.1644,
-      "ridge": 0.1529,
-      "extratrees": 0.0545
+      "catboost_huber": 0.0,
+      "ridge": 0.1035,
+      "extratrees": 0.0,
+      "hurdle_bagged": 0.5446,
+      "phys_basket": 0.0
     },
     "nonfuel": {
-      "lgbm": 0.0,
+      "lgbm_mse": 0.0,
       "lgbm_huber": 0.0,
-      "catboost": 0.1304,
-      "xgb": 0.4069,
-      "xgb_huber": 0.3648,
-      "ridge": 0.0184,
-      "extratrees": 0.0795
+      "lgbm_tweedie": 0.0471,
+      "xgb_mse": 0.0,
+      "xgb_huber": 0.4432,
+      "catboost": 0.0,
+      "catboost_huber": 0.494,
+      "ridge": 0.0157,
+      "extratrees": 0.0,
+      "hurdle_bagged": 0.0,
+      "phys_basket": 0.0
     }
   },
-  "temperature": {
-    "validation": 1.1,
-    "final": 1.05
-  },
-  "inactivity_threshold": {
-    "validation": 0.01,
-    "final": 0.01
-  },
+  "temperature": 0.85,
+  "inactivity_threshold": 0.01,
   "shrinkage_powers": {
-    "fuel": 0.0,
-    "nonfuel_alpha": 0.0,
-    "nonfuel_beta": 0.05,
-    "validation_fuel": 0.05,
-    "validation_nonfuel_alpha": 0.05,
-    "validation_nonfuel_beta": 0.05
+    "fuel": 0.05,
+    "nonfuel_alpha": 0.05,
+    "nonfuel_beta": 0.05
   }
 }

@@ -1,44 +1,64 @@
 {
-  "name": "candidate_u_retail_arbitrated",
-  "filename": "submission_candidate_u_retail_arbitrated_20261014_182448.csv",
-  "sha256": "ea508e837097f82c6d4f19418f2612b1847c7ad8101f70580580b5bb3426fdad",
-  "timestamp": "20261014_182448",
-  "row_count": 5488,
-  "clv_fuel_mean": 1.445650359224524,
-  "clv_nonfuel_mean": 0.7016566530602794,
-  "macro_counts": {
-    "Stable": 1960,
-    "Existing-category growth: Fuel": 1576,
-    "Inactivity": 1443,
-    "Retail Cohort Total": 509
+  "submission_file": "submission_git_ea8e7dd_20261016_153117_comp0.2919.csv",
+  "created_at": "2026-10-16T15:31:17.799044",
+  "git_commit": "ea8e7ddb200d1416757360b63883f19f9dc33cd7",
+  "git_commit_short": "ea8e7dd",
+  "git_branch": "fix/reproducible-pipeline-improvements",
+  "git_dirty": true,
+  "feature_version": "3.0.0",
+  "tournament_folds": {
+    "Summer_2024-12-01": {
+      "rmse_fuel": 0.6017,
+      "rmse_nonfuel": 0.7948,
+      "weighted_f1": 0.4694,
+      "leaderboard_composite": 0.2516
+    },
+    "Winter_2025-06-01": {
+      "rmse_fuel": 0.5923,
+      "rmse_nonfuel": 0.7337,
+      "weighted_f1": 0.5087,
+      "leaderboard_composite": 0.2936
+    },
+    "Spring_2025-09-01": {
+      "rmse_fuel": 0.5979,
+      "rmse_nonfuel": 0.7453,
+      "weighted_f1": 0.4971,
+      "leaderboard_composite": 0.2825
+    }
   },
-  "retail_class_distribution": {
-    "Existing-category growth: Other": 237,
-    "Existing-category growth: Beverages": 130,
-    "Existing-category growth: Food & beverage": 98,
-    "New category adoption: Food & beverage": 17,
-    "New category adoption: Other": 17,
-    "New category adoption: Beverages": 6,
-    "New category adoption: Lubricants": 3,
-    "New category adoption: Confectionary": 1
+  "models": {
+    "regression_members": [
+      "lgbm_mse",
+      "lgbm_huber",
+      "lgbm_tweedie",
+      "xgb_mse",
+      "xgb_huber",
+      "catboost",
+      "catboost_huber",
+      "ridge",
+      "extratrees",
+      "hurdle_bagged",
+      "phys_basket"
+    ],
+    "classification_members": [
+      "lgbm",
+      "catboost",
+      "xgb"
+    ],
+    "seed": 42
   },
-  "swaps_performed": 29,
-  "w_blend": 0.85,
-  "seeds": [
-    42,
-    100,
-    2026
-  ],
-  "verified_zindi_components": {
-    "clv_fuel_rmse": 0.590265219,
-    "clv_nonfuel_rmse": 0.721619948,
-    "opportunity_f1_baseline": 0.540531031,
-    "projected_composite_score": "0.3130 - 0.3145"
+  "evaluation_metrics": {
+    "rmse_fuel": 0.5968473183027541,
+    "rmse_nonfuel": 0.7455681813747159,
+    "weighted_f1": 0.5199719962292892,
+    "macro_f1": 0.16836718235729886
   },
-  "scientific_basis": [
-    "CLV Fuel & Nonfuel: 100% locked to Candidate P (0.590265 and 0.721620)",
-    "Macro Cohort Capacities: 100% locked (Stable=1960, Fuel Growth=1576, Inactivity=1443)",
-    "Rule 5 & Rule 7 Hard Eligibility Masks: zero feasibility violations guaranteed",
-    "Hungarian Optimal Transport: 509x509 matching resolving retail class confusion with 29 high-confidence swaps"
-  ]
+  "leaderboard_composite_score": 0.29192,
+  "leaderboard_breakdown": {
+    "score_fuel": 0.05803487095834294,
+    "score_nonfuel": 0.02589405096517795,
+    "score_opportunity": 0.2079887984917157,
+    "total_score": 0.29191772041523656
+  },
+  "reproduction_command": "python main.py --save-predictions"
 }

@@ -96,6 +96,14 @@ def test_build_features_schema_and_reproducibility():
         "m6_fuel_std_litres",
         "m6_commuter_share",
         "m6_dow_entropy",
+        "has_observed_yoy_window",
+        "yoy_to_m3_ratio_fuel_rand",
+        "refuel_burn_rate_daily",
+        "tank_depletion_state",
+        "payday_spend_share_m3",
+        "hawkes_intensity_7d",
+        "level3_hhi_concentration",
+        "svd_dim_0",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"

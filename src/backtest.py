@@ -19,6 +19,7 @@ import pandas as pd
 from src import calibration, metrics
 from src.config import PipelineConfig
 from src.dataset import SnapshotBuilder, stack
+from src.hurdle import BaggedTwoPartFuelHurdle, BaggedTwoPartNonfuelHurdle
 from src.models import (
     ClassifierEnsemble,
     HierarchicalOpportunityClassifier,
@@ -29,8 +30,8 @@ from src.models import (
 logger = logging.getLogger(__name__)
 
 # Official empirically verified Leaderboard persistence x_max
-LB_X_MAX_FUEL: float = 0.69046
-LB_X_MAX_NONFUEL: float = 0.92955
+LB_X_MAX_FUEL: float = 0.740
+LB_X_MAX_NONFUEL: float = 0.816
 
 
 @dataclass(frozen=True)
@@ -55,19 +56,26 @@ class BacktestSummary:
     seasonal_fold_result: FoldResult | None = None
 
 
-def evaluate_fold(
+def train_and_calibrate_fold(
     cfg: PipelineConfig,
     builder: SnapshotBuilder,
-    eval_cutoff: pd.Timestamp,
+    train_cutoffs: Sequence[pd.Timestamp],
     cal_cutoff: pd.Timestamp,
+    eval_cutoff: pd.Timestamp,
     label_cfg: dict[str, Any],
     cache_dir: Path | None = None,
 ) -> FoldResult:
-    """Trains strictly before cal_cutoff, calibrates on cal_cutoff, and evaluates on eval_cutoff."""
+    """Trains strictly on train_cutoffs, calibrates on cal_cutoff, and evaluates on eval_cutoff.
+
+    Executes the exact same model stack, hurdle architecture, and post-processing as src/pipeline.py.
+    """
     opp_labels = label_cfg["opportunity_labels"]
     n_classes = len(opp_labels)
     label_to_idx = {l: i for i, l in enumerate(opp_labels)}
     idx_to_label = {i: l for i, l in enumerate(opp_labels)}
+    inact_idx = label_to_idx["Inactivity"]
+    stable_idx = label_to_idx["Stable"]
+    fg_idx = label_to_idx["Existing-category growth: Fuel"]
 
     if cache_dir:
         eval_cache = cache_dir / f"eval_{eval_cutoff.date()}.parquet"
@@ -101,25 +109,28 @@ def evaluate_fold(
                 predictions=pred_df,
             )
 
-    train_cutoffs = cfg.training_cutoffs(boundary=cal_cutoff)
-    if not train_cutoffs:
-        import dataclasses
-        cfg = dataclasses.replace(cfg, first_train_cutoff="2024-06-01")
-        train_cutoffs = cfg.training_cutoffs(boundary=cal_cutoff)
     train_snaps = [builder.build(c, with_labels=True) for c in train_cutoffs]
     train_panel = stack(train_snaps)
 
     cal_snap = builder.build(cal_cutoff, with_labels=True)
     eval_snap = builder.build(eval_cutoff, with_labels=True)
 
-    # 1. Regressors
+    # Seasonal sample weighting
+    train_cutoffs_dt = pd.to_datetime(train_panel.cutoffs)
+    is_summer = train_cutoffs_dt.isin([
+        pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
+    ])
+    sw = np.ones(len(train_panel.X), dtype=np.float32)
+    sw[is_summer] = 2.0
+
+    # 1. Regressors & Hurdle Models
     fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
         use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
+    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
     nonfuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
@@ -127,7 +138,7 @@ def evaluate_fold(
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
         use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
     opp_model = ClassifierEnsemble(
@@ -137,88 +148,129 @@ def evaluate_fold(
         n_jobs=cfg.models.n_jobs,
         weights=opp_weights,
         use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=sw)
 
     hier_model = HierarchicalOpportunityClassifier(
         n_classes=n_classes,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
-        inact_idx=label_to_idx["Inactivity"],
-        stable_idx=label_to_idx["Stable"],
-        fg_idx=label_to_idx["Existing-category growth: Fuel"],
+        inact_idx=inact_idx,
+        stable_idx=stable_idx,
+        fg_idx=fg_idx,
         use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy(), sample_weight=sw)
 
     store_model = StoreAttachmentClassifier(
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+
+    hurdle_fuel = BaggedTwoPartFuelHurdle(
+        seeds=(cfg.models.seed, cfg.models.seed + 1, cfg.models.seed + 2),
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+
+    hurdle_nf = BaggedTwoPartNonfuelHurdle(
+        seeds=(cfg.models.seed, cfg.models.seed + 1, cfg.models.seed + 2),
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
     # 2. Calibration
-    cal_fuel_m = fuel_model.predict_members(cal_snap.features)
+    cal_hurdle_fuel = hurdle_fuel.predict(cal_snap.features).reshape(-1, 1)
+    cal_fuel_m = np.column_stack([fuel_model.predict_members(cal_snap.features), cal_hurdle_fuel])
     fuel_blend_weights = calibration.fit_blend_weights(cal_fuel_m, cal_snap.labels["CLV_fuel"].to_numpy())
-    fuel_model.set_weights(fuel_blend_weights)
 
-    cal_nonfuel_m = nonfuel_model.predict_members(cal_snap.features)
+    cal_hurdle_nf = hurdle_nf.predict(cal_snap.features).reshape(-1, 1)
+    cal_nonfuel_m = np.column_stack([nonfuel_model.predict_members(cal_snap.features), cal_hurdle_nf])
     nonfuel_blend_weights = calibration.fit_blend_weights(cal_nonfuel_m, cal_snap.labels["CLV_nonfuel"].to_numpy())
-    nonfuel_model.set_weights(nonfuel_blend_weights)
 
-    cal_fuel_raw = fuel_model.predict(cal_snap.features)
+    cal_fuel_raw_uncal = cal_fuel_m @ fuel_blend_weights
     fuel_slope, fuel_intercept = calibration.fit_linear_calibration(
-        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_raw
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_raw_uncal
     )
-    cal_fuel_cal = calibration.apply_linear_calibration(cal_fuel_raw, fuel_slope, fuel_intercept)
-
-    cal_nf_raw = nonfuel_model.predict(cal_snap.features)
-    nf_slope, nf_intercept = calibration.fit_linear_calibration(
-        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_raw
+    cal_nonfuel_raw_uncal = cal_nonfuel_m @ nonfuel_blend_weights
+    nonfuel_slope, nonfuel_intercept = calibration.fit_linear_calibration(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nonfuel_raw_uncal
     )
-    cal_nf_cal = calibration.apply_linear_calibration(cal_nf_raw, nf_slope, nf_intercept)
 
-    cal_p_base = opp_model.predict_proba(cal_snap.features)
-    cal_p_hier = hier_model.predict_proba(cal_snap.features)
-    cal_p = 0.50 * cal_p_base + 0.50 * cal_p_hier
+    cal_probs_base = opp_model.predict_proba(cal_snap.features)
+    cal_probs_hier = hier_model.predict_proba(cal_snap.features)
+    cal_probs = 0.50 * cal_probs_base + 0.50 * cal_probs_hier
     cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
     cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
-        cal_p, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes, seed=cfg.models.seed
+        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes, seed=cfg.models.seed
     )
-    cal_p_scaled = calibration.apply_temperature_scaling(cal_p, cal_temp)
-    cal_p_masked = calibration.apply_eligibility_mask(cal_p_scaled, cal_snap.mask)
+    cal_probs_scaled = calibration.apply_temperature_scaling(cal_probs, cal_temp)
+    cal_probs_masked = calibration.apply_eligibility_mask(cal_probs_scaled, cal_snap.mask)
 
-    inact_idx = label_to_idx["Inactivity"]
-    p_act_cal = 1.0 - cal_p_masked[:, inact_idx]
+    p_active_cal = 1.0 - cal_probs_masked[:, inact_idx]
     p_store_cal = store_model.predict_proba(cal_snap.features)
 
-    fuel_shrink = calibration.fit_shrinkage_power(cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_cal, p_act_cal)
-    nf_alpha, nf_beta = calibration.fit_dual_shrinkage_powers(
-        cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_cal, p_act_cal, p_store_cal, base_active_power=fuel_shrink
+    cal_fuel_calibrated = calibration.apply_linear_calibration(cal_fuel_raw_uncal, fuel_slope, fuel_intercept)
+    fuel_shrinkage_power = calibration.fit_shrinkage_power(
+        cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_calibrated, p_active_cal
+    )
+    cal_nonfuel_calibrated = calibration.apply_linear_calibration(cal_nonfuel_raw_uncal, nonfuel_slope, nonfuel_intercept)
+    nonfuel_alpha, nonfuel_beta = calibration.fit_dual_shrinkage_powers(
+        cal_snap.labels["CLV_nonfuel"].to_numpy(),
+        cal_nonfuel_calibrated,
+        p_active_cal,
+        p_store_cal,
+        base_active_power=fuel_shrinkage_power,
     )
 
-    cal_f_shrunk = calibration.apply_shrinkage(cal_fuel_cal, p_act_cal, fuel_shrink)
-    cal_nf_shrunk = calibration.apply_dual_shrinkage(cal_nf_cal, p_act_cal, p_store_cal, nf_alpha, nf_beta)
-    inact_thresh = calibration.fit_inactivity_threshold(
+    cal_f_shrunk = calibration.apply_shrinkage(cal_fuel_calibrated, p_active_cal, fuel_shrinkage_power)
+    cal_nf_shrunk = calibration.apply_dual_shrinkage(cal_nonfuel_calibrated, p_active_cal, p_store_cal, nonfuel_alpha, nonfuel_beta)
+    inact_threshold = calibration.fit_inactivity_threshold(
         cal_snap.labels["CLV_fuel"].to_numpy(), cal_f_shrunk,
         cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nf_shrunk,
-        p_act_cal,
+        p_active_cal,
     )
 
-    # 3. Evaluation Scoring
-    eval_f_raw = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), fuel_slope, fuel_intercept)
-    eval_nf_raw = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nf_slope, nf_intercept)
-    eval_p = 0.50 * opp_model.predict_proba(eval_snap.features) + 0.50 * hier_model.predict_proba(eval_snap.features)
-    eval_p_scaled = calibration.apply_temperature_scaling(eval_p, cal_temp)
-    eval_p_masked = calibration.apply_eligibility_mask(eval_p_scaled, eval_snap.mask)
-    eval_opp_dec = calibration.decide(eval_p_masked, class_weights)
+    # 3. Evaluation on eval_snap
+    eval_hurdle_fuel = hurdle_fuel.predict(eval_snap.features).reshape(-1, 1)
+    eval_fuel_m = np.column_stack([fuel_model.predict_members(eval_snap.features), eval_hurdle_fuel])
+    eval_fuel_raw = eval_fuel_m @ fuel_blend_weights
+
+    eval_hurdle_nf = hurdle_nf.predict(eval_snap.features).reshape(-1, 1)
+    eval_nonfuel_m = np.column_stack([nonfuel_model.predict_members(eval_snap.features), eval_hurdle_nf])
+    eval_nonfuel_raw = eval_nonfuel_m @ nonfuel_blend_weights
+
+    eval_fuel_calibrated = calibration.apply_linear_calibration(eval_fuel_raw, fuel_slope, fuel_intercept)
+    eval_nonfuel_calibrated = calibration.apply_linear_calibration(eval_nonfuel_raw, nonfuel_slope, nonfuel_intercept)
+
+    eval_probs_base = opp_model.predict_proba(eval_snap.features)
+    eval_probs_hier = hier_model.predict_proba(eval_snap.features)
+    eval_probs = 0.50 * eval_probs_base + 0.50 * eval_probs_hier
+    eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
+    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
+
+    eval_opp_dec = calibration.decide(eval_probs_masked, class_weights)
     eval_opp_labels = np.array([idx_to_label[i] for i in eval_opp_dec])
 
-    p_act_eval = 1.0 - eval_p_masked[:, inact_idx]
+    p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
     p_store_eval = store_model.predict_proba(eval_snap.features)
-    eval_f_pred = calibration.apply_shrinkage(eval_f_raw, p_act_eval, fuel_shrink)
-    eval_f_pred = calibration.apply_inactivity_gate(eval_f_pred, p_act_eval, threshold=inact_thresh)
-    eval_nf_pred = calibration.apply_dual_shrinkage(eval_nf_raw, p_act_eval, p_store_eval, nf_alpha, nf_beta)
-    eval_nf_pred = calibration.apply_inactivity_gate(eval_nf_pred, p_act_eval, threshold=inact_thresh)
+
+    eval_f_pred = calibration.apply_shrinkage(eval_fuel_calibrated, p_active_eval, fuel_shrinkage_power)
+    eval_f_pred = calibration.apply_inactivity_gate(eval_f_pred, p_active_eval, threshold=inact_threshold)
+
+    eval_nf_pred = calibration.apply_dual_shrinkage(eval_nonfuel_calibrated, p_active_eval, p_store_eval, nonfuel_alpha, nonfuel_beta)
+    eval_nf_pred = calibration.apply_inactivity_gate(eval_nf_pred, p_active_eval, threshold=inact_threshold)
+
+    # Physical boundary arbitration / active veto
+    m1_baskets = eval_snap.features["m1_baskets"].to_numpy() if "m1_baskets" in eval_snap.features.columns else np.zeros(len(eval_snap.features))
+    days_last = eval_snap.features["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in eval_snap.features.columns else np.full(len(eval_snap.features), 999.0)
+    m3_fuel_litres = eval_snap.features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in eval_snap.features.columns else np.zeros(len(eval_snap.features))
+    is_physical_growth = (eval_f_pred > np.log1p(np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 1.0)) / 2.352825386185113)
+    is_inact = eval_opp_labels == "Inactivity"
+    active_veto = is_inact & ((m1_baskets > 0) | (days_last < 45))
+    if active_veto.sum() > 0:
+        for idx in np.where(active_veto)[0]:
+            eval_opp_labels[idx] = "Existing-category growth: Fuel" if is_physical_growth[idx] else "Stable"
 
     eval_scores = metrics.score(eval_snap.labels, eval_f_pred, eval_nf_pred, eval_opp_labels)
     base_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
@@ -251,6 +303,31 @@ def evaluate_fold(
     )
 
 
+def evaluate_fold(
+    cfg: PipelineConfig,
+    builder: SnapshotBuilder,
+    eval_cutoff: pd.Timestamp,
+    cal_cutoff: pd.Timestamp,
+    label_cfg: dict[str, Any],
+    cache_dir: Path | None = None,
+) -> FoldResult:
+    """Trains strictly before cal_cutoff, calibrates on cal_cutoff, and evaluates on eval_cutoff."""
+    train_cutoffs = cfg.training_cutoffs(boundary=cal_cutoff)
+    if not train_cutoffs:
+        import dataclasses
+        cfg = dataclasses.replace(cfg, first_train_cutoff="2024-06-01")
+        train_cutoffs = cfg.training_cutoffs(boundary=cal_cutoff)
+    return train_and_calibrate_fold(
+        cfg=cfg,
+        builder=builder,
+        train_cutoffs=train_cutoffs,
+        cal_cutoff=cal_cutoff,
+        eval_cutoff=eval_cutoff,
+        label_cfg=label_cfg,
+        cache_dir=cache_dir,
+    )
+
+
 def evaluate_leave_summer_out(
     cfg: PipelineConfig,
     builder: SnapshotBuilder,
@@ -267,12 +344,7 @@ def evaluate_leave_summer_out(
     eval_cutoff = pd.Timestamp(summer_eval_cutoff)
     cal_t = pd.Timestamp(cal_cutoff)
     label_cfg = cfg.label_config
-    opp_labels = label_cfg["opportunity_labels"]
-    n_classes = len(opp_labels)
-    label_to_idx = {l: i for i, l in enumerate(opp_labels)}
-    idx_to_label = {i: l for i, l in enumerate(opp_labels)}
 
-    # Pre-summer (<= 2024-09-01) and post-summer (>= 2025-03-01) training cutoffs
     pre_summer_cutoffs = [
         c for c in cfg.training_cutoffs(boundary=pd.Timestamp("2024-12-01"))
         if c <= pd.Timestamp("2024-09-01")
@@ -284,81 +356,14 @@ def evaluate_leave_summer_out(
     train_cutoffs = sorted(pre_summer_cutoffs + post_summer_cutoffs)
     logger.info("Leave-Summer-Out training cutoffs (N=%d): %s", len(train_cutoffs), [str(c.date()) for c in train_cutoffs])
 
-    train_snaps = [builder.build(c, with_labels=True) for c in train_cutoffs]
-    train_panel = stack(train_snaps)
-
-    cal_snap = builder.build(cal_t, with_labels=True)
-    eval_snap = builder.build(eval_cutoff, with_labels=True)
-
-    fuel_model = RegressorEnsemble(
-        members=cfg.models.regression_members,
-        seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs,
-        use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
-
-    nonfuel_model = RegressorEnsemble(
-        members=cfg.models.regression_members,
-        seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs,
-        use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
-
-    opp_model = ClassifierEnsemble(
-        members=cfg.models.classification_members,
-        n_classes=n_classes,
-        seed=cfg.models.seed,
-        n_jobs=cfg.models.n_jobs,
-        use_gpu=cfg.models.use_gpu,
-    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
-
-    # Calibration on cal_snap
-    fuel_weights = calibration.fit_blend_weights(fuel_model.predict_members(cal_snap.features), cal_snap.labels["CLV_fuel"].to_numpy())
-    fuel_model.set_weights(fuel_weights)
-    nf_weights = calibration.fit_blend_weights(nonfuel_model.predict_members(cal_snap.features), cal_snap.labels["CLV_nonfuel"].to_numpy())
-    nonfuel_model.set_weights(nf_weights)
-
-    f_slope, f_intercept = calibration.fit_linear_calibration(cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features))
-    nf_slope, nf_intercept = calibration.fit_linear_calibration(cal_snap.labels["CLV_nonfuel"].to_numpy(), nonfuel_model.predict(cal_snap.features))
-
-    cal_probs = opp_model.predict_proba(cal_snap.features)
-    cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
-    dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
-    cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
-        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes, seed=cfg.models.seed
-    )
-
-    # Score on summer eval_snap
-    eval_f = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), f_slope, f_intercept)
-    eval_nf = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nf_slope, nf_intercept)
-    eval_probs = opp_model.predict_proba(eval_snap.features)
-    eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
-    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
-    eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
-    eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
-
-    pred_df = pd.DataFrame({
-        "pred_fuel": eval_f,
-        "pred_nonfuel": eval_nf,
-        "pred_opp": eval_opp_labels,
-        "true_fuel": eval_snap.labels["CLV_fuel"].to_numpy(),
-        "true_nonfuel": eval_snap.labels["CLV_nonfuel"].to_numpy(),
-        "true_opp": eval_snap.labels["Opportunity"].to_numpy(),
-    }, index=eval_snap.features.index)
-
-    eval_scores = metrics.score(eval_snap.labels, eval_f, eval_nf, np.array(eval_opp_labels))
-    base_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
-    proxy_score = eval_scores.composite(base_dict["sample_submission_zero"]["rmse_fuel"], base_dict["sample_submission_zero"]["rmse_nonfuel"])
-    lb_score = eval_scores.leaderboard_composite(LB_X_MAX_FUEL, LB_X_MAX_NONFUEL)
-
-    return FoldResult(
-        cutoff=str(eval_cutoff.date()),
-        n_train=len(train_panel.X),
-        n_eval=len(eval_snap.features),
-        scores=eval_scores,
-        proxy_score=proxy_score,
-        lb_score=lb_score,
-        predictions=pred_df,
+    return train_and_calibrate_fold(
+        cfg=cfg,
+        builder=builder,
+        train_cutoffs=train_cutoffs,
+        cal_cutoff=cal_t,
+        eval_cutoff=eval_cutoff,
+        label_cfg=label_cfg,
+        cache_dir=cache_dir,
     )
 
 
@@ -441,10 +446,10 @@ def paired_bootstrap_test(
         idx = rng.integers(0, n, size=n)
         # Baseline score
         sc_b = metrics.score(pd.DataFrame({"CLV_fuel": y_f[idx], "CLV_nonfuel": y_nf[idx], "Opportunity": y_opp[idx]}),
-                             b_f[idx], b_nf[idx], b_opp[idx]).composite(x_max_fuel, x_max_nonfuel)
+                             b_f[idx], b_nf[idx], b_opp[idx]).leaderboard_composite(x_max_fuel, x_max_nonfuel)
         # Candidate score
         sc_c = metrics.score(pd.DataFrame({"CLV_fuel": y_f[idx], "CLV_nonfuel": y_nf[idx], "Opportunity": y_opp[idx]}),
-                             c_f[idx], c_nf[idx], c_opp[idx]).composite(x_max_fuel, x_max_nonfuel)
+                             c_f[idx], c_nf[idx], c_opp[idx]).leaderboard_composite(x_max_fuel, x_max_nonfuel)
         deltas[i] = sc_c - sc_b
 
     mean_delta = float(np.mean(deltas))

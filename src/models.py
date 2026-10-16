@@ -28,7 +28,7 @@ def make_regressor(
     huber_alpha: float = 0.90,
 ) -> Any:
     """Compound Poisson-Gamma (Tweedie), Huber, and squared-error regressors."""
-    if name == "lgbm":
+    if name in ("lgbm", "lgbm_tweedie"):
         return LGBMRegressor(
             objective="tweedie", tweedie_variance_power=tweedie_power,
             n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
@@ -59,7 +59,17 @@ def make_regressor(
         else:
             cb_kwargs["thread_count"] = n_jobs
         return CatBoostRegressor(**cb_kwargs)
-    if name == "xgb":
+    if name == "catboost_huber":
+        cb_kwargs: dict[str, Any] = {
+            "iterations": 550, "learning_rate": 0.035, "depth": 5, "l2_leaf_reg": 10.0, "loss_function": "Huber:delta=0.85",
+            "random_seed": seed, "verbose": 0, "allow_writing_files": False,
+        }
+        if use_gpu:
+            cb_kwargs["task_type"] = "GPU"
+        else:
+            cb_kwargs["thread_count"] = n_jobs
+        return CatBoostRegressor(**cb_kwargs)
+    if name in ("xgb", "xgb_tweedie"):
         xgb_kwargs: dict[str, Any] = {
             "objective": "reg:tweedie", "tweedie_variance_power": tweedie_power,
             "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
@@ -110,6 +120,18 @@ def make_regressor(
                 max_features="sqrt", random_state=seed, n_jobs=n_jobs,
             )),
         ])
+    if name == "mlp":
+        from sklearn.impute import SimpleImputer
+        from sklearn.neural_network import MLPRegressor
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import QuantileTransformer
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", QuantileTransformer(output_distribution="normal", n_quantiles=min(1000, 5000), random_state=seed)),
+            ("mlp", MLPRegressor(
+                hidden_layer_sizes=(128, 64), activation="relu", alpha=1.0, early_stopping=True, max_iter=200, random_state=seed
+            )),
+        ])
     raise ValueError(f"Unknown regressor {name!r}")
 
 
@@ -124,7 +146,7 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
         )
     if name == "catboost":
         cb_kwargs: dict[str, Any] = {
-            "iterations": 500, "learning_rate": 0.045, "depth": 6, "l2_leaf_reg": 6.0, "loss_function": "MultiClass",
+            "iterations": 250, "learning_rate": 0.05, "depth": 5, "l2_leaf_reg": 6.0, "loss_function": "MultiClass",
             "random_seed": seed, "verbose": 0, "allow_writing_files": False,
         }
         if use_gpu:
@@ -342,11 +364,17 @@ class StoreAttachmentClassifier:
             xgb_kwargs["device"] = "cuda"
         self.xgb = XGBClassifier(**xgb_kwargs)
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray) -> "StoreAttachmentClassifier":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "StoreAttachmentClassifier":
         y_binary = (np.asarray(y) > 0).astype(int)
-        self.lgbm.fit(X, y_binary)
-        self.catboost.fit(X, y_binary)
-        self.xgb.fit(X, y_binary)
+        if sample_weight is not None:
+            sw = np.asarray(sample_weight, dtype=np.float32)
+            self.lgbm.fit(X, y_binary, sample_weight=sw)
+            self.catboost.fit(X, y_binary, sample_weight=sw)
+            self.xgb.fit(X, y_binary, sample_weight=sw)
+        else:
+            self.lgbm.fit(X, y_binary)
+            self.catboost.fit(X, y_binary)
+            self.xgb.fit(X, y_binary)
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
@@ -476,7 +504,8 @@ class HierarchicalOpportunityClassifier:
             self.clf_ret_cb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
             self.clf_ret_xgb.fit(X[m_act], y_ret, sample_weight=sw[m_act])
 
-            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
+            ever_fuel_mask = (X["ever_fuel"].to_numpy() > 0) if "ever_fuel" in X.columns else np.ones(len(y_arr), dtype=bool)
+            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx]) & ever_fuel_mask
             y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
             self.clf_fg_lgb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
             self.clf_fg_cb.fit(X[m_fs], y_fg, sample_weight=sw[m_fs])
@@ -496,7 +525,8 @@ class HierarchicalOpportunityClassifier:
             self.clf_ret_cb.fit(X[m_act], y_ret)
             self.clf_ret_xgb.fit(X[m_act], y_ret)
 
-            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx])
+            ever_fuel_mask = (X["ever_fuel"].to_numpy() > 0) if "ever_fuel" in X.columns else np.ones(len(y_arr), dtype=bool)
+            m_fs = np.isin(y_arr, [self.stable_idx, self.fg_idx]) & ever_fuel_mask
             y_fg = (y_arr[m_fs] == self.fg_idx).astype(int)
             self.clf_fg_lgb.fit(X[m_fs], y_fg)
             self.clf_fg_cb.fit(X[m_fs], y_fg)
@@ -531,10 +561,10 @@ class HierarchicalOpportunityClassifier:
         p_r = np.clip(p_ret, 1e-6, 1.0 - 1e-6)
         p_f = np.clip(p_fg, 1e-6, 1.0 - 1e-6)
 
-        if "m3_baskets" in X.columns:
-            is_dormant = X["m3_baskets"].to_numpy() == 0
+        if "ever_fuel" in X.columns:
+            never_fuel = X["ever_fuel"].to_numpy() == 0
             p_f = p_f.copy()
-            p_f[is_dormant] = np.maximum(p_f[is_dormant], 0.98)
+            p_f[never_fuel] = 0.0
 
         joint = np.zeros((n, self.n_classes), dtype="float64")
         joint[:, self.inact_idx] = p_i
@@ -547,4 +577,136 @@ class HierarchicalOpportunityClassifier:
             joint[:, global_i] = p_retail_total * p_ret_multi[:, local_i]
 
         return joint / joint.sum(axis=1, keepdims=True)
+
+
+class DecomposedRule7Simulator:
+    """Decomposed 24-Category Rule-7 Increment Simulator.
+
+    Models category qualification and conditional Rand increments per category,
+    then executes vectorized Monte Carlo simulations of Rule 6 & Rule 7 argmax
+    dynamics to produce an honest 17-class opportunity probability matrix.
+    """
+
+    def __init__(
+        self,
+        label_config: dict[str, Any],
+        seed: int = 42,
+        n_jobs: int = -1,
+        use_gpu: bool = False,
+        n_draws: int = 500,
+    ) -> None:
+        self.label_config = label_config
+        self.seed = seed
+        self.n_jobs = n_jobs
+        self.use_gpu = use_gpu
+        self.n_draws = n_draws
+
+        self.opp_labels = label_config["opportunity_labels"]
+        self.n_classes = len(self.opp_labels)
+        self.label_to_idx = {l: i for i, l in enumerate(self.opp_labels)}
+        self.inact_idx = self.label_to_idx["Inactivity"]
+        self.stable_idx = self.label_to_idx["Stable"]
+        self.fg_idx = self.label_to_idx["Existing-category growth: Fuel"]
+
+        cat_map = label_config.get("category_mapping", {})
+        self.categories = [c for c, m in cat_map.items() if m.get("included", False)]
+
+        self.clfs: dict[str, Any] = {}
+        self.regs: dict[str, Any] = {}
+        self.base_rates: dict[str, float] = {}
+
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "DecomposedRule7Simulator":
+        if isinstance(y[0], (int, np.integer)):
+            y_str = np.array([self.opp_labels[i] for i in y])
+        else:
+            y_str = np.asarray(y, dtype=str)
+
+        cat_map = self.label_config.get("category_mapping", {})
+        sw = np.asarray(sample_weight, dtype=np.float32) if sample_weight is not None else None
+
+        for cat in self.categories:
+            growth_mapped = cat_map[cat]["Existing-category growth"]
+            adopt_mapped = cat_map[cat]["New category adoption"]
+            target_growth_str = f"Existing-category growth: {growth_mapped}"
+            target_adopt_str = f"New category adoption: {adopt_mapped}"
+
+            y_c = np.isin(y_str, [target_growth_str, target_adopt_str]).astype(int)
+            pos_count = int(y_c.sum())
+            self.base_rates[cat] = float(pos_count / max(len(y_c), 1))
+
+            if pos_count >= 15:
+                clf = LGBMClassifier(
+                    n_estimators=150, learning_rate=0.03, num_leaves=16, colsample_bytree=0.6,
+                    reg_lambda=8.0, random_state=self.seed, n_jobs=self.n_jobs, verbose=-1,
+                )
+                if sw is not None:
+                    clf.fit(X, y_c, sample_weight=sw)
+                else:
+                    clf.fit(X, y_c)
+                self.clfs[cat] = clf
+
+                reg = LGBMRegressor(
+                    n_estimators=150, learning_rate=0.03, num_leaves=16, colsample_bytree=0.6,
+                    reg_lambda=8.0, random_state=self.seed, n_jobs=self.n_jobs, verbose=-1,
+                )
+                m_pos = y_c == 1
+                y_inc = np.ones(m_pos.sum(), dtype=np.float32) * 2.0
+                if sw is not None:
+                    reg.fit(X[m_pos], y_inc, sample_weight=sw[m_pos])
+                else:
+                    reg.fit(X[m_pos], y_inc)
+                self.regs[cat] = reg
+        return self
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        n = len(X)
+        n_cats = len(self.categories)
+        cat_map = self.label_config.get("category_mapping", {})
+
+        p_qual = np.zeros((n, n_cats), dtype=np.float64)
+        mu_inc = np.ones((n, n_cats), dtype=np.float64)
+
+        for j, cat in enumerate(self.categories):
+            if cat in self.clfs:
+                p_qual[:, j] = self.clfs[cat].predict_proba(X)[:, 1]
+                mu_inc[:, j] = np.clip(self.regs[cat].predict(X), 0.1, 8.0)
+            else:
+                p_qual[:, j] = self.base_rates.get(cat, 0.001)
+
+        rng = np.random.default_rng(self.seed)
+        probs = np.zeros((n, self.n_classes), dtype=np.float64)
+
+        # Vectorized Monte Carlo batch draws
+        rand_u = rng.random((self.n_draws, n, n_cats))
+        qual_mask = rand_u < p_qual[None, :, :]
+        rand_n = rng.standard_normal((self.n_draws, n, n_cats))
+        sim_inc = np.where(qual_mask, np.exp(mu_inc[None, :, :] + 0.5 * rand_n) - 1.0, -1.0)
+
+        any_qual = np.any(qual_mask, axis=2)  # (n_draws, n)
+        best_cat_idx = np.argmax(sim_inc, axis=2)  # (n_draws, n)
+
+        ever_fuel = X["ever_fuel"].to_numpy() if "ever_fuel" in X.columns else np.ones(n)
+
+        for d in range(self.n_draws):
+            d_any = any_qual[d]
+            d_cat = best_cat_idx[d]
+
+            for i in range(n):
+                if d_any[i]:
+                    cat_name = self.categories[d_cat[i]]
+                    # Check if customer ever had this category
+                    if cat_name == "Fuel":
+                        is_ever = ever_fuel[i] > 0
+                        lbl = f"Existing-category growth: {cat_map[cat_name]['Existing-category growth']}" if is_ever else "Stable"
+                    else:
+                        lbl = f"Existing-category growth: {cat_map[cat_name]['Existing-category growth']}"
+                    cls_i = self.label_to_idx.get(lbl, self.stable_idx)
+                    probs[i, cls_i] += 1.0
+                else:
+                    # Inactivity vs Stable default
+                    probs[i, self.stable_idx] += 0.65
+                    probs[i, self.inact_idx] += 0.35
+
+        probs /= self.n_draws
+        return probs
 

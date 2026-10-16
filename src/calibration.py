@@ -7,9 +7,11 @@ used instead and is guaranteed never to decrease the in-sample objective.
 """
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
+import pandas as pd
+import scipy.special as sp
 from scipy.optimize import nnls
 
 DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 12.0, 45)
@@ -140,24 +142,32 @@ def fit_temperature_and_class_weights(
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
 
+    # Dominant trio (Inactivity, Stable, Fuel Growth)
     dom_set = set(dominant_classes) if dominant_classes is not None else set()
     temp_list = [float(t) for t in temperatures]
+
+    # Major retail growth classes (Beverages, Food & beverage, Other) vs minor adoptions
+    major_retail_growth_indices = [c for c in [0, 1, 3] if c < n_classes and c not in dom_set]
+    minor_adoption_indices = [c for c in range(n_classes) if c not in dom_set and c not in major_retail_growth_indices]
 
     # Enqueue coordinate ascent solution as trial 0
     init_params = {"temperature": best_temp}
     for c in dom_set:
         init_params[f"w_{c}"] = float(best_weights[c])
-    retail_indices = [c for c in range(n_classes) if c not in dom_set]
-    if retail_indices:
-        init_params["w_retail_shared"] = float(np.median([best_weights[c] for c in retail_indices]))
+    if major_retail_growth_indices:
+        init_params["w_major_growth"] = float(np.median([best_weights[c] for c in major_retail_growth_indices]))
+    if minor_adoption_indices:
+        init_params["w_minor_adoption"] = float(np.median([best_weights[c] for c in minor_adoption_indices]))
     study.enqueue_trial(init_params)
 
     # Enqueue uniform weights as trial 1
     uniform_params = {"temperature": 1.0 if 1.0 in temperatures else best_temp}
     for c in dom_set:
         uniform_params[f"w_{c}"] = 1.0
-    if retail_indices:
-        uniform_params["w_retail_shared"] = 1.0
+    if major_retail_growth_indices:
+        uniform_params["w_major_growth"] = 1.0
+    if minor_adoption_indices:
+        uniform_params["w_minor_adoption"] = 1.0
     study.enqueue_trial(uniform_params)
 
     def objective(trial: optuna.Trial) -> float:
@@ -165,10 +175,14 @@ def fit_temperature_and_class_weights(
         w = np.ones(n_classes)
         for c in dom_set:
             w[c] = trial.suggest_float(f"w_{c}", 0.80, 1.25)
-        if retail_indices:
-            w_ret = trial.suggest_float("w_retail_shared", 0.50, 12.0)
-            for c in retail_indices:
-                w[c] = w_ret
+        if major_retail_growth_indices:
+            w_maj = trial.suggest_float("w_major_growth", 0.80, 3.50)
+            for c in major_retail_growth_indices:
+                w[c] = w_maj
+        if minor_adoption_indices:
+            w_min = trial.suggest_float("w_minor_adoption", 0.25, 1.25)
+            for c in minor_adoption_indices:
+                w[c] = w_min
         p_s = apply_temperature_scaling(probs, t)
         if mask is not None:
             p_s = apply_eligibility_mask(p_s, mask)
@@ -180,8 +194,10 @@ def fit_temperature_and_class_weights(
     opt_weights = np.ones(n_classes, dtype="float64")
     for c in dom_set:
         opt_weights[c] = float(study.best_params[f"w_{c}"])
-    if retail_indices and "w_retail_shared" in study.best_params:
-        opt_weights[retail_indices] = float(study.best_params["w_retail_shared"])
+    if major_retail_growth_indices and "w_major_growth" in study.best_params:
+        opt_weights[major_retail_growth_indices] = float(study.best_params["w_major_growth"])
+    if minor_adoption_indices and "w_minor_adoption" in study.best_params:
+        opt_weights[minor_adoption_indices] = float(study.best_params["w_minor_adoption"])
 
     p_opt = apply_temperature_scaling(probs, opt_temp)
     if mask is not None:
@@ -415,5 +431,179 @@ def apply_soft_zero_floor(p: np.ndarray, tau_0: float = 0.025) -> np.ndarray:
     """Continuously zero out low probability tail without step-function discontinuity."""
     p_arr = np.clip(np.asarray(p, dtype="float64"), 0.0, 1.0)
     return np.maximum(0.0, (p_arr - tau_0) / (1.0 - tau_0))
+
+
+def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[tuple[float, float]]:
+    """Fits linear recalibration (a_m, b_m) per member on positive predictions."""
+    params: list[tuple[float, float]] = []
+    n_members = member_preds.shape[1]
+    y_arr = np.asarray(y_true, dtype="float64")
+    for m in range(n_members):
+        pred_m = member_preds[:, m]
+        pos_mask = (pred_m > 0) & (y_arr > 0)
+        if pos_mask.sum() >= 20:
+            a, b = fit_linear_calibration(y_arr[pos_mask], pred_m[pos_mask])
+        else:
+            a, b = 1.0, 0.0
+        params.append((float(a), float(b)))
+    return params
+
+
+def apply_member_debiasing(member_preds: np.ndarray, debias_params: list[tuple[float, float]]) -> np.ndarray:
+    """Applies per-member linear recalibration on positive predictions."""
+    out = member_preds.copy()
+    for m, (a, b) in enumerate(debias_params):
+        pos_mask = out[:, m] > 0
+        out[pos_mask, m] = np.clip(apply_linear_calibration(out[pos_mask, m], a, b), 0.0, None)
+    return out
+
+
+def compute_physical_hurdle_probabilities(
+    X: pd.DataFrame,
+    hurdle_model: Any,
+    final_fuel_pred: np.ndarray,
+    store_model: Any,
+    norm_scale: float = 2.352825386185113,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Computes exact probabilistic fuel hurdle inversion and joint inactivity probabilities.
+
+    Under Rule 5 & Rule 6:
+        H_fuel = max(m3_fuel_rand + 20, 1.25 * m3_fuel_rand)
+        z_hurdle = (1 / norm_scale) * ln(1 + max(1.25 * m3_litres, m3_litres + 20 / P_pump))
+        P_phys(Fuel Growth) = I(ever_fuel) * P_fuel * [1 - Phi((z_hurdle - (0.65*mu_pos + 0.35*Z_fuel)) / sigma_pos)]
+        P_phys(Inactivity) = (1 - P_fuel) * (1 - P_store) * I(m1_baskets == 0)
+    """
+    n = len(X)
+    m3_fuel_litres = X["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in X.columns else np.zeros(n)
+    m3_fuel_rand = X["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in X.columns else np.zeros(n)
+    ever_fuel = (X["ever_fuel"].to_numpy() > 0) if "ever_fuel" in X.columns else np.ones(n, dtype=bool)
+
+    # Local pump price estimate
+    pump_price = np.clip(
+        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
+        20.5, 27.5
+    )
+
+    required_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
+    z_hurdle = (1.0 / norm_scale) * np.log1p(required_litres)
+
+    if hasattr(hurdle_model, "predict_conditional_pos") and hasattr(hurdle_model, "predict_proba_active"):
+        p_fuel = hurdle_model.predict_proba_active(X)
+        mu_pos, sigma_pos = hurdle_model.predict_conditional_pos(X)
+    else:
+        p_fuel = np.clip(hurdle_model.predict(X) / np.maximum(final_fuel_pred, 1e-4), 0.0, 1.0)
+        mu_pos = np.clip(final_fuel_pred / np.maximum(p_fuel, 0.05), 0.0, None)
+        sigma_pos = np.maximum(0.14, 0.20 * mu_pos)
+
+    # Probabilistic CDF inversion via standard normal erf
+    z_score = (z_hurdle - (0.65 * mu_pos + 0.35 * final_fuel_pred)) / np.maximum(sigma_pos, 0.05)
+    phi = 0.5 * (1.0 + sp.erf(z_score / np.sqrt(2.0)))
+    p_phys_fg = np.where(ever_fuel, p_fuel * (1.0 - phi), 0.0)
+
+    # Joint Inactivity probability
+    p_store = store_model.predict_proba(X) if hasattr(store_model, "predict_proba") else np.zeros(n)
+    m1_baskets = X["m1_baskets"].to_numpy() if "m1_baskets" in X.columns else np.zeros(n)
+    is_m1_zero = m1_baskets == 0
+    p_phys_inact = (1.0 - p_fuel) * (1.0 - p_store) * is_m1_zero.astype(float)
+
+    return np.clip(p_phys_fg, 0.0, 1.0), np.clip(p_phys_inact, 0.0, 1.0)
+
+
+def compute_customer_blup(
+    customer_residuals: dict[str, list[tuple[pd.Timestamp, float]]],
+    target_cutoff: pd.Timestamp,
+    kappa: float = 3.5,
+) -> dict[str, float]:
+    """Computes recency- and season-weighted Customer Empirical Bayes (BLUP) fixed effect.
+
+    u_i(T) = sum(w_k * r_{i,k}) / (sum(w_k) + kappa)
+    for cutoffs t_k <= T - 3 months (strictly non-overlapping with outcome window).
+    """
+    target_month = target_cutoff.month
+    cutoff_boundary = target_cutoff - pd.DateOffset(months=3)
+    blup_effects: dict[str, float] = {}
+
+    for cust_id, history in customer_residuals.items():
+        w_sum = 0.0
+        weighted_r_sum = 0.0
+        for t_k, r_k in history:
+            if t_k <= cutoff_boundary:
+                w = 2.0 if t_k.month == target_month else 1.0
+                w_sum += w
+                weighted_r_sum += w * r_k
+        if w_sum > 0:
+            blup_effects[cust_id] = float(weighted_r_sum / (w_sum + kappa))
+        else:
+            blup_effects[cust_id] = 0.0
+    return blup_effects
+
+
+def fit_blup_shrinkage(
+    y_true: np.ndarray,
+    base_preds: np.ndarray,
+    blup_vec: np.ndarray,
+    active_mask: np.ndarray,
+) -> float:
+    """Finds optimal BLUP shrinkage eta in [0.0, 0.25] minimizing RMSE on active instances."""
+    if active_mask.sum() < 20 or np.all(blup_vec == 0):
+        return 0.0
+    y_act = y_true[active_mask]
+    base_act = base_preds[active_mask]
+    blup_act = blup_vec[active_mask]
+    # Zero-mean center the BLUP within active spenders
+    blup_centered = blup_act - np.mean(blup_act)
+    denom = np.sum(blup_centered ** 2)
+    if denom <= 1e-12:
+        return 0.0
+    res_act = y_act - base_act
+    eta = float(np.sum(res_act * blup_centered) / denom)
+    return float(np.clip(eta, 0.0, 0.25))
+
+
+def apply_customer_blup(
+    base_preds: np.ndarray,
+    blup_vec: np.ndarray,
+    eta: float,
+    active_mask: np.ndarray,
+) -> np.ndarray:
+    """Applies zero-mean centered Customer BLUP fixed effect to active spenders."""
+    if eta <= 0.0 or active_mask.sum() == 0 or np.all(blup_vec == 0):
+        return base_preds.copy()
+    out = base_preds.copy()
+    blup_act = blup_vec[active_mask]
+    blup_centered = blup_act - np.mean(blup_act)
+    out[active_mask] = np.clip(base_preds[active_mask] + eta * blup_centered, 0.0, None)
+    return out
+
+
+def decide_with_prior_alignment(
+    probs: np.ndarray,
+    class_weights: np.ndarray,
+    target_priors: np.ndarray,
+    tolerance: float = 0.015,
+    max_steps: int = 50,
+) -> np.ndarray:
+    """Prior-Constrained Expected Support-Weighted F1 Decision Rule via Dual Ascent.
+
+    Finds dual Lagrange multipliers lambda in R^K such that macro class proportions
+    align with historical target priors (65% summer + 35% recent) without threshold drift.
+    """
+    n, k = probs.shape
+    u = np.log(probs * class_weights + 1e-12)
+    lambdas = np.zeros(k, dtype=np.float64)
+    step_size = 0.5
+    target = np.asarray(target_priors, dtype=np.float64)
+    target = target / target.sum()
+
+    for _ in range(max_steps):
+        pred = np.argmax(u - lambdas, axis=1)
+        counts = np.bincount(pred, minlength=k) / n
+        diff = counts - target
+        if np.max(np.abs(diff[:3])) <= tolerance:
+            break
+        lambdas += step_size * diff
+        step_size *= 0.98
+
+    return np.argmax(u - lambdas, axis=1)
 
 
