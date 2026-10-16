@@ -296,4 +296,81 @@ def test_linear_calibration():
     assert np.allclose(calibrated, y_true, atol=0.1)
 
 
+def test_member_debiasing():
+    from src.calibration import fit_member_debiasing, apply_member_debiasing
+
+    rng = np.random.default_rng(42)
+    y_true = rng.uniform(0.5, 5.0, size=100)
+    # Shrunk predictions (e.g. median shrinkage from Huber loss: slope 0.8)
+    preds = (0.8 * y_true + 0.1).reshape(-1, 1)
+
+    params = fit_member_debiasing(preds, y_true)
+    assert len(params) == 1
+    assert params[0][0] > 1.0  # Should learn to expand slope back towards 1.0/0.8 = 1.25
+
+    debiased = apply_member_debiasing(preds, params)
+    init_err = np.mean(np.abs(preds[:, 0] - y_true))
+    deb_err = np.mean(np.abs(debiased[:, 0] - y_true))
+    assert deb_err < init_err
+
+
+def test_customer_blup():
+    import pandas as pd
+    from src.calibration import (
+        compute_customer_blup,
+        fit_blup_shrinkage,
+        apply_customer_blup,
+    )
+
+    customer_residuals = {
+        "c1": [(pd.Timestamp("2024-03-01"), 0.5), (pd.Timestamp("2024-06-01"), 0.4)],
+        "c2": [(pd.Timestamp("2024-06-01"), -0.3)],
+    }
+    target_cutoff = pd.Timestamp("2024-12-01")
+
+    blup_effects = compute_customer_blup(customer_residuals, target_cutoff, kappa=1.0)
+    assert "c1" in blup_effects
+    assert blup_effects["c1"] > 0.0
+    assert "c2" in blup_effects
+    assert blup_effects["c2"] < 0.0
+
+    cids = np.array(["c1", "c2", "c3"])
+    blup_vec = np.array([blup_effects.get(c, 0.0) for c in cids])
+    preds = np.array([2.0, 2.0, 2.0])
+    y_true = np.array([2.3, 1.8, 2.0])
+    active_mask = np.ones(3, dtype=bool)
+
+    eta = fit_blup_shrinkage(y_true, preds, blup_vec, active_mask)
+    assert 0.0 <= eta <= 0.25
+
+    adjusted = apply_customer_blup(preds, blup_vec, eta, active_mask)
+    assert adjusted[0] >= preds[0]
+    assert adjusted[1] <= preds[1]
+
+
+def test_decide_with_prior_alignment():
+    from src.calibration import decide_with_prior_alignment
+
+    rng = np.random.default_rng(42)
+    n_samples, n_classes = 1000, 4
+    logits = rng.normal(size=(n_samples, n_classes))
+    logits[:, 0] += 2.0
+    exp_logits = np.exp(logits)
+    probs = exp_logits / exp_logits.sum(axis=1, keepdims=True)
+
+    class_weights = np.ones(n_classes)
+    target_prior = np.array([0.25, 0.25, 0.25, 0.25])
+    decisions = decide_with_prior_alignment(probs, class_weights, target_prior, max_steps=50)
+
+    assert decisions.shape == (n_samples,)
+    uncal_counts = np.bincount(np.argmax(probs, axis=1), minlength=4) / n_samples
+    cal_counts = np.bincount(decisions, minlength=4) / n_samples
+
+    uncal_dist = np.sum(np.abs(uncal_counts - target_prior))
+    cal_dist = np.sum(np.abs(cal_counts - target_prior))
+    assert cal_dist < uncal_dist
+
+
+
+
 

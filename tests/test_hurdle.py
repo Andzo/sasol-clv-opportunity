@@ -76,3 +76,48 @@ def test_bagged_two_part_hurdle_models(synthetic_data):
     assert len(preds_nf) == len(X)
     assert not np.isnan(preds_nf).any()
     assert (preds_nf >= 0.0).all()
+
+
+def test_physical_basket_ticket_regressor():
+    from src.hurdle import PhysicalBasketTicketRegressor
+
+    rng = np.random.default_rng(42)
+    n = 80
+    X = pd.DataFrame({
+        "m3_baskets": rng.poisson(3, size=n),
+        "days_since_last_purchase": rng.uniform(1, 90, size=n),
+        "f1": rng.normal(size=n),
+    })
+    # Target: log1p(litres / 10)
+    litres = rng.exponential(scale=50, size=n) * (X["m3_baskets"] > 0)
+    y = np.log1p(litres / 10.0)
+
+    model = PhysicalBasketTicketRegressor(seed=42, n_jobs=1)
+    model.basket_regressor.set_params(n_estimators=10)
+    model.ticket_regressor.set_params(n_estimators=10)
+    model.fit(X, y)
+    preds = model.predict(X)
+
+    assert len(preds) == n
+    assert not np.isnan(preds).any()
+    assert (preds >= 0.0).all()
+
+
+def test_multi_quantile_two_part_hurdle(synthetic_data):
+    from src.hurdle import MultiQuantileTwoPartHurdle
+
+    X, y = synthetic_data
+    mq = MultiQuantileTwoPartHurdle(seed=42, n_jobs=1)
+    for q in mq.lgb_quantiles:
+        q.set_params(n_estimators=10)
+    for q in mq.cb_quantiles:
+        q.set_params(iterations=10)
+    mq.l2_regressor.set_params(n_estimators=10)
+    mq.fit(X, y)
+    preds = mq.predict(X)
+
+    assert len(preds) == len(X)
+    assert not np.isnan(preds).any()
+    assert (preds >= 0.0).all()
+
+
