@@ -232,13 +232,13 @@ class MultiQuantileTwoPartHurdle:
         for tau in self.QUANTILES:
             self.lgb_quantiles.append(
                 LGBMRegressor(
-                    objective="quantile", alpha=tau, n_estimators=300, learning_rate=0.03,
+                    objective="quantile", alpha=tau, n_estimators=150, learning_rate=0.04,
                     num_leaves=28, colsample_bytree=0.6, reg_lambda=8.0,
                     random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
                 )
             )
             cb_k: dict[str, Any] = {
-                "iterations": 300, "learning_rate": 0.04, "depth": 5, "l2_leaf_reg": 8.0,
+                "iterations": 150, "learning_rate": 0.05, "depth": 5, "l2_leaf_reg": 8.0,
                 "loss_function": f"Quantile:alpha={tau}", "random_seed": seed, "verbose": 0, "allow_writing_files": False,
             }
             if use_gpu:
@@ -248,10 +248,11 @@ class MultiQuantileTwoPartHurdle:
             self.cb_quantiles.append(CatBoostRegressor(**cb_k))
 
         self.l2_regressor = LGBMRegressor(
-            objective="regression", n_estimators=350, learning_rate=0.03,
+            objective="regression", n_estimators=180, learning_rate=0.04,
             num_leaves=28, colsample_bytree=0.6, reg_lambda=8.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
+
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "MultiQuantileTwoPartHurdle":
         y_arr = np.asarray(y, dtype="float64")
@@ -332,15 +333,16 @@ class PhysicalBasketTicketRegressor:
         from lightgbm import LGBMRegressor
 
         self.basket_regressor = LGBMRegressor(
-            objective="poisson", n_estimators=300, learning_rate=0.03,
+            objective="poisson", n_estimators=150, learning_rate=0.04,
             num_leaves=28, colsample_bytree=0.6, reg_lambda=8.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
         self.ticket_regressor = LGBMRegressor(
-            objective="gamma", n_estimators=300, learning_rate=0.03,
+            objective="gamma", n_estimators=150, learning_rate=0.04,
             num_leaves=28, colsample_bytree=0.6, reg_lambda=8.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
+
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "PhysicalBasketTicketRegressor":
         y_arr = np.asarray(y, dtype="float64")

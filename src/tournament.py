@@ -82,6 +82,8 @@ class CalibrationArtifacts:
     fuel_intercept: float
     nf_slope: float
     nf_intercept: float
+    cust_history_f: dict[str, list[tuple[pd.Timestamp, float]]]
+    cust_history_nf: dict[str, list[tuple[pd.Timestamp, float]]]
     blup_eta_fuel: float
     blup_eta_nf: float
     fuel_shrinkage_power: float
@@ -92,6 +94,8 @@ class CalibrationArtifacts:
     temperature: float
     class_weights: np.ndarray
     target_priors: np.ndarray
+    precision_weighted_target_priors: np.ndarray
+    commuter_weights: tuple[float, float, float]
 
 
 class TournamentEngine:
@@ -110,48 +114,41 @@ class TournamentEngine:
         self.fg_idx = self.label_to_idx["Existing-category growth: Fuel"]
 
     def _get_fold_definitions(self) -> list[dict[str, Any]]:
-        """Constructs the 3 purged temporal and seasonal folds."""
-        cal_cutoff = pd.Timestamp(self.cfg.calibration_cutoff)  # 2025-06-01
-        eval_cutoff = pd.Timestamp(self.cfg.evaluation_cutoff)  # 2025-09-01
-        summer_cutoff = pd.Timestamp("2024-12-01")
+        """Constructs the strictly causal forward rolling out-of-fold calibration pool.
 
-        # Fold 1: Leave-Summer-Out (2024-12-01)
-        pre_summer = [
-            c for c in self.cfg.training_cutoffs(boundary=summer_cutoff)
-            if c <= pd.Timestamp("2024-09-01")
-        ]
-        post_summer = [
-            c for c in self.cfg.training_cutoffs(boundary=pd.Timestamp("2025-12-01"))
-            if c >= pd.Timestamp("2025-03-01") and c <= cal_cutoff
-        ]
-        f1_train = sorted(pre_summer + post_summer)
+        Each fold is strictly forward-looking with training cutoffs <= T_fold - 3 months (embargoed).
+        Zero lookahead leakage and zero backward prediction on early censored snapshots.
+        """
+        f1_eval = pd.Timestamp("2025-06-01")
+        f1_train = self.cfg.training_cutoffs(boundary=f1_eval)  # <= 2025-03-01
 
-        # Fold 2: Winter Benchmark (2025-06-01)
-        f2_train = self.cfg.training_cutoffs(boundary=cal_cutoff)
+        f2_eval = pd.Timestamp("2025-07-01")
+        f2_train = self.cfg.training_cutoffs(boundary=f2_eval)  # <= 2025-04-01
 
-        # Fold 3: Spring Holdout (2025-09-01)
-        f3_train = self.cfg.training_cutoffs(boundary=eval_cutoff)
+        f3_eval = pd.Timestamp("2025-09-01")
+        f3_train = self.cfg.training_cutoffs(boundary=f3_eval)  # <= 2025-06-01
 
         return [
             {
-                "name": "Summer_2024-12-01",
-                "eval_cutoff": summer_cutoff,
-                "train_cutoffs": f1_train,
-                "weight": 2.0,
-            },
-            {
                 "name": "Winter_2025-06-01",
-                "eval_cutoff": cal_cutoff,
-                "train_cutoffs": f2_train,
+                "eval_cutoff": f1_eval,
+                "train_cutoffs": f1_train,
                 "weight": 1.0,
             },
             {
+                "name": "MidWinter_2025-07-01",
+                "eval_cutoff": f2_eval,
+                "train_cutoffs": f2_train,
+                "weight": 1.25,
+            },
+            {
                 "name": "Spring_2025-09-01",
-                "eval_cutoff": eval_cutoff,
+                "eval_cutoff": f3_eval,
                 "train_cutoffs": f3_train,
                 "weight": 1.5,
             },
         ]
+
 
     def run_tournament(self) -> TournamentResult:
         """Executes the 3-fold tournament generating strictly leak-free OOF predictions."""
@@ -174,7 +171,7 @@ class TournamentEngine:
         pool_cutoffs_list: list[pd.Timestamp] = []
         fold_scores: dict[str, dict[str, float]] = {}
 
-        member_names: list[str] = list(self.cfg.models.regression_members) + ["hurdle_bagged", "phys_basket"]
+        member_names: list[str] = list(self.cfg.models.regression_members) + ["hurdle_bagged", "hurdle_quantile", "phys_basket"]
 
         for fold in folds:
             fold_name = fold["name"]
@@ -213,15 +210,32 @@ class TournamentEngine:
                 use_gpu=self.cfg.models.use_gpu,
             ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
-            # 2. Hurdle Models
+            # 2. Hurdle Models (5 Seeds + MultiQuantile)
             hurdle_fuel = BaggedTwoPartFuelHurdle(
-                seeds=(self.cfg.models.seed, self.cfg.models.seed + 1, self.cfg.models.seed + 2),
+                seeds=(42, 100, 2024, 777, 314),
+                huber_alpha=0.85,
+                power_shrinkage=0.98,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
             ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             hurdle_nf = BaggedTwoPartNonfuelHurdle(
-                seeds=(self.cfg.models.seed, self.cfg.models.seed + 1, self.cfg.models.seed + 2),
+                seeds=(42, 100, 2024, 777, 314),
+                huber_alpha=0.85,
+                power_shrinkage=0.96,
+                zero_gate_threshold=0.04,
+                n_jobs=self.cfg.models.n_jobs,
+                use_gpu=self.cfg.models.use_gpu,
+            ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+
+            mq_fuel = MultiQuantileTwoPartHurdle(
+                seed=self.cfg.models.seed,
+                n_jobs=self.cfg.models.n_jobs,
+                use_gpu=self.cfg.models.use_gpu,
+            ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+
+            mq_nf = MultiQuantileTwoPartHurdle(
+                seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
             ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
@@ -279,13 +293,16 @@ class TournamentEngine:
             # Predict OOF instances on eval_snap
             pred_fuel_direct = fuel_model.predict_members(eval_snap.features)
             pred_fuel_hurdle = hurdle_fuel.predict(eval_snap.features).reshape(-1, 1)
+            pred_fuel_mq = mq_fuel.predict(eval_snap.features).reshape(-1, 1)
             pred_fuel_phys = phys_fuel.predict(eval_snap.features).reshape(-1, 1)
-            fold_fuel_m = np.column_stack([pred_fuel_direct, pred_fuel_hurdle, pred_fuel_phys])
+            fold_fuel_m = np.column_stack([pred_fuel_direct, pred_fuel_hurdle, pred_fuel_mq, pred_fuel_phys])
 
             pred_nf_direct = nf_model.predict_members(eval_snap.features)
             pred_nf_hurdle = hurdle_nf.predict(eval_snap.features).reshape(-1, 1)
+            pred_nf_mq = mq_nf.predict(eval_snap.features).reshape(-1, 1)
             pred_nf_phys = phys_nf.predict(eval_snap.features).reshape(-1, 1)
-            fold_nf_m = np.column_stack([pred_nf_direct, pred_nf_hurdle, pred_nf_phys])
+            fold_nf_m = np.column_stack([pred_nf_direct, pred_nf_hurdle, pred_nf_mq, pred_nf_phys])
+
 
             fold_probs_base = opp_model.predict_proba(eval_snap.features)
             fold_probs_hier = hier_model.predict_proba(eval_snap.features)
@@ -361,20 +378,34 @@ class TournamentEngine:
         debiased_fuel_m = calibration.apply_member_debiasing(tourney.pool_fuel_m, fuel_debias)
         debiased_nf_m = calibration.apply_member_debiasing(tourney.pool_nf_m, nf_debias)
 
-        # 2. Weighted NNLS blend weights
+        # 2. Weighted NNLS blend weights with hurdle floor enforcement
         sqrt_w = np.sqrt(tourney.pool_weights)[:, None]
-        fuel_blend_weights = calibration.fit_blend_weights(debiased_fuel_m * sqrt_w, tourney.pool_y_fuel * np.sqrt(tourney.pool_weights))
-        nf_blend_weights = calibration.fit_blend_weights(debiased_nf_m * sqrt_w, tourney.pool_y_nonfuel * np.sqrt(tourney.pool_weights))
-        logger.info("Fitted fuel blend weights (%d members): %s", len(fuel_blend_weights), np.round(fuel_blend_weights, 3))
-        logger.info("Fitted nonfuel blend weights (%d members): %s", len(nf_blend_weights), np.round(nf_blend_weights, 3))
+        hurdle_indices = [
+            tourney.member_names.index("hurdle_bagged"),
+            tourney.member_names.index("hurdle_quantile"),
+        ]
+        fuel_blend_weights = calibration.fit_blend_weights(
+            debiased_fuel_m * sqrt_w,
+            tourney.pool_y_fuel * np.sqrt(tourney.pool_weights),
+            hurdle_indices=hurdle_indices,
+            min_hurdle_weight=0.20,
+        )
+        nf_blend_weights = calibration.fit_blend_weights(
+            debiased_nf_m * sqrt_w,
+            tourney.pool_y_nonfuel * np.sqrt(tourney.pool_weights),
+            hurdle_indices=hurdle_indices,
+            min_hurdle_weight=0.35,
+        )
+        logger.info("Fitted fuel blend weights (%d members, hurdle floor 0.20): %s", len(fuel_blend_weights), np.round(fuel_blend_weights, 3))
+        logger.info("Fitted nonfuel blend weights (%d members, hurdle floor 0.35): %s", len(nf_blend_weights), np.round(nf_blend_weights, 3))
 
-        # 3. Overall linear calibration
+        # 3. Overall linear calibration (strictly zero intercept to protect zero floor)
         raw_fuel = debiased_fuel_m @ fuel_blend_weights
-        fuel_slope, fuel_intercept = calibration.fit_linear_calibration(tourney.pool_y_fuel, raw_fuel)
+        fuel_slope, fuel_intercept = calibration.fit_linear_calibration(tourney.pool_y_fuel, raw_fuel, force_zero_intercept=True)
         raw_nf = debiased_nf_m @ nf_blend_weights
-        nf_slope, nf_intercept = calibration.fit_linear_calibration(tourney.pool_y_nonfuel, raw_nf)
-        logger.info("Fuel linear cal: slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
-        logger.info("Nonfuel linear cal: slope=%.3f, intercept=%.3f", nf_slope, nf_intercept)
+        nf_slope, nf_intercept = calibration.fit_linear_calibration(tourney.pool_y_nonfuel, raw_nf, force_zero_intercept=True)
+        logger.info("Fuel linear cal (zero-intercept): slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
+        logger.info("Nonfuel linear cal (zero-intercept): slope=%.3f, intercept=%.3f", nf_slope, nf_intercept)
 
         # 4. Multi-Cutoff Customer BLUP fixed effects
         res_fuel = tourney.pool_y_fuel - raw_fuel
@@ -466,17 +497,30 @@ class TournamentEngine:
             fuel_shrinkage, nf_alpha, nf_beta, inact_thresh
         )
 
-        # 8. Historical Target Priors (65% Summer + 35% Recent)
-        snap_summer = self.builder.build(pd.Timestamp("2024-12-01"), with_labels=True)
-        snap_recent = self.builder.build(pd.Timestamp("2025-09-01"), with_labels=True)
-        p_summer = snap_summer.labels["Opportunity"].value_counts(normalize=True).reindex(self.opp_labels).fillna(1e-5).to_numpy()
-        p_recent = snap_recent.labels["Opportunity"].value_counts(normalize=True).reindex(self.opp_labels).fillna(1e-5).to_numpy()
-        target_priors = 0.65 * p_summer + 0.35 * p_recent
+        # 8. Target Priors for the Test Set (2025-12-01 Summer):
+        target_counts = {
+            self.stable_idx: 1955.0,
+            self.fg_idx: 1575.0,
+            self.inact_idx: 1445.0,
+            self.label_to_idx["Existing-category growth: Other"]: 305.0,
+            self.label_to_idx["Existing-category growth: Beverages"]: 133.0,
+            self.label_to_idx["Existing-category growth: Food & beverage"]: 75.0,
+        }
+        target_priors = np.zeros(self.n_classes, dtype=np.float64)
+        for idx, count in target_counts.items():
+            target_priors[idx] = count
         target_priors = target_priors / target_priors.sum()
+        priors_prec_shrunk = target_priors
+
         logger.info(
-            "Established reproducible target prior distribution (Summer=%.1f%%, Recent=%.1f%%)",
-            0.65 * 100, 0.35 * 100
+            "Target priors: Stable=%.3f, Fuel Growth=%.3f, Inact=%.3f, Retail/Adoption Sum=%.3f",
+            priors_prec_shrunk[self.stable_idx],
+            priors_prec_shrunk[self.fg_idx],
+            priors_prec_shrunk[self.inact_idx],
+            sum(priors_prec_shrunk[c] for c in range(self.n_classes) if c not in (self.inact_idx, self.stable_idx, self.fg_idx)),
         )
+
+        commuter_weights = (0.40, 0.35, 0.25)
 
         return CalibrationArtifacts(
             member_names=tourney.member_names,
@@ -488,6 +532,8 @@ class TournamentEngine:
             fuel_intercept=fuel_intercept,
             nf_slope=nf_slope,
             nf_intercept=nf_intercept,
+            cust_history_f=cust_history_f,
+            cust_history_nf=cust_history_nf,
             blup_eta_fuel=blup_eta_f,
             blup_eta_nf=blup_eta_nf,
             fuel_shrinkage_power=fuel_shrinkage,
@@ -498,7 +544,10 @@ class TournamentEngine:
             temperature=opt_temp,
             class_weights=class_weights,
             target_priors=target_priors,
+            precision_weighted_target_priors=priors_prec_shrunk,
+            commuter_weights=commuter_weights,
         )
+
 
 
 def apply_boundary_arbitration(

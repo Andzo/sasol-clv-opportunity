@@ -96,7 +96,8 @@ def test_build_features_schema_and_reproducibility():
         "m6_fuel_std_litres",
         "m6_commuter_share",
         "m6_dow_entropy",
-        "has_observed_yoy_window",
+        "station_summer_fuel_index",
+        "n_categories_m6",
         "yoy_to_m3_ratio_fuel_rand",
         "refuel_burn_rate_daily",
         "tank_depletion_state",
@@ -108,9 +109,13 @@ def test_build_features_schema_and_reproducibility():
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"
 
-    # Ablated calendar features must NOT be present
-    for col in ("is_holiday_quarter", "cutoff_quarter", "hist_december_active", "hist_december_spend_log", "dec24_surge_ratio"):
+    # Ablated calendar features & non-stationary horizon leaks must NOT be present
+    for col in (
+        "is_holiday_quarter", "cutoff_quarter", "hist_december_active", "hist_december_spend_log",
+        "dec24_surge_ratio", "has_observed_yoy_window", "left_censored", "is_left_censored_m3", "n_categories_ever"
+    ):
         assert col not in feats1.columns, f"Ablated feature unexpectedly present: {col}"
+
 
     assert len(feats1) == 1
     assert feats1.index.name == "ID"

@@ -12,10 +12,12 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 import scipy.special as sp
-from scipy.optimize import nnls
+from scipy.optimize import minimize, nnls
 
-DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 12.0, 45)
+DEFAULT_GRID: np.ndarray = np.geomspace(0.5, 3.5, 25)
 DOMINANT_TIGHT_GRID: np.ndarray = np.geomspace(0.85, 1.15, 17)
+MAJOR_GROWTH_GRID: np.ndarray = np.geomspace(0.80, 2.50, 19)
+MINOR_ADOPTION_GRID: np.ndarray = np.geomspace(0.25, 1.25, 17)
 
 
 def apply_eligibility_mask(probs: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -71,6 +73,7 @@ def fit_class_weights(
     grid: np.ndarray = DEFAULT_GRID,
     n_passes: int = 4,
     dominant_classes: Sequence[int] | None = None,
+    major_growth_classes: Sequence[int] | None = None,
 ) -> np.ndarray:
     """Coordinate ascent on per-class decision weights maximising weighted F1.
 
@@ -83,11 +86,19 @@ def fit_class_weights(
     weights = np.ones(n_classes)
     best = weighted_f1(y_true, decide(probs, weights), n_classes)
     dom_set = set(dominant_classes) if dominant_classes is not None else set()
+    maj_set = set(major_growth_classes) if major_growth_classes is not None else set()
 
     for _ in range(n_passes):
         improved = False
         for c in range(n_classes):
-            c_grid = DOMINANT_TIGHT_GRID if c in dom_set else grid
+            if c in dom_set:
+                c_grid = DOMINANT_TIGHT_GRID
+            elif c in maj_set:
+                c_grid = MAJOR_GROWTH_GRID
+            elif major_growth_classes is not None:
+                c_grid = MINOR_ADOPTION_GRID
+            else:
+                c_grid = grid
             for value in c_grid:
                 trial = weights.copy()
                 trial[c] = value
@@ -119,12 +130,19 @@ def fit_temperature_and_class_weights(
     best_temp = 1.0
     best_weights = np.ones(probs.shape[1])
     n_classes = probs.shape[1]
+    dom_set = set(dominant_classes) if dominant_classes is not None else set()
+    major_retail_growth_indices = [c for c in [0, 1, 3] if c < n_classes and c not in dom_set]
+    minor_adoption_indices = [c for c in range(n_classes) if c not in dom_set and c not in major_retail_growth_indices]
 
     for temp in temperatures:
         p_scaled = apply_temperature_scaling(probs, temp)
         if mask is not None:
             p_scaled = apply_eligibility_mask(p_scaled, mask)
-        cw = fit_class_weights(p_scaled, y_true, dominant_classes=dominant_classes)
+        cw = fit_class_weights(
+            p_scaled, y_true,
+            dominant_classes=dominant_classes,
+            major_growth_classes=major_retail_growth_indices,
+        )
         score = weighted_f1(y_true, decide(p_scaled, cw), n_classes)
         if score > best_f1 + 1e-12:
             best_f1 = score
@@ -209,12 +227,46 @@ def fit_temperature_and_class_weights(
     return best_temp, best_weights
 
 
-def fit_blend_weights(member_preds: np.ndarray, y_true: np.ndarray) -> np.ndarray:
-    """Non-negative least-squares blend weights (normalised); uniform on degenerate fits."""
-    weights, _ = nnls(member_preds, np.asarray(y_true, dtype="float64"))
-    if weights.sum() <= 0:
-        return np.full(member_preds.shape[1], 1.0 / member_preds.shape[1])
-    return weights / weights.sum()
+def fit_blend_weights(
+    member_preds: np.ndarray,
+    y_true: np.ndarray,
+    hurdle_indices: Sequence[int] | None = None,
+    min_hurdle_weight: float = 0.0,
+) -> np.ndarray:
+    """Non-negative least-squares blend weights with optional hurdle weight floor constraint."""
+    y_arr = np.asarray(y_true, dtype="float64")
+    n_members = member_preds.shape[1]
+    weights, _ = nnls(member_preds, y_arr)
+    w_sum = weights.sum()
+    if w_sum > 0:
+        w_norm = weights / w_sum
+    else:
+        w_norm = np.full(n_members, 1.0 / n_members)
+
+    if hurdle_indices is not None and min_hurdle_weight > 0.0:
+        h_sum = sum(w_norm[i] for i in hurdle_indices)
+        if h_sum < min_hurdle_weight:
+            def loss(w: np.ndarray) -> float:
+                diff = member_preds @ w - y_arr
+                return float(np.mean(diff ** 2)) + 0.005 * float(np.sum(w ** 2))
+
+            bounds = [(0.0, 1.0) for _ in range(n_members)]
+            constraints = [
+                {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+                {"type": "ineq", "fun": lambda w: sum(w[i] for i in hurdle_indices) - min_hurdle_weight},
+            ]
+            w0 = w_norm.copy()
+            w_h_boost = (min_hurdle_weight - h_sum) / max(len(hurdle_indices), 1)
+            for i in hurdle_indices:
+                w0[i] += w_h_boost
+            w0 = np.clip(w0, 0.0, 1.0)
+            w0 = w0 / w0.sum()
+
+            opt = minimize(loss, w0, method="SLSQP", bounds=bounds, constraints=constraints)
+            if opt.success and np.sum(opt.x) > 0:
+                w_norm = np.clip(opt.x, 0.0, 1.0)
+                w_norm = w_norm / w_norm.sum()
+    return w_norm
 
 
 def fit_shrinkage_power(
@@ -246,11 +298,22 @@ def apply_shrinkage(y_pred: np.ndarray, p_active: np.ndarray, power: float) -> n
     return np.asarray(y_pred, dtype="float64") * (p_active ** power)
 
 
-def fit_linear_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
-    """Fit optimal slope a and intercept b minimizing MSE on calibration fold: y ~ a * y_pred + b."""
-    from scipy.optimize import minimize
+def fit_linear_calibration(
+    y_true: np.ndarray, y_pred: np.ndarray, force_zero_intercept: bool = True
+) -> tuple[float, float]:
+    """Fit optimal slope a and intercept b minimizing MSE on calibration fold: y ~ a * y_pred + b.
+
+    Forces intercept b = 0.0 by default to prevent zero-floor destruction on zero-inflated targets.
+    """
     y_t = np.asarray(y_true, dtype="float64")
     y_p = np.asarray(y_pred, dtype="float64")
+    if force_zero_intercept:
+        denom = float(np.sum(y_p ** 2))
+        if denom <= 1e-12:
+            return 1.0, 0.0
+        slope = float(np.clip(np.sum(y_t * y_p) / denom, 0.80, 1.25))
+        return slope, 0.0
+
     res = minimize(
         lambda p: np.mean((y_t - (p[0] * y_p + p[1])) ** 2),
         x0=[1.0, 0.0],
@@ -259,9 +322,10 @@ def fit_linear_calibration(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[floa
     return float(res.x[0]), float(res.x[1])
 
 
-def apply_linear_calibration(y_pred: np.ndarray, slope: float, intercept: float) -> np.ndarray:
+def apply_linear_calibration(y_pred: np.ndarray, slope: float, intercept: float = 0.0) -> np.ndarray:
     """Apply slope and intercept shift with non-negativity clipping."""
     return np.clip(slope * np.asarray(y_pred, dtype="float64") + intercept, 0.0, None)
+
 
 
 def fit_dual_shrinkage_powers(
@@ -434,7 +498,7 @@ def apply_soft_zero_floor(p: np.ndarray, tau_0: float = 0.025) -> np.ndarray:
 
 
 def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[tuple[float, float]]:
-    """Fits linear recalibration (a_m, b_m) per member on positive predictions."""
+    """Fits linear recalibration (a_m, b_m) per member on positive predictions with zero intercept."""
     params: list[tuple[float, float]] = []
     n_members = member_preds.shape[1]
     y_arr = np.asarray(y_true, dtype="float64")
@@ -442,11 +506,12 @@ def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[t
         pred_m = member_preds[:, m]
         pos_mask = (pred_m > 0) & (y_arr > 0)
         if pos_mask.sum() >= 20:
-            a, b = fit_linear_calibration(y_arr[pos_mask], pred_m[pos_mask])
+            a, b = fit_linear_calibration(y_arr[pos_mask], pred_m[pos_mask], force_zero_intercept=True)
         else:
             a, b = 1.0, 0.0
-        params.append((float(a), float(b)))
+        params.append((float(a), 0.0))
     return params
+
 
 
 def apply_member_debiasing(member_preds: np.ndarray, debias_params: list[tuple[float, float]]) -> np.ndarray:
@@ -580,30 +645,160 @@ def decide_with_prior_alignment(
     probs: np.ndarray,
     class_weights: np.ndarray,
     target_priors: np.ndarray,
-    tolerance: float = 0.015,
-    max_steps: int = 50,
+    macro_classes: tuple[int, ...] | None = None,
+    tolerance: float = 0.001,
+    max_steps: int = 300,
+    step_size: float = 0.20,
 ) -> np.ndarray:
     """Prior-Constrained Expected Support-Weighted F1 Decision Rule via Dual Ascent.
 
     Finds dual Lagrange multipliers lambda in R^K such that macro class proportions
-    align with historical target priors (65% summer + 35% recent) without threshold drift.
+    align with historical target priors without threshold drift.
     """
     n, k = probs.shape
     u = np.log(probs * class_weights + 1e-12)
     lambdas = np.zeros(k, dtype=np.float64)
-    step_size = 0.5
     target = np.asarray(target_priors, dtype=np.float64)
     target = target / target.sum()
+
+    if macro_classes is None:
+        macro_list = list(range(k))
+    else:
+        macro_list = [c for c in macro_classes if c < k]
+    if not macro_list:
+        macro_list = list(range(k))
 
     for _ in range(max_steps):
         pred = np.argmax(u - lambdas, axis=1)
         counts = np.bincount(pred, minlength=k) / n
         diff = counts - target
-        if np.max(np.abs(diff[:3])) <= tolerance:
+        if np.max(np.abs(diff[macro_list])) <= tolerance:
             break
-        lambdas += step_size * diff
-        step_size *= 0.98
+        for c in macro_list:
+            lambdas[c] += step_size * diff[c]
 
     return np.argmax(u - lambdas, axis=1)
+
+
+def compute_precision_weighted_target_priors(
+    raw_target_priors: np.ndarray,
+    oof_f1_per_class: np.ndarray | None,
+    macro_classes: tuple[int, ...] = (0, 1, 2),
+) -> np.ndarray:
+    """Computes precision-shrunk target prior capacities under Support-Weighted F1 Bayes decision rule.
+
+    For low-precision minority classes (Retail and Adoption):
+        r_k = clip(F1_k^OOF / F1_mean^OOF, 0.35, 1.05)
+        pi_tilde_k = pi_target_k * r_k
+    Redistributes remaining probability mass across macro classes (Stable, Fuel Growth, Inactivity)
+    according to their historical summer prior ratio.
+    """
+    target = np.asarray(raw_target_priors, dtype=np.float64).copy()
+    target = target / target.sum()
+    k = len(target)
+
+    if oof_f1_per_class is None:
+        return target
+
+    f1s = np.asarray(oof_f1_per_class, dtype=np.float64)
+    valid_f1s = f1s[f1s > 0]
+    mean_f1 = float(np.mean(valid_f1s)) if len(valid_f1s) > 0 else 0.50
+
+    minority_classes = [c for c in range(k) if c not in macro_classes]
+    shrunk_minority_mass = 0.0
+
+    for c in minority_classes:
+        f1_c = f1s[c] if c < len(f1s) else 0.30
+        r_c = float(np.clip(f1_c / max(mean_f1, 1e-4), 0.35, 1.05))
+        target[c] = target[c] * r_c
+        shrunk_minority_mass += target[c]
+
+    remaining_macro_mass = max(1.0 - shrunk_minority_mass, 0.50)
+    raw_macro_sum = sum(raw_target_priors[c] for c in macro_classes)
+    if raw_macro_sum > 0:
+        for c in macro_classes:
+            target[c] = remaining_macro_mass * (raw_target_priors[c] / raw_macro_sum)
+
+    return target / target.sum()
+
+
+def arbitrate_commuter_pool(
+    opp_labels: np.ndarray,
+    features: pd.DataFrame,
+    pred_fuel: np.ndarray,
+    p_phys_fg: np.ndarray,
+    p_clf_fg: np.ndarray,
+    p_clf_stable: np.ndarray,
+    target_fg_capacity: int,
+    weights: tuple[float, float, float] = (0.40, 0.35, 0.25),
+    ever_fuel_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Direct Physical Fuel Hurdle Arbitration between Existing-category growth: Fuel and Stable.
+
+    Computes unified Calibrated Physical Fuel Growth Score:
+        Score_i = w1 * rank_norm(R_phys_i) + w2 * P_exceed_i^fuel + w3 * P_clf(FG | Commuter)
+    and rank-assigns exactly target_fg_capacity to Fuel Growth.
+    """
+    labels = np.asarray(opp_labels, dtype=object).copy()
+    n = len(labels)
+    fg_label = "Existing-category growth: Fuel"
+    st_label = "Stable"
+
+    is_commuter = (labels == fg_label) | (labels == st_label)
+    commuter_indices = np.where(is_commuter)[0]
+    if len(commuter_indices) == 0:
+        return labels
+
+    m3_fuel_litres = features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in features.columns else np.zeros(n)
+    m3_fuel_rand = features["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in features.columns else np.zeros(n)
+    m1_fuel_baskets = features["m1_fuel_baskets"].to_numpy() if "m1_fuel_baskets" in features.columns else (
+        features["m1_baskets"].to_numpy() if "m1_baskets" in features.columns else np.zeros(n)
+    )
+    days_since_fuel = features["days_since_last_fuel"].to_numpy() if "days_since_last_fuel" in features.columns else np.full(n, 999.0)
+
+    if ever_fuel_mask is not None:
+        ever_fuel = np.asarray(ever_fuel_mask, dtype=bool)
+    elif "active_m6_fuel" in features.columns:
+        ever_fuel = features["active_m6_fuel"].to_numpy() > 0
+    elif "ever_fuel" in features.columns:
+        ever_fuel = features["ever_fuel"].to_numpy() > 0
+    else:
+        ever_fuel = np.ones(n, dtype=bool)
+
+    litres_pred = np.expm1(np.minimum(pred_fuel * 2.352825386185113, 15.0))
+    pump_price = np.clip(
+        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
+        20.5, 27.5,
+    )
+    h_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
+    r_phys = (litres_pred + 0.5) / (h_litres + 0.5)
+
+    from scipy.stats import rankdata
+    r_phys_commuter = r_phys[commuter_indices]
+    rank_r_phys = rankdata(r_phys_commuter) / len(r_phys_commuter)
+
+    p_exceed_commuter = p_phys_fg[commuter_indices]
+
+    denom_clf = p_clf_fg[commuter_indices] + p_clf_stable[commuter_indices] + 1e-12
+    p_cond_commuter = p_clf_fg[commuter_indices] / denom_clf
+
+    w1, w2, w3 = weights
+    blended_score = w1 * rank_r_phys + w2 * p_exceed_commuter + w3 * p_cond_commuter
+
+    dormant_penalty = (
+        (~ever_fuel[commuter_indices])
+        | ((m3_fuel_litres[commuter_indices] <= 5.0) & (m1_fuel_baskets[commuter_indices] == 0) & (days_since_fuel[commuter_indices] > 90))
+    )
+    blended_score[dormant_penalty] = -1.0
+
+    k_target = int(np.clip(target_fg_capacity, 0, len(commuter_indices)))
+    sorted_order = np.argsort(-blended_score)
+    top_fg_indices = commuter_indices[sorted_order[:k_target]]
+    stable_indices = commuter_indices[sorted_order[k_target:]]
+
+    labels[top_fg_indices] = fg_label
+    labels[stable_indices] = st_label
+    return labels
+
 
 

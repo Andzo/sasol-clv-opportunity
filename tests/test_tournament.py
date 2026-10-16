@@ -16,16 +16,16 @@ def test_fold_definitions():
     folds = engine._get_fold_definitions()
     assert len(folds) == 3
     names = [f["name"] for f in folds]
-    assert "Summer_2024-12-01" in names
     assert "Winter_2025-06-01" in names
+    assert "MidWinter_2025-07-01" in names
     assert "Spring_2025-09-01" in names
 
-    # Fold 1 (Summer) weight must be 2.0
-    f1 = [f for f in folds if "Summer" in f["name"]][0]
-    assert f1["weight"] == 2.0
-    # No outcome overlap with summer outcome window [2024-12-01, 2025-03-01)
-    for c in f1["train_cutoffs"]:
-        assert not (pd.Timestamp("2024-10-01") <= c < pd.Timestamp("2025-03-01"))
+    # All folds must strictly obey causal forward embargo (training cutoffs <= eval - 3 months)
+    for f in folds:
+        eval_t = f["eval_cutoff"]
+        for c in f["train_cutoffs"]:
+            assert c <= eval_t - pd.DateOffset(months=3)
+
 
 
 def test_boundary_arbitration():

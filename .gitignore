@@ -30,4 +30,6 @@ reports/**/*.html
 reports/*.png
 reports/*.html
 reports/**/cache/
+reports/**/*.parquet
+scratch/
 

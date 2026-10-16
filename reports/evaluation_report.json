@@ -1,38 +1,39 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 5152.01,
+  "elapsed_seconds": 5410.36,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5968473183027541,
-    "rmse_nonfuel": 0.7455681813747159,
-    "weighted_f1": 0.5199719962292892,
-    "macro_f1": 0.16836718235729886
+    "rmse_fuel": 0.5962407521097494,
+    "rmse_nonfuel": 0.7458315245207469,
+    "weighted_f1": 0.5220666449522303,
+    "macro_f1": 0.14828150734656476
   },
-  "leaderboard_composite_score": 0.29192,
+  "leaderboard_composite_score": 0.2929,
+  "proxy_composite_score": 0.2929,
   "leaderboard_breakdown": {
-    "score_fuel": 0.05803487095834294,
-    "score_nonfuel": 0.02589405096517795,
-    "score_opportunity": 0.2079887984917157,
-    "total_score": 0.29191772041523656
+    "score_fuel": 0.05828077617172323,
+    "score_nonfuel": 0.025797233632078354,
+    "score_opportunity": 0.20882665798089214,
+    "total_score": 0.2929046677846937
   },
   "tournament_folds": {
-    "Summer_2024-12-01": {
-      "rmse_fuel": 0.6017,
-      "rmse_nonfuel": 0.7948,
-      "weighted_f1": 0.4694,
-      "leaderboard_composite": 0.2516
-    },
     "Winter_2025-06-01": {
-      "rmse_fuel": 0.5923,
-      "rmse_nonfuel": 0.7337,
-      "weighted_f1": 0.5087,
-      "leaderboard_composite": 0.2936
+      "rmse_fuel": 0.5926,
+      "rmse_nonfuel": 0.734,
+      "weighted_f1": 0.5067,
+      "leaderboard_composite": 0.2926
+    },
+    "MidWinter_2025-07-01": {
+      "rmse_fuel": 0.5945,
+      "rmse_nonfuel": 0.7402,
+      "weighted_f1": 0.4822,
+      "leaderboard_composite": 0.2798
     },
     "Spring_2025-09-01": {
-      "rmse_fuel": 0.5979,
-      "rmse_nonfuel": 0.7453,
-      "weighted_f1": 0.4971,
-      "leaderboard_composite": 0.2825
+      "rmse_fuel": 0.5975,
+      "rmse_nonfuel": 0.7462,
+      "weighted_f1": 0.4972,
+      "leaderboard_composite": 0.2823
     }
   },
   "baselines": {
@@ -51,56 +52,50 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1841,
-    "Existing-category growth: Fuel": 1538,
+    "Stable": 1954,
+    "Existing-category growth: Fuel": 1574,
     "Inactivity": 1450,
-    "Existing-category growth: Other": 365,
-    "Existing-category growth: Food & beverage": 110,
-    "Existing-category growth: Beverages": 110,
-    "New category adoption: Beverages": 22,
-    "New category adoption: Food & beverage": 18,
-    "New category adoption: Lubricants": 17,
-    "New category adoption: Tobacco": 6,
-    "New category adoption: Groceries": 5,
-    "New category adoption: Snacking": 3,
-    "New category adoption: Breads & rolls": 2,
-    "New category adoption: Other": 1
+    "Existing-category growth: Other": 283,
+    "Existing-category growth: Beverages": 161,
+    "Existing-category growth: Food & beverage": 66
   },
-  "fuel_mean": 1.4396,
-  "nonfuel_mean": 0.6775,
+  "fuel_mean": 1.4616,
+  "nonfuel_mean": 0.7087,
   "blend_weights": {
     "fuel": {
       "lgbm_mse": 0.0,
       "lgbm_huber": 0.0,
-      "lgbm_tweedie": 0.2534,
-      "xgb_mse": 0.0,
-      "xgb_huber": 0.0986,
+      "lgbm_tweedie": 0.3436,
+      "xgb_mse": 0.099,
+      "xgb_huber": 0.065,
       "catboost": 0.0,
-      "catboost_huber": 0.0,
-      "ridge": 0.1035,
-      "extratrees": 0.0,
-      "hurdle_bagged": 0.5446,
-      "phys_basket": 0.0
+      "catboost_huber": 0.0105,
+      "ridge": 0.1208,
+      "extratrees": 0.0406,
+      "hurdle_bagged": 0.0,
+      "hurdle_quantile": 0.2839,
+      "phys_basket": 0.0367
     },
     "nonfuel": {
       "lgbm_mse": 0.0,
       "lgbm_huber": 0.0,
-      "lgbm_tweedie": 0.0471,
+      "lgbm_tweedie": 0.4639,
       "xgb_mse": 0.0,
-      "xgb_huber": 0.4432,
+      "xgb_huber": 0.0,
       "catboost": 0.0,
-      "catboost_huber": 0.494,
-      "ridge": 0.0157,
-      "extratrees": 0.0,
+      "catboost_huber": 0.0018,
+      "ridge": 0.0,
+      "extratrees": 0.1843,
       "hurdle_bagged": 0.0,
+      "hurdle_quantile": 0.35,
       "phys_basket": 0.0
     }
   },
-  "temperature": 0.85,
+  "temperature": 1.05,
   "inactivity_threshold": 0.01,
   "shrinkage_powers": {
-    "fuel": 0.05,
-    "nonfuel_alpha": 0.05,
+    "fuel": 0.0,
+    "nonfuel_alpha": 0.0,
     "nonfuel_beta": 0.05
   }
 }

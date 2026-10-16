@@ -24,10 +24,11 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "3.0.0"
+FEATURE_VERSION = "3.1.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
-TENURE_CAP_DAYS = 365.0
+TENURE_CAP_DAYS = 180.0
+
 
 #: name -> (start_months_ago, end_months_ago); the window is [t - start, t - end).
 WINDOWS: dict[str, tuple[int, int]] = {
@@ -60,79 +61,28 @@ def _days_since(t: pd.Timestamp, times: pd.Series) -> pd.Series:
 
 
 def _window_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start: pd.Timestamp) -> pd.DataFrame:
-    """Activity / spend / volume aggregates for each calendar window with season-normalized fallback."""
+    """Activity / spend / volume aggregates for each calendar window."""
     frames = []
-    has_observed_yoy = pd.Series(1.0, index=ids, dtype="float64")
 
     for name, (start, end) in WINDOWS.items():
         lo, hi = _months_before(t, start), _months_before(t, end)
-        if name == "yoy_q" and lo < data_start:
-            # Fallback to customer's earliest observed 90-day window scaled by station seasonal index
-            has_observed_yoy[:] = 0.0
-            if len(hist) > 0 and "ID" in hist.columns:
-                first_seen = hist.groupby("ID")["_time"].min().reindex(ids)
-                tx_cust_first = hist["ID"].map(first_seen)
-                delta_days = (hist["_time"] - tx_cust_first).dt.total_seconds() / 86400.0
-                in_first_90d = (delta_days >= 0.0) & (delta_days < 90.0)
-                w_early = hist[in_first_90d]
-                q_early, s_early = w_early[w_early["is_qualifying"]], w_early[w_early["in_scope"]]
-
-                early_b = q_early.groupby("ID")["TransactionId"].nunique().reindex(ids).fillna(0.0)
-                early_fb = q_early[q_early["is_fuel_cat"]].groupby("ID")["TransactionId"].nunique().reindex(ids).fillna(0.0)
-                early_nfb = q_early[q_early["is_nonfuel"]].groupby("ID")["TransactionId"].nunique().reindex(ids).fillna(0.0)
-                early_fl = s_early[s_early["is_fuel_sale"]].groupby("ID")["qty"].sum().reindex(ids).fillna(0.0)
-                early_fr = s_early[s_early["is_fuel_cat"]].groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
-                early_nfr = s_early[s_early["is_nonfuel"]].groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
-                early_nc = q_early.groupby("ID")["ItemCategoryLevel2"].nunique().reindex(ids).fillna(0.0)
-
-                # Station-level seasonal scaling
-                if "LocationId" in hist.columns:
-                    loc_counts = hist.groupby(["ID", "LocationId"]).size().reset_index(name="count")
-                    cust_loc = loc_counts.sort_values(["ID", "count"], ascending=[True, False]).drop_duplicates(subset=["ID"]).set_index("ID")["LocationId"].reindex(ids)
-                    station_month = hist[hist["_time"].dt.month == t.month].groupby("LocationId")["amount"].sum()
-                    station_total = hist.groupby("LocationId")["amount"].sum() / max(hist["_time"].dt.month.nunique(), 1)
-                    station_idx = (station_month / station_total.where(station_total > 0)).clip(0.75, 1.35).fillna(1.0)
-                    seasonal_mult = cust_loc.map(station_idx).fillna(1.0).to_numpy()
-                else:
-                    seasonal_mult = np.ones(len(ids))
-
-                block = pd.DataFrame({
-                    f"{name}_baskets": early_b * seasonal_mult,
-                    f"{name}_fuel_baskets": early_fb * seasonal_mult,
-                    f"{name}_nonfuel_baskets": early_nfb * seasonal_mult,
-                    f"{name}_fuel_litres": early_fl * seasonal_mult,
-                    f"{name}_fuel_rand": early_fr * seasonal_mult,
-                    f"{name}_nonfuel_rand": early_nfr * seasonal_mult,
-                    f"{name}_n_categories": early_nc,
-                }, index=ids).astype("float64")
-            else:
-                block = pd.DataFrame({
-                    f"{name}_baskets": 0.0,
-                    f"{name}_fuel_baskets": 0.0,
-                    f"{name}_nonfuel_baskets": 0.0,
-                    f"{name}_fuel_litres": 0.0,
-                    f"{name}_fuel_rand": 0.0,
-                    f"{name}_nonfuel_rand": 0.0,
-                    f"{name}_n_categories": 0.0,
-                }, index=ids).astype("float64")
-        else:
-            w = hist[(hist["_time"] >= lo) & (hist["_time"] < hi)]
-            q, s = w[w["is_qualifying"]], w[w["in_scope"]]
-            block = pd.DataFrame({
-                f"{name}_baskets": q.groupby("ID")["TransactionId"].nunique(),
-                f"{name}_fuel_baskets": q[q["is_fuel_cat"]].groupby("ID")["TransactionId"].nunique(),
-                f"{name}_nonfuel_baskets": q[q["is_nonfuel"]].groupby("ID")["TransactionId"].nunique(),
-                f"{name}_fuel_litres": s[s["is_fuel_sale"]].groupby("ID")["qty"].sum(),
-                f"{name}_fuel_rand": s[s["is_fuel_cat"]].groupby("ID")["amount"].sum(),
-                f"{name}_nonfuel_rand": s[s["is_nonfuel"]].groupby("ID")["amount"].sum(),
-                f"{name}_n_categories": q.groupby("ID")["ItemCategoryLevel2"].nunique(),
-            }).reindex(ids).astype("float64").fillna(0.0)
-            if lo < data_start:  # window not fully observed -> unknown, not zero
-                block.loc[:, :] = np.nan
+        w = hist[(hist["_time"] >= lo) & (hist["_time"] < hi)]
+        q, s = w[w["is_qualifying"]], w[w["in_scope"]]
+        block = pd.DataFrame({
+            f"{name}_baskets": q.groupby("ID")["TransactionId"].nunique(),
+            f"{name}_fuel_baskets": q[q["is_fuel_cat"]].groupby("ID")["TransactionId"].nunique(),
+            f"{name}_nonfuel_baskets": q[q["is_nonfuel"]].groupby("ID")["TransactionId"].nunique(),
+            f"{name}_fuel_litres": s[s["is_fuel_sale"]].groupby("ID")["qty"].sum(),
+            f"{name}_fuel_rand": s[s["is_fuel_cat"]].groupby("ID")["amount"].sum(),
+            f"{name}_nonfuel_rand": s[s["is_nonfuel"]].groupby("ID")["amount"].sum(),
+            f"{name}_n_categories": q.groupby("ID")["ItemCategoryLevel2"].nunique(),
+        }).reindex(ids).astype("float64").fillna(0.0)
+        if lo < data_start:  # window not fully observed -> unknown (NaN), not zero
+            block.loc[:, :] = np.nan
         frames.append(block)
 
-    frames.append(pd.DataFrame({"has_observed_yoy_window": has_observed_yoy}, index=ids))
     return pd.concat(frames, axis=1)
+
 
 
 def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
@@ -208,7 +158,6 @@ def _recency_block(
     out["days_since_last_fuel"] = _days_since(t, q[q["is_fuel_cat"]].groupby("ID")["_time"].max())
     out["days_since_last_nonfuel"] = _days_since(t, q[q["is_nonfuel"]].groupby("ID")["_time"].max())
     out["days_since_first_seen_capped"] = _days_since(t, first_any).clip(upper=TENURE_CAP_DAYS)
-    out["left_censored"] = (first_any < data_start + 30 * DAY).astype("float64")
     out["gap_mean"] = g["gap"].mean()
     out["gap_median"] = g["gap"].median()
     out["gap_std"] = g["gap"].std()
@@ -266,9 +215,10 @@ def _trend_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start:
 def _category_block(
     hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, cats: list[str], observed_months: pd.Series
 ) -> pd.DataFrame:
-    """Per-category history: ever-bought, previous-quarter spend/baskets, recency, rate."""
+    """Per-category history: bounded m6/m3 activity, spend, recency, and rate."""
     q = hist[hist["is_qualifying"]]
     s = hist[hist["in_scope"]]
+    m6_lo = _months_before(t, 6)
     m3_lo = _months_before(t, 3)
     keys = ["ID", "ItemCategoryLevel2"]
 
@@ -276,15 +226,23 @@ def _category_block(
         frame = series.unstack().reindex(index=ids, columns=cats)
         return frame if fill is None else frame.fillna(fill)
 
-    life_baskets = pivot(q.groupby(keys)["TransactionId"].nunique(), 0.0)
-    last_time = pivot(q.groupby(keys)["_time"].max(), None)
-    m3_spend = pivot(s[s["_time"] >= m3_lo].groupby(keys)["amount"].sum(), 0.0)
+    m6_baskets = pivot(q[q["_time"] >= m6_lo].groupby(keys)["TransactionId"].nunique(), 0.0)
     m3_baskets = pivot(q[q["_time"] >= m3_lo].groupby(keys)["TransactionId"].nunique(), 0.0)
+    m6_spend = pivot(s[s["_time"] >= m6_lo].groupby(keys)["amount"].sum(), 0.0)
+    m3_spend = pivot(s[s["_time"] >= m3_lo].groupby(keys)["amount"].sum(), 0.0)
+    last_time = pivot(q.groupby(keys)["_time"].max(), None)
+
+    active_m6 = m6_baskets.gt(0).astype("float64")
+    active_m3 = m3_baskets.gt(0).astype("float64")
+    # Rate expressed over bounded 6-month window min(observed_months, 6.0)
+    rate_m6 = m6_baskets.div(observed_months.clip(upper=6.0), axis=0)
+    recency = last_time.apply(lambda col: _days_since(t, col)).clip(upper=180.0).astype("float64")
 
     parts = {
-        "ever": life_baskets.gt(0).astype("float64"),
-        "rate": life_baskets.div(observed_months, axis=0),
-        "recency": last_time.apply(lambda col: _days_since(t, col)).astype("float64"),
+        "active_m6": active_m6,
+        "active_m3": active_m3,
+        "rate": rate_m6,
+        "recency": recency,
         "m3spend": m3_spend,
         "m3baskets": m3_baskets,
     }
@@ -294,8 +252,10 @@ def _category_block(
         frame.columns = [f"{prefix}_{safe_name(c)}" for c in cats]
         frames.append(frame)
     block = pd.concat(frames, axis=1)
-    block["n_categories_ever"] = parts["ever"].sum(axis=1)
+    block["n_categories_m6"] = active_m6.sum(axis=1)
+    block["n_categories_m3"] = active_m3.sum(axis=1)
     return block
+
 
 
 def _behaviour_block(
@@ -660,10 +620,10 @@ def _longitudinal_panel_block(win: pd.DataFrame, recency: pd.DataFrame, ids: pd.
 
     tenure = recency["days_since_first_seen_capped"]
     out["tenure_days_capped_90"] = np.minimum(tenure, 90.0)
-    out["is_left_censored_m3"] = (tenure < 90).astype("float64")
     annual_mult = 90.0 / np.maximum(np.minimum(tenure, 90.0), 7.0)
     out["m3_annualized_rate_fuel"] = win["m3_fuel_litres"] * annual_mult
     out["m3_annualized_rate_nonfuel"] = win["m3_nonfuel_rand"] * annual_mult
+
 
     cleared = (
         (win["m3_fuel_litres"] > 1.25 * win["q2_fuel_litres"])
@@ -887,6 +847,51 @@ def _level3_and_svd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) ->
     return out
 
 
+def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFrame:
+    """Station-Level Historical Seasonal Multipliers mapped to customer primary location."""
+    out = pd.DataFrame(index=ids)
+    if "LocationId" not in hist.columns or len(hist) == 0:
+        out["station_summer_fuel_index"] = 1.0
+        out["station_summer_nf_index"] = 1.0
+        out["station_summer_fg_rate"] = 0.5
+        return out
+
+    q = hist[hist["is_qualifying"]]
+    if len(q) > 0:
+        loc_counts = q.groupby(["ID", "LocationId"]).size().reset_index(name="count")
+        primary_loc = (
+            loc_counts.sort_values(["ID", "count"], ascending=[True, False])
+            .drop_duplicates(subset=["ID"])
+            .set_index("ID")["LocationId"]
+            .reindex(ids)
+        )
+    else:
+        primary_loc = pd.Series(np.nan, index=ids)
+
+    is_summer = hist["_time"].dt.month.isin([12, 1, 2])
+    summer_tx = hist[is_summer]
+    nonsummer_tx = hist[~is_summer]
+    summer_months = max(summer_tx["_time"].dt.to_period("M").nunique(), 1)
+    nonsummer_months = max(nonsummer_tx["_time"].dt.to_period("M").nunique(), 1)
+
+    f_summer = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / summer_months
+    f_nonsummer = nonsummer_tx[nonsummer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / nonsummer_months
+    f_idx = (f_summer / f_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
+
+    nf_summer = summer_tx[summer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / summer_months
+    nf_nonsummer = nonsummer_tx[nonsummer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / nonsummer_months
+    nf_idx = (nf_summer / nf_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
+
+    fg_tx = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["TransactionId"].nunique()
+    tot_tx = summer_tx[summer_tx["is_qualifying"]].groupby("LocationId")["TransactionId"].nunique()
+    fg_rate = (fg_tx / tot_tx.replace(0.0, np.nan)).clip(0.0, 1.0).fillna(0.5)
+
+    out["station_summer_fuel_index"] = primary_loc.map(f_idx).fillna(1.0).astype("float64")
+    out["station_summer_nf_index"] = primary_loc.map(nf_idx).fillna(1.0).astype("float64")
+    out["station_summer_fg_rate"] = primary_loc.map(fg_rate).fillna(0.5).astype("float64")
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -926,6 +931,7 @@ def build_features(
         _refueling_burn_and_payday_block(hist, ids, t),
         _hawkes_decay_block(hist, ids, t),
         _level3_and_svd_block(hist, ids, t),
+        _station_seasonal_block(hist, ids, t),
     ]
     feats = pd.concat(blocks, axis=1)
     hurdle_block = _hurdle_physics_block(feats)
@@ -936,3 +942,4 @@ def build_features(
 
     feats.index.name = "ID"
     return feats.astype("float64")
+

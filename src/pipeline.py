@@ -26,6 +26,7 @@ from src.features import FEATURE_VERSION
 from src.hurdle import (
     BaggedTwoPartFuelHurdle,
     BaggedTwoPartNonfuelHurdle,
+    MultiQuantileTwoPartHurdle,
     PhysicalBasketTicketRegressor,
 )
 from src.models import (
@@ -124,6 +125,19 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     eval_nf_raw = eval_nf_debiased @ cal.nf_blend_weights
     eval_nf_cal = calibration.apply_linear_calibration(eval_nf_raw, cal.nf_slope, cal.nf_intercept)
 
+    # Customer BLUP fixed effects for forward holdout evaluation
+    eval_blup_f_map = calibration.compute_customer_blup(cal.cust_history_f, eval_cutoff)
+    eval_blup_f_vec = np.array([eval_blup_f_map.get(cid, 0.0) for cid in eval_ids])
+    eval_blup_nf_map = calibration.compute_customer_blup(cal.cust_history_nf, eval_cutoff)
+    eval_blup_nf_vec = np.array([eval_blup_nf_map.get(cid, 0.0) for cid in eval_ids])
+
+    eval_fuel_cal = calibration.apply_customer_blup(
+        eval_fuel_cal, eval_blup_f_vec, cal.blup_eta_fuel, active_mask=(eval_fuel_cal > 0.05)
+    )
+    eval_nf_cal = calibration.apply_customer_blup(
+        eval_nf_cal, eval_blup_nf_vec, cal.blup_eta_nf, active_mask=(eval_nf_cal > 0.05)
+    )
+
     # Opportunity Probability Fusion
     wb, wh, ws, b_fg, b_in = cal.prob_blend_weights
     eval_probs_fused = wb * eval_probs_base + wh * eval_probs_hier + ws * eval_probs_sim
@@ -132,10 +146,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs_fused, cal.temperature)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
 
-    # Opportunity Decision with Prior Alignment
-    eval_opp_decisions = calibration.decide_with_prior_alignment(
-        eval_probs_masked, cal.class_weights, cal.target_priors
-    )
+    # Opportunity Decision with Calibrated Decision Weights
+    eval_opp_decisions = calibration.decide(eval_probs_masked, cal.class_weights)
     eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
 
     # Inactivity shrinkage and gating
@@ -187,6 +199,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.25,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
@@ -194,17 +207,35 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
+        tweedie_power=1.40,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     final_hurdle_fuel = BaggedTwoPartFuelHurdle(
-        seeds=(cfg.models.seed, cfg.models.seed + 1, cfg.models.seed + 2),
+        seeds=(42, 100, 2024, 777, 314),
+        huber_alpha=0.85,
+        power_shrinkage=0.98,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
     final_hurdle_nf = BaggedTwoPartNonfuelHurdle(
-        seeds=(cfg.models.seed, cfg.models.seed + 1, cfg.models.seed + 2),
+        seeds=(42, 100, 2024, 777, 314),
+        huber_alpha=0.85,
+        power_shrinkage=0.96,
+        zero_gate_threshold=0.04,
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
+
+    final_mq_fuel = MultiQuantileTwoPartHurdle(
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
+
+    final_mq_nf = MultiQuantileTwoPartHurdle(
+        seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
@@ -271,13 +302,15 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     # Predict test members
     test_pred_f_direct = final_fuel_model.predict_members(test_feats)
     test_pred_f_hurdle = final_hurdle_fuel.predict(test_feats).reshape(-1, 1)
+    test_pred_f_mq = final_mq_fuel.predict(test_feats).reshape(-1, 1)
     test_pred_f_phys = final_phys_fuel.predict(test_feats).reshape(-1, 1)
-    test_fuel_m = np.column_stack([test_pred_f_direct, test_pred_f_hurdle, test_pred_f_phys])
+    test_fuel_m = np.column_stack([test_pred_f_direct, test_pred_f_hurdle, test_pred_f_mq, test_pred_f_phys])
 
     test_pred_nf_direct = final_nf_model.predict_members(test_feats)
     test_pred_nf_hurdle = final_hurdle_nf.predict(test_feats).reshape(-1, 1)
+    test_pred_nf_mq = final_mq_nf.predict(test_feats).reshape(-1, 1)
     test_pred_nf_phys = final_phys_nf.predict(test_feats).reshape(-1, 1)
-    test_nf_m = np.column_stack([test_pred_nf_direct, test_pred_nf_hurdle, test_pred_nf_phys])
+    test_nf_m = np.column_stack([test_pred_nf_direct, test_pred_nf_hurdle, test_pred_nf_mq, test_pred_nf_phys])
 
     # Per-member debiasing and blend weights
     test_fuel_debiased = calibration.apply_member_debiasing(test_fuel_m, cal.fuel_debias)
@@ -287,6 +320,19 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_nf_debiased = calibration.apply_member_debiasing(test_nf_m, cal.nf_debias)
     test_nf_raw = test_nf_debiased @ cal.nf_blend_weights
     test_nf_cal = calibration.apply_linear_calibration(test_nf_raw, cal.nf_slope, cal.nf_intercept)
+
+    # Customer BLUP fixed effects for test customers
+    test_blup_f_map = calibration.compute_customer_blup(cal.cust_history_f, test_cutoff)
+    test_blup_f_vec = np.array([test_blup_f_map.get(cid, 0.0) for cid in test_ids])
+    test_blup_nf_map = calibration.compute_customer_blup(cal.cust_history_nf, test_cutoff)
+    test_blup_nf_vec = np.array([test_blup_nf_map.get(cid, 0.0) for cid in test_ids])
+
+    test_fuel_cal = calibration.apply_customer_blup(
+        test_fuel_cal, test_blup_f_vec, cal.blup_eta_fuel, active_mask=(test_fuel_cal > 0.05)
+    )
+    test_nf_cal = calibration.apply_customer_blup(
+        test_nf_cal, test_blup_nf_vec, cal.blup_eta_nf, active_mask=(test_nf_cal > 0.05)
+    )
 
     # Opportunity Classifier Inferences
     test_probs_base = final_opp_model.predict_proba(test_feats)
@@ -307,9 +353,10 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs_fused, cal.temperature)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
 
-    # Prior-Aligned Decision Rule
+    # Prior-Aligned Decision Rule with Precision-Shrunk Target Priors
     test_opp_decisions = calibration.decide_with_prior_alignment(
-        test_probs_masked, cal.class_weights, cal.target_priors
+        test_probs_masked, cal.class_weights, cal.precision_weighted_target_priors,
+        macro_classes=(inact_idx, stable_idx, fg_idx),
     )
     test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
@@ -322,9 +369,6 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         test_nf_cal, p_active_test, p_store_test, cal.nf_alpha, cal.nf_beta
     )
     test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=cal.inact_threshold)
-
-    # Boundary Arbitration on false inactives
-    test_opp_labels = apply_boundary_arbitration(test_opp_labels, test_feats, test_pred_fuel)
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
