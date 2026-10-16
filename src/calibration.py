@@ -132,36 +132,43 @@ def fit_temperature_and_class_weights(
     if n_trials <= 0:
         return best_temp, best_weights
 
-    # Refine via continuous TPE in bounded space
+    # Refine via continuous TPE in collapsed, low-dimensional bounded parameter space
+    # (Dominant classes individually + 1 shared multiplier for retail/adoption classes)
     import optuna
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=sampler)
 
+    dom_set = set(dominant_classes) if dominant_classes is not None else set()
+    temp_list = [float(t) for t in temperatures]
+
     # Enqueue coordinate ascent solution as trial 0
     init_params = {"temperature": best_temp}
-    for c in range(n_classes):
+    for c in dom_set:
         init_params[f"w_{c}"] = float(best_weights[c])
+    retail_indices = [c for c in range(n_classes) if c not in dom_set]
+    if retail_indices:
+        init_params["w_retail_shared"] = float(np.median([best_weights[c] for c in retail_indices]))
     study.enqueue_trial(init_params)
 
     # Enqueue uniform weights as trial 1
     uniform_params = {"temperature": 1.0 if 1.0 in temperatures else best_temp}
-    for c in range(n_classes):
+    for c in dom_set:
         uniform_params[f"w_{c}"] = 1.0
+    if retail_indices:
+        uniform_params["w_retail_shared"] = 1.0
     study.enqueue_trial(uniform_params)
-
-    dom_set = set(dominant_classes) if dominant_classes is not None else set()
-    temp_list = [float(t) for t in temperatures]
 
     def objective(trial: optuna.Trial) -> float:
         t = trial.suggest_categorical("temperature", temp_list)
         w = np.ones(n_classes)
-        for c in range(n_classes):
-            if c in dom_set:
-                w[c] = trial.suggest_float(f"w_{c}", 0.85, 1.15)
-            else:
-                w[c] = trial.suggest_float(f"w_{c}", 0.50, 12.0)
+        for c in dom_set:
+            w[c] = trial.suggest_float(f"w_{c}", 0.80, 1.25)
+        if retail_indices:
+            w_ret = trial.suggest_float("w_retail_shared", 0.50, 12.0)
+            for c in retail_indices:
+                w[c] = w_ret
         p_s = apply_temperature_scaling(probs, t)
         if mask is not None:
             p_s = apply_eligibility_mask(p_s, mask)
@@ -170,8 +177,20 @@ def fit_temperature_and_class_weights(
     study.optimize(objective, n_trials=n_trials)
 
     opt_temp = float(study.best_params["temperature"])
-    opt_weights = np.array([study.best_params[f"w_{c}"] for c in range(n_classes)], dtype="float64")
-    return opt_temp, opt_weights
+    opt_weights = np.ones(n_classes, dtype="float64")
+    for c in dom_set:
+        opt_weights[c] = float(study.best_params[f"w_{c}"])
+    if retail_indices and "w_retail_shared" in study.best_params:
+        opt_weights[retail_indices] = float(study.best_params["w_retail_shared"])
+
+    p_opt = apply_temperature_scaling(probs, opt_temp)
+    if mask is not None:
+        p_opt = apply_eligibility_mask(p_opt, mask)
+    opt_score = weighted_f1(y_true, decide(p_opt, opt_weights), n_classes)
+
+    if opt_score >= best_f1 - 1e-12:
+        return opt_temp, opt_weights
+    return best_temp, best_weights
 
 
 def fit_blend_weights(member_preds: np.ndarray, y_true: np.ndarray) -> np.ndarray:

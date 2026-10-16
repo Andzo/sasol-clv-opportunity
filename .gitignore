@@ -13,8 +13,13 @@ data_cache/
 train.parquet
 catboost_info/
 
-# Large competition datasets (keep repository lightweight)
+# Large competition datasets & submissions (compliance with Zindi 'no license to share' rule)
 train.csv
+test.csv
+SampleSubmission.csv
+submission.csv
+submissions/*.csv
+submissions/*.parquet
 
 # Temporary or IDE files
 *.swp

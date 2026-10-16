@@ -251,6 +251,117 @@ def evaluate_fold(
     )
 
 
+def evaluate_leave_summer_out(
+    cfg: PipelineConfig,
+    builder: SnapshotBuilder,
+    summer_eval_cutoff: str | pd.Timestamp = "2024-12-01",
+    cal_cutoff: str | pd.Timestamp = "2025-06-01",
+    cache_dir: Path | None = None,
+) -> FoldResult:
+    """True Leave-Summer-Out cross-validation evaluating the 2024-12-01 summer cutoff.
+
+    Trains on all pre-summer cutoffs (<= 2024-09-01) and all post-summer cutoffs (>= 2025-03-01)
+    whose outcome windows end before 2025-12-01. This guarantees zero label leakage with the
+    held-out summer outcome period [2024-12-01, 2025-03-01) while utilizing a rich 10+ snapshot panel.
+    """
+    eval_cutoff = pd.Timestamp(summer_eval_cutoff)
+    cal_t = pd.Timestamp(cal_cutoff)
+    label_cfg = cfg.label_config
+    opp_labels = label_cfg["opportunity_labels"]
+    n_classes = len(opp_labels)
+    label_to_idx = {l: i for i, l in enumerate(opp_labels)}
+    idx_to_label = {i: l for i, l in enumerate(opp_labels)}
+
+    # Pre-summer (<= 2024-09-01) and post-summer (>= 2025-03-01) training cutoffs
+    pre_summer_cutoffs = [
+        c for c in cfg.training_cutoffs(boundary=pd.Timestamp("2024-12-01"))
+        if c <= pd.Timestamp("2024-09-01")
+    ]
+    post_summer_cutoffs = [
+        c for c in cfg.training_cutoffs(boundary=pd.Timestamp("2025-12-01"))
+        if c >= pd.Timestamp("2025-03-01") and c != cal_t
+    ]
+    train_cutoffs = sorted(pre_summer_cutoffs + post_summer_cutoffs)
+    logger.info("Leave-Summer-Out training cutoffs (N=%d): %s", len(train_cutoffs), [str(c.date()) for c in train_cutoffs])
+
+    train_snaps = [builder.build(c, with_labels=True) for c in train_cutoffs]
+    train_panel = stack(train_snaps)
+
+    cal_snap = builder.build(cal_t, with_labels=True)
+    eval_snap = builder.build(eval_cutoff, with_labels=True)
+
+    fuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
+
+    nonfuel_model = RegressorEnsemble(
+        members=cfg.models.regression_members,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+
+    opp_model = ClassifierEnsemble(
+        members=cfg.models.classification_members,
+        n_classes=n_classes,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+        use_gpu=cfg.models.use_gpu,
+    ).fit(train_panel.X, train_panel.labels["Opportunity"].map(label_to_idx).to_numpy())
+
+    # Calibration on cal_snap
+    fuel_weights = calibration.fit_blend_weights(fuel_model.predict_members(cal_snap.features), cal_snap.labels["CLV_fuel"].to_numpy())
+    fuel_model.set_weights(fuel_weights)
+    nf_weights = calibration.fit_blend_weights(nonfuel_model.predict_members(cal_snap.features), cal_snap.labels["CLV_nonfuel"].to_numpy())
+    nonfuel_model.set_weights(nf_weights)
+
+    f_slope, f_intercept = calibration.fit_linear_calibration(cal_snap.labels["CLV_fuel"].to_numpy(), fuel_model.predict(cal_snap.features))
+    nf_slope, nf_intercept = calibration.fit_linear_calibration(cal_snap.labels["CLV_nonfuel"].to_numpy(), nonfuel_model.predict(cal_snap.features))
+
+    cal_probs = opp_model.predict_proba(cal_snap.features)
+    cal_y = cal_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
+    dom_classes = [label_to_idx[l] for l in ("Inactivity", "Stable", "Existing-category growth: Fuel") if l in label_to_idx]
+    cal_temp, class_weights = calibration.fit_temperature_and_class_weights(
+        cal_probs, cal_y, mask=cal_snap.mask, dominant_classes=dom_classes, seed=cfg.models.seed
+    )
+
+    # Score on summer eval_snap
+    eval_f = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), f_slope, f_intercept)
+    eval_nf = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nf_slope, nf_intercept)
+    eval_probs = opp_model.predict_proba(eval_snap.features)
+    eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs, cal_temp)
+    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
+    eval_opp_decisions = calibration.decide(eval_probs_masked, class_weights)
+    eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
+
+    pred_df = pd.DataFrame({
+        "pred_fuel": eval_f,
+        "pred_nonfuel": eval_nf,
+        "pred_opp": eval_opp_labels,
+        "true_fuel": eval_snap.labels["CLV_fuel"].to_numpy(),
+        "true_nonfuel": eval_snap.labels["CLV_nonfuel"].to_numpy(),
+        "true_opp": eval_snap.labels["Opportunity"].to_numpy(),
+    }, index=eval_snap.features.index)
+
+    eval_scores = metrics.score(eval_snap.labels, eval_f, eval_nf, np.array(eval_opp_labels))
+    base_dict = metrics.baseline_scores(eval_snap.features, eval_snap.labels, label_cfg)
+    proxy_score = eval_scores.composite(base_dict["sample_submission_zero"]["rmse_fuel"], base_dict["sample_submission_zero"]["rmse_nonfuel"])
+    lb_score = eval_scores.leaderboard_composite(LB_X_MAX_FUEL, LB_X_MAX_NONFUEL)
+
+    return FoldResult(
+        cutoff=str(eval_cutoff.date()),
+        n_train=len(train_panel.X),
+        n_eval=len(eval_snap.features),
+        scores=eval_scores,
+        proxy_score=proxy_score,
+        lb_score=lb_score,
+        predictions=pred_df,
+    )
+
+
 def run_backtest(
     cfg: PipelineConfig,
     builder: SnapshotBuilder,
@@ -276,14 +387,10 @@ def run_backtest(
 
     seasonal_res: FoldResult | None = None
     if include_seasonal_fold:
-        s_eval = pd.Timestamp("2024-12-01")
-        s_cal = pd.Timestamp("2024-09-01")
-        import dataclasses
-        cfg_seasonal = dataclasses.replace(cfg, first_train_cutoff="2024-06-01")
-        logger.info("Running seasonal Dec-Feb benchmark fold: %s (cal: %s)...", s_eval.date(), s_cal.date())
-        seasonal_res = evaluate_fold(cfg_seasonal, builder, s_eval, s_cal, label_cfg, cache_dir=cache_dir)
+        logger.info("Running Leave-Summer-Out benchmark fold (eval: 2024-12-01, cal: 2025-06-01)...")
+        seasonal_res = evaluate_leave_summer_out(cfg, builder, summer_eval_cutoff="2024-12-01", cal_cutoff="2025-06-01", cache_dir=cache_dir)
         logger.info(
-            "Seasonal Fold %s: Fuel RMSE=%.4f, NF RMSE=%.4f, F1=%.4f | Proxy=%.4f | LB Score=%.4f",
+            "Leave-Summer-Out Fold %s: Fuel RMSE=%.4f, NF RMSE=%.4f, F1=%.4f | Proxy=%.4f | LB Score=%.4f",
             seasonal_res.cutoff, seasonal_res.scores.rmse_fuel, seasonal_res.scores.rmse_nonfuel,
             seasonal_res.scores.weighted_f1, seasonal_res.proxy_score, seasonal_res.lb_score,
         )

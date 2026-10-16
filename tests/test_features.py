@@ -55,10 +55,12 @@ def test_build_features_schema_and_reproducibility():
         "m6_top_loc_store_attach",
         "m6_top_loc_weekend_share",
         "m6_top_loc_log_volume",
-        "is_holiday_quarter",
-        "cutoff_quarter",
-        "hist_december_active",
-        "hist_december_spend_log",
+        "yoy_q_baskets",
+        "mom_m3_yoy_fuel_rand",
+        "mom_m3_yoy_nonfuel_rand",
+        "mom_m3_yoy_baskets",
+        "hurdle_growth_required_rand",
+        "hurdle_fuel_rand_dist",
         "btyd_overall_p_alive",
         "btyd_overall_lambda",
         "btyd_overall_exp_baskets_m3",
@@ -90,7 +92,6 @@ def test_build_features_schema_and_reproducibility():
         "nonfuel_rebound_ratio",
         "nonfuel_headroom_rand",
         "z_diff_fuel_nonfuel",
-        "dec24_surge_ratio",
         "m6_fuel_mean_litres",
         "m6_fuel_std_litres",
         "m6_commuter_share",
@@ -98,6 +99,10 @@ def test_build_features_schema_and_reproducibility():
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"
+
+    # Ablated calendar features must NOT be present
+    for col in ("is_holiday_quarter", "cutoff_quarter", "hist_december_active", "hist_december_spend_log", "dec24_surge_ratio"):
+        assert col not in feats1.columns, f"Ablated feature unexpectedly present: {col}"
 
     assert len(feats1) == 1
     assert feats1.index.name == "ID"

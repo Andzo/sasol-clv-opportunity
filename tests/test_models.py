@@ -156,3 +156,44 @@ def test_two_part_fuel_hurdle():
     assert (preds >= 0.0).all()
 
 
+def test_regressor_ensemble_pipeline_sample_weight_forwarding():
+    """Verify that RegressorEnsemble forwards sample_weight to sklearn Pipeline members without dropping."""
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 40, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+    sw = rng.uniform(0.5, 2.0, size=n_samples).astype(np.float32)
+
+    # Ridge and ExtraTrees are sklearn Pipelines
+    ens = RegressorEnsemble(
+        members=["ridge", "extratrees"],
+        seed=42,
+        n_jobs=1,
+    )
+    # Fit with sample_weight
+    ens.fit(X, y, sample_weight=sw)
+    preds = ens.predict(X)
+    assert preds.shape == (n_samples,)
+    assert (preds >= 0.0).all()
+
+
+def test_regressor_ensemble_l2_mse_members():
+    """Verify that lgbm_mse and xgb_mse run and predict properly in RegressorEnsemble with bagging."""
+    rng = np.random.default_rng(42)
+    n_samples, n_features = 40, 4
+    X = pd.DataFrame(rng.normal(size=(n_samples, n_features)), columns=[f"f{i}" for i in range(n_features)])
+    y = np.clip(rng.normal(loc=1.5, scale=0.5, size=n_samples), 0.0, None)
+
+    ens = RegressorEnsemble(
+        members=["lgbm_mse", "xgb_mse", "catboost"],
+        seed=42,
+        n_jobs=1,
+        n_seeds=2,  # test seed bagging
+    )
+    ens.fit(X, y)
+    preds = ens.predict(X)
+    assert preds.shape == (n_samples,)
+    assert (preds >= 0.0).all()
+
+
+

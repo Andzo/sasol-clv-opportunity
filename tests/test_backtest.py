@@ -37,3 +37,9 @@ def test_paired_bootstrap_test():
     assert "p_value" in res
     # Candidate is worse than baseline, so delta should be negative
     assert res["mean_delta"] < 0.0
+
+
+def test_evaluate_leave_summer_out_import():
+    from src.backtest import evaluate_leave_summer_out
+    assert callable(evaluate_leave_summer_out)
+

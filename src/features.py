@@ -35,6 +35,7 @@ WINDOWS: dict[str, tuple[int, int]] = {
     "m3": (3, 0),    # == label "previous quarter" baseline
     "m6": (6, 0),
     "q2": (6, 3),    # quarter before the previous quarter
+    "yoy_q": (12, 9), # same quarter last year (year-over-year baseline)
 }
 TREND_MONTHS = 6
 
@@ -100,8 +101,23 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out["nonfuel_reversion_ratio"] = (win["m3_nonfuel_rand"] / 3.0 + 1.0) / (win["m6_nonfuel_rand"] / 6.0 + 1.0)
     fuel_growth_hurdle = np.maximum(20.0, 0.25 * win["m3_fuel_rand"])
     out["fuel_hurdle_ratio"] = fuel_growth_hurdle / (win["m3_fuel_rand"] + 1.0)
+    out["hurdle_growth_required_rand"] = fuel_growth_hurdle
+    out["hurdle_fuel_rand_dist"] = win["m3_fuel_rand"] - np.maximum(win["m3_fuel_rand"] + 20.0, 1.25 * win["m3_fuel_rand"])
     out["store_attachment_rate"] = win["m3_nonfuel_baskets"] / (win["m3_baskets"] + 1.0)
     out["has_visited_m1"] = (win["m1_baskets"] > 0).astype("float64")
+
+    # Relative YoY (same season last year) momentum and shift
+    if "yoy_q_baskets" in win.columns:
+        for qty in ("baskets", "fuel_litres", "nonfuel_rand", "fuel_rand"):
+            if f"yoy_q_{qty}" in win.columns and f"m3_{qty}" in win.columns:
+                out[f"mom_m3_yoy_{qty}"] = (win[f"m3_{qty}"] + 1.0) / (win[f"yoy_q_{qty}"] + 1.0)
+        if "yoy_q_fuel_rand" in win.columns:
+            out["delta_m3_yoy_fuel_rand"] = win["m3_fuel_rand"] - win["yoy_q_fuel_rand"]
+            out["delta_m3_yoy_nonfuel_rand"] = win["m3_nonfuel_rand"] - win["yoy_q_nonfuel_rand"]
+            yoy_spend = win["yoy_q_fuel_rand"] + win["yoy_q_nonfuel_rand"]
+            yoy_fuel_share = win["yoy_q_fuel_rand"] / yoy_spend.where(yoy_spend > 0)
+            out["fuel_yoy_share_shift"] = (out["fuel_share_m3"] - yoy_fuel_share).fillna(0.0)
+
     return pd.DataFrame(out)
 
 
@@ -670,29 +686,10 @@ def build_features(
     ]
     feats = pd.concat(blocks, axis=1)
     hurdle_block = _hurdle_physics_block(feats)
-    cal_dict = {
-        "cutoff_month_sin": np.full(len(ids), np.sin(2 * np.pi * t.month / 12.0)),
-        "cutoff_month_cos": np.full(len(ids), np.cos(2 * np.pi * t.month / 12.0)),
-        "is_holiday_quarter": np.full(len(ids), float(t.month in (11, 12, 1))),
-        "cutoff_quarter": np.full(len(ids), float(t.quarter)),
-    }
-
-    dec24_lo, dec24_hi = pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
-    if t >= dec24_hi:
-        dec24_tx = hist[(hist["_time"] >= dec24_lo) & (hist["_time"] < dec24_hi) & hist["is_qualifying"]]
-        dec24_spend = dec24_tx.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
-        cal_dict["hist_december_active"] = (dec24_spend > 0).astype("float64")
-        cal_dict["hist_december_spend_log"] = np.log1p(dec24_spend.astype("float64"))
-        sep_nov_tx = hist[(hist["_time"] >= pd.Timestamp("2024-09-01")) & (hist["_time"] < dec24_lo) & hist["is_qualifying"]]
-        sep_nov_spend = sep_nov_tx.groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
-        cal_dict["dec24_surge_ratio"] = (dec24_spend + 1.0) / (sep_nov_spend / 3.0 + 1.0)
-    else:
-        cal_dict["hist_december_active"] = np.zeros(len(ids), dtype="float64")
-        cal_dict["hist_december_spend_log"] = np.zeros(len(ids), dtype="float64")
-        cal_dict["dec24_surge_ratio"] = np.ones(len(ids), dtype="float64")
-
-    cal_block = pd.DataFrame(cal_dict, index=ids)
-    feats = pd.concat([feats, hurdle_block, cal_block], axis=1)
+    # Ablated static snapshot calendar constants and hardcoded Dec 2024 features.
+    # Relative seasonality is captured cleanly by the yoy_q window across all snapshots,
+    # preventing trees from memorizing the single summer snapshot in the training history.
+    feats = pd.concat([feats, hurdle_block], axis=1)
 
     feats.index.name = "ID"
     return feats.astype("float64")

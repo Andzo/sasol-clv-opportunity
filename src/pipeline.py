@@ -137,25 +137,34 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         use_gpu=cfg.models.use_gpu,
     ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
 
-    # Fit blend weights on calibration fold
-    cal_fuel_m = fuel_model.predict_members(cal_snap.features)
-    fuel_blend_weights = calibration.fit_blend_weights(cal_fuel_m, cal_snap.labels["CLV_fuel"].to_numpy())
-    fuel_model.set_weights(fuel_blend_weights)
-    logger.info("Fuel blend weights: %s", np.round(fuel_blend_weights, 3))
+    # Two-Part Hurdle models for zero inflation
+    logger.info("Training TwoPartFuelHurdle on validation panel...")
+    hurdle_fuel_val = TwoPartFuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_fuel_val.fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy())
+    cal_hurdle_fuel = hurdle_fuel_val.predict(cal_snap.features).reshape(-1, 1)
 
-    cal_nonfuel_m = nonfuel_model.predict_members(cal_snap.features)
+    logger.info("Training TwoPartNonfuelHurdle on validation panel...")
+    hurdle_nf_val = TwoPartNonfuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    hurdle_nf_val.fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy())
+    cal_hurdle_nf = hurdle_nf_val.predict(cal_snap.features).reshape(-1, 1)
+
+    # Fit blend weights on calibration fold across all members including the hurdle model
+    cal_fuel_m = np.column_stack([fuel_model.predict_members(cal_snap.features), cal_hurdle_fuel])
+    fuel_blend_weights = calibration.fit_blend_weights(cal_fuel_m, cal_snap.labels["CLV_fuel"].to_numpy())
+    logger.info("Fuel blend weights (models + hurdle): %s", np.round(fuel_blend_weights, 3))
+
+    cal_nonfuel_m = np.column_stack([nonfuel_model.predict_members(cal_snap.features), cal_hurdle_nf])
     nonfuel_blend_weights = calibration.fit_blend_weights(cal_nonfuel_m, cal_snap.labels["CLV_nonfuel"].to_numpy())
-    nonfuel_model.set_weights(nonfuel_blend_weights)
-    logger.info("Nonfuel blend weights: %s", np.round(nonfuel_blend_weights, 3))
+    logger.info("Nonfuel blend weights (models + hurdle): %s", np.round(nonfuel_blend_weights, 3))
 
     # Fit linear calibration for fuel and nonfuel spend debiasing
-    cal_fuel_raw_uncal = fuel_model.predict(cal_snap.features)
+    cal_fuel_raw_uncal = cal_fuel_m @ fuel_blend_weights
     fuel_slope, fuel_intercept = calibration.fit_linear_calibration(
         cal_snap.labels["CLV_fuel"].to_numpy(), cal_fuel_raw_uncal
     )
     logger.info("Fuel linear calibration: slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
 
-    cal_nonfuel_raw_uncal = nonfuel_model.predict(cal_snap.features)
+    cal_nonfuel_raw_uncal = cal_nonfuel_m @ nonfuel_blend_weights
     nonfuel_slope, nonfuel_intercept = calibration.fit_linear_calibration(
         cal_snap.labels["CLV_nonfuel"].to_numpy(), cal_nonfuel_raw_uncal
     )
@@ -208,8 +217,13 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     )
 
     # Score on Evaluation Snapshot (2025-09-01)
-    eval_fuel_raw = calibration.apply_linear_calibration(fuel_model.predict(eval_snap.features), fuel_slope, fuel_intercept)
-    eval_nonfuel_raw = calibration.apply_linear_calibration(nonfuel_model.predict(eval_snap.features), nonfuel_slope, nonfuel_intercept)
+    eval_hurdle_fuel = hurdle_fuel_val.predict(eval_snap.features).reshape(-1, 1)
+    eval_fuel_m = np.column_stack([fuel_model.predict_members(eval_snap.features), eval_hurdle_fuel])
+    eval_fuel_raw = calibration.apply_linear_calibration(eval_fuel_m @ fuel_blend_weights, fuel_slope, fuel_intercept)
+
+    eval_hurdle_nf = hurdle_nf_val.predict(eval_snap.features).reshape(-1, 1)
+    eval_nonfuel_m = np.column_stack([nonfuel_model.predict_members(eval_snap.features), eval_hurdle_nf])
+    eval_nonfuel_raw = calibration.apply_linear_calibration(eval_nonfuel_m @ nonfuel_blend_weights, nonfuel_slope, nonfuel_intercept)
     eval_probs_base = opp_model.predict_proba(eval_snap.features)
     eval_probs_hier = hier_model.predict_proba(eval_snap.features)
     eval_probs = 0.50 * eval_probs_base + 0.50 * eval_probs_hier
@@ -289,19 +303,23 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
-        tweedie_power=1.25,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
-    final_fuel_model.set_weights(fuel_blend_weights)
 
     final_nonfuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
-        tweedie_power=1.40,
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
-    final_nonfuel_model.set_weights(nonfuel_blend_weights)
+
+    logger.info("Fitting final TwoPartFuelHurdle on full historical panel...")
+    final_hurdle_fuel = TwoPartFuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    final_hurdle_fuel.fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
+
+    logger.info("Fitting final TwoPartNonfuelHurdle on full historical panel...")
+    final_hurdle_nf = TwoPartNonfuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
+    final_hurdle_nf.fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
 
     final_opp_model = ClassifierEnsemble(
         members=cfg.models.classification_members,
@@ -393,11 +411,13 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
     aligned_mask = test_snap.mask[test_mask_rows]
 
+    test_fuel_m = np.column_stack([final_fuel_model.predict_members(test_feats), final_hurdle_fuel.predict(test_feats).reshape(-1, 1)])
     test_pred_fuel_raw = calibration.apply_linear_calibration(
-        final_fuel_model.predict(test_feats), fuel_slope, fuel_intercept
+        test_fuel_m @ fuel_blend_weights, fuel_slope, fuel_intercept
     )
+    test_nf_m = np.column_stack([final_nonfuel_model.predict_members(test_feats), final_hurdle_nf.predict(test_feats).reshape(-1, 1)])
     test_pred_nonfuel_raw = calibration.apply_linear_calibration(
-        final_nonfuel_model.predict(test_feats), nonfuel_slope, nonfuel_intercept
+        test_nf_m @ nonfuel_blend_weights, nonfuel_slope, nonfuel_intercept
     )
     test_probs_base = final_opp_model.predict_proba(test_feats)
     test_probs_hier = final_hier_model.predict_proba(test_feats)
@@ -429,19 +449,6 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         test_pred_nonfuel_raw, p_active_test, p_store_test, final_nf_alpha, final_nf_beta
     )
     test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=final_inact_thresh)
-
-    # Two-Part Hurdle blending for zero-inflated targets
-    logger.info("Fitting TwoPartNonfuelHurdle on full historical panel...")
-    hurdle_nf = TwoPartNonfuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
-    hurdle_nf.fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy())
-    test_hurdle_nf = hurdle_nf.predict(test_feats)
-    test_pred_nonfuel = 0.90 * test_pred_nonfuel + 0.10 * test_hurdle_nf
-
-    logger.info("Fitting TwoPartFuelHurdle on full historical panel...")
-    hurdle_fuel = TwoPartFuelHurdle(seed=cfg.models.seed, n_jobs=cfg.models.n_jobs, use_gpu=cfg.models.use_gpu)
-    hurdle_fuel.fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy())
-    test_hurdle_fuel = hurdle_fuel.predict(test_feats)
-    test_pred_fuel = 0.90 * test_pred_fuel + 0.10 * test_hurdle_fuel
 
     # Candidate D Inactivity recency/velocity boundary arbitration
     m1_baskets = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))

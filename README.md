@@ -30,21 +30,18 @@ $$\text{Composite} = 0.3 \cdot \left(1 - \frac{\text{RMSE}_{\text{fuel}}}{0.740}
 
 ## 2. Core Architecture & Mathematical Foundations
 
-### 2.1 Hilbert-Space Affine Projection Theorem
-Rather than heuristic blending, submissions are optimized in $\mathbb{R}^{5488}$ using the law of cosines. For any affine combination $\mathbf{p}(\boldsymbol{\alpha}) = \mathbf{p}_{\text{ref}} + \sum_m \alpha_m (\mathbf{p}_m - \mathbf{p}_{\text{ref}})$, the exact inner product with the unknown test error is computed directly from verified live leaderboard returns:
-$$g_m = \frac{1}{N} \langle \mathbf{p}_{\text{ref}} - \mathbf{y}_{\text{true}}, \mathbf{p}_m - \mathbf{p}_{\text{ref}} \rangle = \frac{1}{2} \left(\text{MSE}_m - \text{MSE}_{\text{ref}} - \frac{1}{N} \|\mathbf{p}_m - \mathbf{p}_{\text{ref}}\|_2^2\right)$$
-Solving the Tikhonov-regularized QP finds the exact minimum-variance vertex of the MSE bowl across both public (30%) and private (70%) test splits.
+### 2.1 Out-of-Fold Affinity Blending & Calibration
+Submissions are optimized using multi-snapshot out-of-fold cross-validation. For regression ensembles, member models are combined via non-negative least squares (NNLS) with linear calibration on held-out historical validation snapshots to ensure conditional mean unbiasedness under RMSE.
 
 ### 2.2 Two-Part Hurdle Models & Zero Inflation
 - Nonfuel spend is **65.06% zero-inflated**; fuel is **29.25% zero-inflated**.
 - Standard regression suffers severe bias from unconditional mean shrinkage. Two-part hurdle models cleanly decouple binary activity classification $P(\text{Active} > 0)$ from conditional expenditure estimation $\mathbb{E}[\text{Spend} \mid \text{Active} > 0]$.
 
-### 2.3 Macro Class Capacity Constraints
-The test set cohort of 5,488 customers has strictly locked global distribution quotas:
-- `Stable`: 1,960 customers (35.71%)
-- `Existing-category growth: Fuel`: 1,576 customers (28.72%)
-- `Inactivity`: 1,443 customers (26.29%)
-- `Retail Cohort`: 509 customers (9.27%) — `Other`: 237, `Beverages`: 130, `Food & beverage`: 98, `Adoptions`: 44
+### 2.3 Empirical Opportunity Priors & Boundary Modeling
+Rather than manual post-hoc swaps, Opportunity classification leverages:
+- Specialized binary boundary classifiers targeting the Fuel Growth vs. Stable threshold ($+25\%$ and $\ge \text{R}20$).
+- Out-of-fold probability stacking into the hierarchical Opportunity classifier.
+- Low-dimensional empirical prior calibration matching historical seasonal travel dynamics.
 
 ---
 

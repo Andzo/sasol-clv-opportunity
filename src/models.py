@@ -144,8 +144,32 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
     raise ValueError(f"Unknown classifier {name!r}")
 
 
+def _fit_with_sample_weight(model: Any, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> None:
+    """Safely fits model with sample_weight, properly forwarding to sklearn Pipeline steps."""
+    if sample_weight is None:
+        model.fit(X, y)
+        return
+
+    # Handle sklearn Pipeline: sample_weight must be prefixed with the final step name
+    if hasattr(model, "steps") and len(model.steps) > 0:
+        step_name = model.steps[-1][0]
+        try:
+            model.fit(X, y, **{f"{step_name}__sample_weight": sample_weight})
+            return
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        model.fit(X, y, sample_weight=sample_weight)
+        return
+    except (TypeError, ValueError):
+        pass
+
+    model.fit(X, y)
+
+
 class RegressorEnsemble:
-    """Weighted average of non-negative regressor predictions."""
+    """Weighted average of non-negative regressor predictions with optional seed bagging."""
 
     def __init__(
         self,
@@ -154,29 +178,33 @@ class RegressorEnsemble:
         n_jobs: int = -1,
         tweedie_power: float = 1.15,
         use_gpu: bool = False,
+        n_seeds: int = 1,
     ) -> None:
         self.members = tuple(members)
         self.tweedie_power = tweedie_power
-        self.models = [
-            make_regressor(m, seed, n_jobs, tweedie_power=tweedie_power, use_gpu=use_gpu)
+        self.n_seeds = max(1, int(n_seeds))
+        self.models: list[list[Any]] = [
+            [
+                make_regressor(m, seed + s, n_jobs, tweedie_power=tweedie_power, use_gpu=use_gpu)
+                for s in range(self.n_seeds)
+            ]
             for m in self.members
         ]
         self.weights = np.full(len(self.members), 1.0 / len(self.members))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "RegressorEnsemble":
-        for model in self.models:
-            if sample_weight is not None:
-                try:
-                    model.fit(X, y, sample_weight=sample_weight)
-                    continue
-                except (TypeError, ValueError):
-                    pass
-            model.fit(X, y)
+        for sub_list in self.models:
+            for model in sub_list:
+                _fit_with_sample_weight(model, X, y, sample_weight)
         return self
 
     def predict_members(self, X: pd.DataFrame) -> np.ndarray:
-        """(n_samples, n_members) matrix of clipped member predictions."""
-        return np.column_stack([np.clip(m.predict(X), 0.0, None) for m in self.models])
+        """(n_samples, n_members) matrix of clipped member predictions averaged over seeds."""
+        col_list = []
+        for sub_list in self.models:
+            seed_preds = [np.clip(m.predict(X), 0.0, None) for m in sub_list]
+            col_list.append(np.mean(seed_preds, axis=0))
+        return np.column_stack(col_list)
 
     def set_weights(self, weights: np.ndarray) -> None:
         weights = np.asarray(weights, dtype="float64")
@@ -189,7 +217,7 @@ class RegressorEnsemble:
 
 
 class ClassifierEnsemble:
-    """Probability-averaging ensemble over a fixed label space ``0..n_classes-1``."""
+    """Probability-averaging ensemble over a fixed label space ``0..n_classes-1`` with optional seed bagging."""
 
     def __init__(
         self,
@@ -199,10 +227,18 @@ class ClassifierEnsemble:
         n_jobs: int = -1,
         weights: Sequence[float] | None = None,
         use_gpu: bool = False,
+        n_seeds: int = 1,
     ) -> None:
         self.members = tuple(members)
         self.n_classes = n_classes
-        self.models = [make_classifier(m, seed, n_jobs, use_gpu=use_gpu) for m in self.members]
+        self.n_seeds = max(1, int(n_seeds))
+        self.models: list[list[Any]] = [
+            [
+                make_classifier(m, seed + s, n_jobs, use_gpu=use_gpu)
+                for s in range(self.n_seeds)
+            ]
+            for m in self.members
+        ]
         self.classes_: np.ndarray | None = None
         if weights is not None:
             self.set_weights(weights)
@@ -221,26 +257,24 @@ class ClassifierEnsemble:
             raise ValueError("Class indices out of range")
         self.classes_ = np.unique(y)
         encoded = np.searchsorted(self.classes_, y)  # contiguous 0..P-1 (required by XGBoost)
-        for model in self.models:
-            if sample_weight is not None:
-                try:
-                    model.fit(X, encoded, sample_weight=sample_weight)
-                    continue
-                except (TypeError, ValueError):
-                    pass
-            model.fit(X, encoded)
+        for sub_list in self.models:
+            for model in sub_list:
+                _fit_with_sample_weight(model, X, encoded, sample_weight)
         return self
 
     def predict_member_proba(self, X: pd.DataFrame) -> list[np.ndarray]:
-        """Per-member probabilities aligned to the full label space."""
+        """Per-member probabilities aligned to the full label space, averaged over seeds."""
         if self.classes_ is None:
             raise RuntimeError("Ensemble is not fitted")
         out = []
-        for model in self.models:
-            p = np.asarray(model.predict_proba(X), dtype="float64")
-            full = np.zeros((len(X), self.n_classes))
-            full[:, self.classes_] = p
-            out.append(full)
+        for sub_list in self.models:
+            seed_probs = []
+            for model in sub_list:
+                p = np.asarray(model.predict_proba(X), dtype="float64")
+                full = np.zeros((len(X), self.n_classes))
+                full[:, self.classes_] = p
+                seed_probs.append(full)
+            out.append(np.mean(seed_probs, axis=0))
         return out
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
