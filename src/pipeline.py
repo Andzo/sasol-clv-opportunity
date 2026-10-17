@@ -510,6 +510,55 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     report_path = cfg.paths.reports_dir / "evaluation_report.json"
     report_path.write_text(json.dumps(summary, indent=2))
     logger.info("Pipeline report written to %s", report_path)
+
+    # Automatically track benchmark and update champion record
+    try:
+        from src.tracker import update_benchmark_tracker
+        seat_counts = summary.get("class_distribution_submission", {})
+        norm_seat_counts = {
+            "Stable": seat_counts.get("Stable", 0),
+            "Fuel Growth": seat_counts.get("Existing-category growth: Fuel", 0),
+            "Inactivity": seat_counts.get("Inactivity", 0),
+            "Retail Growth + Adoption": sum(
+                seat_counts.get(k, 0)
+                for k in seat_counts
+                if k not in ["Stable", "Existing-category growth: Fuel", "Inactivity"]
+            ),
+            "Adoption (Pure)": sum(
+                seat_counts.get(k, 0)
+                for k in seat_counts
+                if k.startswith("New category adoption")
+            ),
+        }
+        is_new_champ = update_benchmark_tracker(
+            evaluation_report={
+                "composite_score": leaderboard_score,
+                "fuel_rmse": eval_scores.rmse_fuel,
+                "nonfuel_rmse": eval_scores.rmse_nonfuel,
+                "opportunity_f1": eval_scores.weighted_f1,
+                "score_breakdown": score_breakdown,
+                "folds": [
+                    {
+                        "fold": fold_name,
+                        "cutoff_date": fold_metrics.get("cutoff_date", fold_name),
+                        "fuel_rmse": fold_metrics.get("rmse_fuel", 0.0),
+                        "nonfuel_rmse": fold_metrics.get("rmse_nonfuel", 0.0),
+                        "opp_f1": fold_metrics.get("weighted_f1", 0.0),
+                        "composite": fold_metrics.get("leaderboard_composite", 0.0),
+                    }
+                    for fold_name, fold_metrics in tourney_res.fold_scores.items()
+                ],
+            },
+            git_commit=git_info["commit_full"],
+            submission_counts=norm_seat_counts,
+        )
+        if is_new_champ:
+            logger.info("🏆 NEW CHAMPION MODEL BENCHMARK RECORDED: %.5f", leaderboard_score)
+        else:
+            logger.info("Run logged to benchmark tracker (Current champion remains superior)")
+    except Exception as exc:
+        logger.warning("Failed to update model benchmark tracker: %s", exc)
+
     logger.info("Tournament pipeline completed in %.2f minutes", elapsed / 60.0)
 
     return summary
