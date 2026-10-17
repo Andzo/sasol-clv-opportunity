@@ -187,6 +187,7 @@ def make_regressor(
         }
         if use_gpu:
             cb_kwargs["task_type"] = "GPU"
+            cb_kwargs["gpu_ram_part"] = 0.65
         else:
             cb_kwargs["thread_count"] = n_jobs
         return CatBoostRegressor(**cb_kwargs)
@@ -197,6 +198,7 @@ def make_regressor(
         }
         if use_gpu:
             cb_kwargs["task_type"] = "GPU"
+            cb_kwargs["gpu_ram_part"] = 0.65
         else:
             cb_kwargs["thread_count"] = n_jobs
         return CatBoostRegressor(**cb_kwargs)
@@ -272,6 +274,7 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
         }
         if use_gpu:
             cb_kwargs["task_type"] = "GPU"
+            cb_kwargs["gpu_ram_part"] = 0.65
         else:
             cb_kwargs["thread_count"] = n_jobs
         return CatBoostClassifier(**cb_kwargs)
@@ -490,6 +493,7 @@ class StoreAttachmentClassifier:
         }
         if use_gpu:
             cb_kwargs["task_type"] = "GPU"
+            cb_kwargs["gpu_ram_part"] = 0.65
         else:
             cb_kwargs["thread_count"] = n_jobs
         self.catboost = CatBoostClassifier(**cb_kwargs)
@@ -569,6 +573,7 @@ class HierarchicalOpportunityClassifier:
         }
         if use_gpu:
             cb_kwargs_inact["task_type"] = "GPU"
+            cb_kwargs_inact["gpu_ram_part"] = 0.65
         else:
             cb_kwargs_inact["thread_count"] = n_jobs
         self.clf_inact_cb = CatBoostClassifier(**cb_kwargs_inact)
@@ -592,6 +597,7 @@ class HierarchicalOpportunityClassifier:
         }
         if use_gpu:
             cb_kwargs_ret["task_type"] = "GPU"
+            cb_kwargs_ret["gpu_ram_part"] = 0.65
         else:
             cb_kwargs_ret["thread_count"] = n_jobs
         self.clf_ret_cb = CatBoostClassifier(**cb_kwargs_ret)
@@ -615,6 +621,7 @@ class HierarchicalOpportunityClassifier:
         }
         if use_gpu:
             cb_kwargs_fg["task_type"] = "GPU"
+            cb_kwargs_fg["gpu_ram_part"] = 0.65
         else:
             cb_kwargs_fg["thread_count"] = n_jobs
         self.clf_fg_cb = CatBoostClassifier(**cb_kwargs_fg)

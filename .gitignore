@@ -18,8 +18,10 @@ train.csv
 test.csv
 SampleSubmission.csv
 submission.csv
+submission_git_*.csv
 submissions/*.csv
 submissions/*.parquet
+submissions/*.manifest.json
 
 # Temporary or IDE files
 *.swp
