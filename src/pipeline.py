@@ -41,6 +41,7 @@ from src.tournament import (
     TournamentEngine,
     TournamentResult,
     apply_boundary_arbitration,
+    build_level2_structural_features,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_probs_sim = tourney_res.pool_probs_sim[eval_mask_indices]
         eval_phys_fg = tourney_res.pool_phys_fg[eval_mask_indices]
         eval_phys_inact = tourney_res.pool_phys_inact[eval_mask_indices]
+        eval_level2_X = tourney_res.pool_level2_X.iloc[eval_mask_indices]
         eval_ids = [tourney_res.pool_ids[i] for i in eval_mask_indices]
     else:
         # Fallback: predict using fold 3 models
@@ -115,6 +117,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_probs_sim = np.zeros((len(eval_ids), n_classes))
         eval_phys_fg = np.zeros(len(eval_ids))
         eval_phys_inact = np.zeros(len(eval_ids))
+        eval_level2_X = pd.DataFrame()
 
     # Apply per-member debiasing and blend weights
     eval_fuel_debiased = calibration.apply_member_debiasing(eval_fuel_m, cal.fuel_debias)
@@ -138,11 +141,16 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_nf_cal, eval_blup_nf_vec, cal.blup_eta_nf, active_mask=(eval_nf_cal > 0.05)
     )
 
-    # Opportunity Probability Fusion
+    # Opportunity Probability Fusion & Level-2 Stacking
     wb, wh, ws, b_fg, b_in = cal.prob_blend_weights
     eval_probs_fused = wb * eval_probs_base + wh * eval_probs_hier + ws * eval_probs_sim
     eval_probs_fused[:, fg_idx] += b_fg * eval_phys_fg
     eval_probs_fused[:, inact_idx] += b_in * eval_phys_inact
+
+    if cal.level2_meta_classifier is not None and len(eval_level2_X) > 0:
+        eval_probs_meta = cal.level2_meta_classifier.predict_proba(eval_level2_X)
+        eval_probs_fused = 0.65 * eval_probs_meta + 0.35 * eval_probs_fused
+
     eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs_fused, cal.temperature)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
 
@@ -347,11 +355,40 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         final_store_model,
     )
 
+    wb, wh, ws, b_fg, b_in = cal.prob_blend_weights
     test_probs_fused = wb * test_probs_base + wh * test_probs_hier + ws * test_probs_sim
     test_probs_fused[:, fg_idx] += b_fg * p_phys_fg_test
     test_probs_fused[:, inact_idx] += b_in * p_phys_inact_test
+
+    if cal.level2_meta_classifier is not None:
+        p_fuel_active_test = final_hurdle_fuel.classifier.predict_proba(test_feats)
+        p_store_active_test = final_hurdle_nf.classifier.predict_proba(test_feats)
+        mu_fuel_pos_test, sigma_fuel_pos_test = final_mq_fuel.predict_conditional_pos(test_feats)
+
+        test_level2_X = build_level2_structural_features(
+            X=test_feats,
+            probs_base=test_probs_base,
+            probs_hier=test_probs_hier,
+            probs_sim=test_probs_sim,
+            pred_fuel=np.mean(test_pred_f_direct, axis=1),
+            pred_nf=np.mean(test_pred_nf_direct, axis=1),
+            p_fuel_active=p_fuel_active_test,
+            p_store_active=p_store_active_test,
+            mu_fuel_pos=mu_fuel_pos_test,
+            sigma_fuel_pos=sigma_fuel_pos_test,
+        )
+        test_probs_meta = cal.level2_meta_classifier.predict_proba(test_level2_X)
+        test_probs_fused = 0.65 * test_probs_meta + 0.35 * test_probs_fused
+
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs_fused, cal.temperature)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
+
+    # Feasibility veto: Customers with recent activity cannot be Inactivity
+    m1_b = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))
+    d_last = test_feats["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in test_feats.columns else np.full(len(test_feats), 999.0)
+    test_active_veto = (m1_b > 0) | (d_last < 45)
+    test_probs_masked[test_active_veto, inact_idx] = 0.0
+    test_probs_masked = test_probs_masked / np.maximum(test_probs_masked.sum(axis=1, keepdims=True), 1e-12)
 
     # Prior-Aligned Decision Rule with Precision-Shrunk Target Priors
     test_opp_decisions = calibration.decide_with_prior_alignment(

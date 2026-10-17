@@ -31,21 +31,21 @@ def make_regressor(
     if name in ("lgbm", "lgbm_tweedie"):
         return LGBMRegressor(
             objective="tweedie", tweedie_variance_power=tweedie_power,
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
+            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
     if name == "lgbm_huber":
         return LGBMRegressor(
             objective="huber", alpha=huber_alpha,
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
+            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
     if name == "lgbm_mse":
         return LGBMRegressor(
             objective="regression",
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=55,
+            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
@@ -140,7 +140,7 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
     if name == "lgbm":
         return LGBMClassifier(
             objective="multiclass", n_estimators=450, learning_rate=0.018, num_leaves=30,
-            min_child_samples=51, subsample=0.77, subsample_freq=1, colsample_bytree=0.58,
+            min_child_samples=85, subsample=0.77, subsample_freq=1, colsample_bytree=0.58,
             reg_lambda=10.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
             force_col_wise=True, verbose=-1,
         )
@@ -709,4 +709,66 @@ class DecomposedRule7Simulator:
 
         probs /= self.n_draws
         return probs
+
+
+class StructuralMetaClassifier:
+    """Level-2 Structural Meta-Learner (Wolpert 1992 Stacking).
+
+    Blends out-of-fold multi-class probabilities with physical regression hurdles,
+    Gaussian quantile exceedance, and survival hazard.
+    Trains:
+    1. Regularized LGBMClassifier(max_depth=3, num_leaves=7, min_child_samples=100, reg_lambda=25.0)
+    2. Calibrated Multinomial LogisticRegression(C=0.5)
+    Blends predictions: 0.65 * LGBM + 0.35 * LogReg.
+    """
+
+    def __init__(self, n_classes: int = 17, seed: int = 42, n_jobs: int = -1) -> None:
+        self.n_classes = n_classes
+        self.seed = seed
+        self.n_jobs = n_jobs
+        self.lgb = LGBMClassifier(
+            objective="multiclass", max_depth=3, num_leaves=7,
+            min_child_samples=100, learning_rate=0.03, n_estimators=200,
+            reg_lambda=25.0, colsample_bytree=0.70, subsample=0.80, subsample_freq=1,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+        )
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.impute import SimpleImputer
+        self.logreg = Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("lr", LogisticRegression(C=0.5, max_iter=500, random_state=seed)),
+        ])
+
+    def fit(self, X: pd.DataFrame | np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "StructuralMetaClassifier":
+        y_arr = np.asarray(y, dtype=int)
+        X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        if sample_weight is not None:
+            sw = np.asarray(sample_weight, dtype="float64")
+            self.lgb.fit(X_df, y_arr, sample_weight=sw)
+            self.logreg.fit(X_df, y_arr, lr__sample_weight=sw)
+        else:
+            self.lgb.fit(X_df, y_arr)
+            self.logreg.fit(X_df, y_arr)
+        return self
+
+    def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
+        X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        p_lgb = self.lgb.predict_proba(X_df)
+        p_lr = self.logreg.predict_proba(X_df)
+
+        full_probs = np.zeros((len(X_df), self.n_classes), dtype=np.float64)
+        for i, cls_idx in enumerate(self.lgb.classes_):
+            if cls_idx < self.n_classes:
+                full_probs[:, cls_idx] += 0.65 * p_lgb[:, i]
+
+        lr_model = self.logreg.named_steps["lr"]
+        for i, cls_idx in enumerate(lr_model.classes_):
+            if cls_idx < self.n_classes:
+                full_probs[:, cls_idx] += 0.35 * p_lr[:, i]
+
+        row_sums = full_probs.sum(axis=1, keepdims=True)
+        return full_probs / np.maximum(row_sums, 1e-12)
 

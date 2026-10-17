@@ -105,6 +105,12 @@ def test_build_features_schema_and_reproducibility():
         "hawkes_intensity_7d",
         "level3_hhi_concentration",
         "svd_dim_0",
+        "survival_prob_empirical",
+        "fuel_survival_prob",
+        "network_fuel_price_m1_m3_ratio",
+        "real_fuel_hurdle_litres",
+        "mundlak_perm_fuel_litres",
+        "mundlak_shock_fuel_litres",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"
@@ -180,6 +186,8 @@ def test_btyd_monotonicity_and_bounds():
 
     # Active customer should have higher expected fuel transactions than dormant customer
     assert feats.loc["cust_active", "btyd_fuel_exp_baskets_m3"] > feats.loc["cust_dormant", "btyd_fuel_exp_baskets_m3"]
+    # Dormant customer with 1 purchase 6 months ago (x=0, T=6m) must have p_alive < 0.35
+    assert feats.loc["cust_dormant", "btyd_fuel_p_alive"] < 0.35, f"Dormant customer p_alive not decayed: {feats.loc['cust_dormant', 'btyd_fuel_p_alive']}"
     # Neither customer bought nonfuel goods -> nonfuel p_alive should be 0.0
     assert feats.loc["cust_active", "btyd_nonfuel_p_alive"] == 0.0
     assert feats.loc["cust_dormant", "btyd_nonfuel_p_alive"] == 0.0

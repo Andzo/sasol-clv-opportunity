@@ -13,7 +13,38 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from sklearn.linear_model import Ridge
+
 from src.models import StoreAttachmentClassifier, make_regressor
+
+
+def _extract_anchor_matrix(X: pd.DataFrame | np.ndarray, target_type: str = "fuel") -> np.ndarray:
+    """Extracts continuous log-transformed baseline predictors for the parametric anchor model."""
+    if isinstance(X, pd.DataFrame):
+        if target_type == "fuel":
+            candidates = [
+                "m1_fuel_litres", "m3_fuel_litres", "q2_fuel_litres", "m6_fuel_litres",
+                "btyd_fuel_exp_baskets_m3", "mundlak_perm_fuel_litres",
+            ]
+        else:
+            candidates = [
+                "m1_nonfuel_rand", "m3_nonfuel_rand", "q2_nonfuel_rand", "m6_nonfuel_rand",
+                "btyd_exp_clv_spend_m3", "mundlak_perm_nf_rand",
+            ]
+        present = [c for c in candidates if c in X.columns]
+        if present:
+            vals = np.asarray(X[present].to_numpy(), dtype="float64")
+            vals = np.nan_to_num(vals, nan=0.0)
+            return np.log1p(np.maximum(vals, 0.0))
+        # Fallback if specific columns not present (e.g. test mocks)
+        vals = np.asarray(X.iloc[:, :min(6, X.shape[1])].to_numpy(), dtype="float64")
+        return np.log1p(np.maximum(np.nan_to_num(vals, nan=0.0), 0.0))
+    else:
+        arr = np.asarray(X, dtype="float64")
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        sub = arr[:, :min(6, arr.shape[1])]
+        return np.log1p(np.maximum(np.nan_to_num(sub, nan=0.0), 0.0))
 
 
 class TwoPartNonfuelHurdle:
@@ -96,6 +127,7 @@ class BaggedTwoPartFuelHurdle:
         self.huber_alpha = huber_alpha
         self.power_shrinkage = power_shrinkage
         self.zero_gate_threshold = zero_gate_threshold
+        self.anchor_model = Ridge(alpha=50.0)
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
@@ -112,13 +144,22 @@ class BaggedTwoPartFuelHurdle:
         X_pos = X.iloc[pos_mask] if isinstance(X, pd.DataFrame) else X[pos_mask]
         y_pos = y_arr[pos_mask]
         sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask] if sample_weight is not None else None
+
+        A_pos = _extract_anchor_matrix(X_pos, "fuel")
+        if len(y_pos) >= 5:
+            self.anchor_model.fit(A_pos, y_pos, sample_weight=sw_pos)
+            z_anchor_pos = self.anchor_model.predict(A_pos)
+        else:
+            z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
+        y_innov_pos = y_pos - z_anchor_pos
+
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
             if sw_pos is not None:
-                reg_lgb.fit(X_pos, y_pos, sample_weight=sw_pos)
-                reg_cb.fit(X_pos, y_pos, sample_weight=sw_pos)
+                reg_lgb.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
+                reg_cb.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
             else:
-                reg_lgb.fit(X_pos, y_pos)
-                reg_cb.fit(X_pos, y_pos)
+                reg_lgb.fit(X_pos, y_innov_pos)
+                reg_cb.fit(X_pos, y_innov_pos)
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -127,12 +168,17 @@ class BaggedTwoPartFuelHurdle:
             p_active = p_active ** self.power_shrinkage
         if self.zero_gate_threshold > 0.0:
             p_active = np.where(p_active < self.zero_gate_threshold, 0.0, p_active)
-        pred_pos = np.zeros(len(X), dtype="float64")
+
+        A = _extract_anchor_matrix(X, "fuel")
+        z_anchor = self.anchor_model.predict(A) if hasattr(self.anchor_model, "coef_") else 0.0
+
+        pred_innov = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
-            p_lgb = np.clip(reg_lgb.predict(X), 0.0, None)
-            p_cb = np.clip(reg_cb.predict(X), 0.0, None)
-            pred_pos += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+            p_lgb = reg_lgb.predict(X)
+            p_cb = reg_cb.predict(X)
+            pred_innov += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+        pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
         return p_active * pred_pos
 
 
@@ -158,6 +204,7 @@ class BaggedTwoPartNonfuelHurdle:
         self.huber_alpha = huber_alpha
         self.power_shrinkage = power_shrinkage
         self.zero_gate_threshold = zero_gate_threshold
+        self.anchor_model = Ridge(alpha=50.0)
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
@@ -174,13 +221,22 @@ class BaggedTwoPartNonfuelHurdle:
         X_pos = X.iloc[pos_mask] if isinstance(X, pd.DataFrame) else X[pos_mask]
         y_pos = y_arr[pos_mask]
         sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask] if sample_weight is not None else None
+
+        A_pos = _extract_anchor_matrix(X_pos, "nonfuel")
+        if len(y_pos) >= 5:
+            self.anchor_model.fit(A_pos, y_pos, sample_weight=sw_pos)
+            z_anchor_pos = self.anchor_model.predict(A_pos)
+        else:
+            z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
+        y_innov_pos = y_pos - z_anchor_pos
+
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
             if sw_pos is not None:
-                reg_lgb.fit(X_pos, y_pos, sample_weight=sw_pos)
-                reg_cb.fit(X_pos, y_pos, sample_weight=sw_pos)
+                reg_lgb.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
+                reg_cb.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
             else:
-                reg_lgb.fit(X_pos, y_pos)
-                reg_cb.fit(X_pos, y_pos)
+                reg_lgb.fit(X_pos, y_innov_pos)
+                reg_cb.fit(X_pos, y_innov_pos)
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -189,12 +245,17 @@ class BaggedTwoPartNonfuelHurdle:
             p_store = p_store ** self.power_shrinkage
         if self.zero_gate_threshold > 0.0:
             p_store = np.where(p_store < self.zero_gate_threshold, 0.0, p_store)
-        pred_pos = np.zeros(len(X), dtype="float64")
+
+        A = _extract_anchor_matrix(X, "nonfuel")
+        z_anchor = self.anchor_model.predict(A) if hasattr(self.anchor_model, "coef_") else 0.0
+
+        pred_innov = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
         for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
-            p_lgb = np.clip(reg_lgb.predict(X), 0.0, None)
-            p_cb = np.clip(reg_cb.predict(X), 0.0, None)
-            pred_pos += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+            p_lgb = reg_lgb.predict(X)
+            p_cb = reg_cb.predict(X)
+            pred_innov += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+        pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
         return p_store * pred_pos
 
 
@@ -218,10 +279,13 @@ class MultiQuantileTwoPartHurdle:
         seed: int = 42,
         n_jobs: int = -1,
         use_gpu: bool = False,
+        target_type: str = "fuel",
     ) -> None:
         self.seed = seed
         self.n_jobs = n_jobs
         self.use_gpu = use_gpu
+        self.target_type = target_type
+        self.anchor_model = Ridge(alpha=50.0)
         self.classifier = StoreAttachmentClassifier(seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
 
         from lightgbm import LGBMRegressor
@@ -263,22 +327,30 @@ class MultiQuantileTwoPartHurdle:
         y_pos = y_arr[pos_mask]
         sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask] if sample_weight is not None else None
 
+        A_pos = _extract_anchor_matrix(X_pos, self.target_type)
+        if len(y_pos) >= 5:
+            self.anchor_model.fit(A_pos, y_pos, sample_weight=sw_pos)
+            z_anchor_pos = self.anchor_model.predict(A_pos)
+        else:
+            z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
+        y_innov_pos = y_pos - z_anchor_pos
+
         if len(y_pos) > 0:
-            # Winsorize positive target at 99.5th percentile for L2 regressor
-            cap = float(np.percentile(y_pos, 99.5))
-            y_pos_win = np.minimum(y_pos, cap)
+            # Winsorize positive innovation at 99.5th percentile for L2 regressor
+            cap = float(np.percentile(y_innov_pos, 99.5))
+            y_innov_win = np.minimum(y_innov_pos, cap)
             if sw_pos is not None:
-                self.l2_regressor.fit(X_pos, y_pos_win, sample_weight=sw_pos)
+                self.l2_regressor.fit(X_pos, y_innov_win, sample_weight=sw_pos)
             else:
-                self.l2_regressor.fit(X_pos, y_pos_win)
+                self.l2_regressor.fit(X_pos, y_innov_win)
 
             for lgb_q, cb_q in zip(self.lgb_quantiles, self.cb_quantiles):
                 if sw_pos is not None:
-                    lgb_q.fit(X_pos, y_pos, sample_weight=sw_pos)
-                    cb_q.fit(X_pos, y_pos, sample_weight=sw_pos)
+                    lgb_q.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
+                    cb_q.fit(X_pos, y_innov_pos, sample_weight=sw_pos)
                 else:
-                    lgb_q.fit(X_pos, y_pos)
-                    cb_q.fit(X_pos, y_pos)
+                    lgb_q.fit(X_pos, y_innov_pos)
+                    cb_q.fit(X_pos, y_innov_pos)
         return self
 
     def predict_proba_active(self, X: pd.DataFrame) -> np.ndarray:
@@ -286,16 +358,18 @@ class MultiQuantileTwoPartHurdle:
 
     def predict_conditional_pos(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """Returns conditional mean mu_pos and spread sigma_pos."""
-        mu_l2 = np.clip(self.l2_regressor.predict(X), 0.0, None)
+        A = _extract_anchor_matrix(X, self.target_type)
+        z_anchor = self.anchor_model.predict(A) if hasattr(self.anchor_model, "coef_") else 0.0
+        mu_l2_innov = self.l2_regressor.predict(X)
         q_preds: list[np.ndarray] = []
         for lgb_q, cb_q in zip(self.lgb_quantiles, self.cb_quantiles):
-            p_lgb = np.clip(lgb_q.predict(X), 0.0, None)
-            p_cb = np.clip(cb_q.predict(X), 0.0, None)
-            q_preds.append(0.55 * p_lgb + 0.45 * p_cb)
+            p_lgb = lgb_q.predict(X)
+            p_cb = cb_q.predict(X)
+            q_preds.append(np.clip(z_anchor + (0.55 * p_lgb + 0.45 * p_cb), 0.0, None))
 
         # Trapezoidal quadrature across quantiles
         mu_quad = sum(w * q for w, q in zip(self.QUAD_WEIGHTS, q_preds))
-        mu_pos = 0.50 * mu_l2 + 0.50 * mu_quad
+        mu_pos = np.clip(0.50 * (z_anchor + mu_l2_innov) + 0.50 * mu_quad, 0.0, None)
 
         # Interquartile spread from 90th and 10th percentiles
         sigma_pos = np.maximum(0.14, (q_preds[-1] - q_preds[0]) / 2.5631)

@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "3.1.0"
+FEATURE_VERSION = "3.2.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 180.0
@@ -119,6 +119,22 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out["nonfuel_proj_q2_hurdle_dist"] = win["q2_nonfuel_rand"] - H_nonfuel
     out["nonfuel_proj_m6_hurdle_dist"] = 0.5 * win["m6_nonfuel_rand"] - H_nonfuel
 
+    # Fuel price inflation deflators
+    tot_m1_rand = float(win["m1_fuel_rand"].sum()) if "m1_fuel_rand" in win.columns else 0.0
+    tot_m1_litres = float(win["m1_fuel_litres"].sum()) if "m1_fuel_litres" in win.columns else 0.0
+    tot_m3_rand = float(win["m3_fuel_rand"].sum()) if "m3_fuel_rand" in win.columns else 0.0
+    tot_m3_litres = float(win["m3_fuel_litres"].sum()) if "m3_fuel_litres" in win.columns else 0.0
+
+    p_m1 = (tot_m1_rand / tot_m1_litres) if tot_m1_litres > 0 else 23.50
+    p_m3 = (tot_m3_rand / tot_m3_litres) if tot_m3_litres > 0 else 23.50
+    out["network_fuel_price_m1_m3_ratio"] = pd.Series(p_m1 / max(p_m3, 1e-4), index=win.index)
+
+    pump_price_clamped = out["fuel_price_m3"].clip(20.0, 27.0).fillna(p_m3)
+    out["real_fuel_hurdle_litres"] = np.maximum(
+        1.25 * win["m3_fuel_litres"],
+        win["m3_fuel_litres"] + 20.0 / pump_price_clamped,
+    )
+
     out["store_attachment_rate"] = win["m3_nonfuel_baskets"] / (win["m3_baskets"] + 1.0)
     out["has_visited_m1"] = (win["m1_baskets"] > 0).astype("float64")
 
@@ -164,6 +180,9 @@ def _recency_block(
     out["gap_last"] = g["gap"].last()
     out["overdue_ratio"] = out["days_since_last_purchase"] / out["gap_median"].clip(lower=1.0)
     out["exp_churn_hazard"] = 1.0 - np.exp(-out["days_since_last_purchase"] / out["gap_mean"].clip(lower=1.0))
+    gap_med_safe = out["gap_median"].clip(lower=3.0)
+    out["survival_prob_empirical"] = np.exp(- (out["days_since_last_purchase"] / gap_med_safe) ** 1.5)
+    out["fuel_survival_prob"] = np.exp(- (out["days_since_last_fuel"] / gap_med_safe) ** 1.5)
     out["fuel_dormant_in_m3"] = (
         (q[q["is_fuel_cat"]].groupby("ID").size().reindex(ids).fillna(0) > 0) & (out["days_since_last_fuel"] > 90)
     ).astype("float64")
@@ -238,7 +257,11 @@ def _category_block(
     rate_m6 = m6_baskets.div(observed_months.clip(upper=6.0), axis=0)
     recency = last_time.apply(lambda col: _days_since(t, col)).clip(upper=180.0).astype("float64")
 
+    life_baskets = pivot(q.groupby(keys)["TransactionId"].nunique(), 0.0)
+    ever = life_baskets.gt(0).astype("float64")
+
     parts = {
+        "ever": ever,
         "active_m6": active_m6,
         "active_m3": active_m3,
         "rate": rate_m6,
@@ -447,7 +470,10 @@ def _predict_bgnbd_stats(
     log_div = (r + x) * np.log((alpha + T) / (alpha + t_x)) + np.log(
         a / (b + np.maximum(x, 1.0) - 1.0)
     )
-    p_alive = np.where(x == 0, 1.0, sp.expit(-log_div))
+    # For x == 0 (single-transaction cohort), dropout is not conditioned on repeat timing;
+    # apply Pareto-II survival decay (alpha / (alpha + T)) ** r instead of hardcoded 1.0
+    survival_x0 = (alpha / (alpha + T)) ** r
+    p_alive = np.where(x == 0, survival_x0, sp.expit(-log_div))
     p_alive = np.where(has_baskets, np.clip(p_alive, 0.0, 1.0), 0.0)
     lam = np.where(has_baskets, (r + x) / (alpha + T), 0.0)
     exp_purchases = p_alive * lam * t_future
@@ -892,6 +918,40 @@ def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) 
     return out
 
 
+def _mundlak_block(
+    hist: pd.DataFrame, win: pd.DataFrame, ids: pd.Index, observed_months: pd.Series
+) -> pd.DataFrame:
+    """Mundlak (1978) within-between panel econometric decomposition."""
+    s = hist[hist["in_scope"]]
+    out = pd.DataFrame(index=ids)
+
+    fuel_litres_life = s[s["is_fuel_sale"]].groupby("ID")["qty"].sum().reindex(ids).fillna(0.0)
+    nf_rand_life = s[s["is_nonfuel"]].groupby("ID")["amount"].sum().reindex(ids).fillna(0.0)
+
+    obs_quarters = (observed_months / 3.0).clip(lower=1.0)
+    mean_q_fuel = fuel_litres_life / obs_quarters
+    mean_q_nf = nf_rand_life / obs_quarters
+
+    pop_fuel = float(mean_q_fuel[mean_q_fuel > 0].median()) if (mean_q_fuel > 0).any() else 25.0
+    pop_nf = float(mean_q_nf[mean_q_nf > 0].median()) if (mean_q_nf > 0).any() else 150.0
+
+    # Bühlmann-Straub credibility shrinkage factor kappa = 3.0
+    cred = obs_quarters / (obs_quarters + 3.0)
+
+    perm_fuel = cred * mean_q_fuel + (1.0 - cred) * pop_fuel
+    perm_nf = cred * mean_q_nf + (1.0 - cred) * pop_nf
+
+    out["mundlak_perm_fuel_litres"] = perm_fuel.astype("float64")
+    out["mundlak_perm_nf_rand"] = perm_nf.astype("float64")
+
+    out["mundlak_shock_fuel_litres"] = (win["m3_fuel_litres"] - perm_fuel).astype("float64")
+    out["mundlak_shock_nf_rand"] = (win["m3_nonfuel_rand"] - perm_nf).astype("float64")
+
+    out["mundlak_shock_ratio_fuel"] = ((win["m3_fuel_litres"] + 1.0) / (perm_fuel + 1.0)).astype("float64")
+    out["mundlak_shock_ratio_nf"] = ((win["m3_nonfuel_rand"] + 1.0) / (perm_nf + 1.0)).astype("float64")
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -932,6 +992,7 @@ def build_features(
         _hawkes_decay_block(hist, ids, t),
         _level3_and_svd_block(hist, ids, t),
         _station_seasonal_block(hist, ids, t),
+        _mundlak_block(hist, win, ids, observed_months),
     ]
     feats = pd.concat(blocks, axis=1)
     hurdle_block = _hurdle_physics_block(feats)

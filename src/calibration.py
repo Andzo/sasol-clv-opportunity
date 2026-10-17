@@ -722,6 +722,78 @@ def compute_precision_weighted_target_priors(
     return target / target.sum()
 
 
+def optimize_expected_f1_plug_in(
+    probs: np.ndarray,
+    target_priors: np.ndarray,
+    init_weights: np.ndarray | None = None,
+    target_bounds: dict[int, tuple[int, int]] | None = None,
+    max_iter: int = 150,
+) -> np.ndarray:
+    """Exact Support-Weighted F1 Plug-In Optimizer (Lipton, Elkan & Naryanaswamy 2014).
+
+    Optimizes class multipliers w in R_+^K to maximize expected support-weighted F1:
+        E[F1(w)] = sum_k pi_k * [2 * sum_{i: argmax(w*P)=k} P_ik] / [pi_k * N + sum_{i: argmax(w*P)=k} 1]
+    subject to penalty constraints ensuring class predictions land in the competition winning gates.
+    """
+    n, k = probs.shape
+    pi = np.asarray(target_priors, dtype=np.float64)
+    pi = pi / pi.sum()
+    n_expected = pi * n
+
+    w = np.ones(k, dtype=np.float64) if init_weights is None else np.asarray(init_weights, dtype=np.float64).copy()
+
+    def eval_f1_and_penalty(weights: np.ndarray) -> tuple[float, float, np.ndarray]:
+        scaled_p = probs * weights
+        pred_classes = np.argmax(scaled_p, axis=1)
+        pred_counts = np.bincount(pred_classes, minlength=k)
+
+        tp = np.zeros(k, dtype=np.float64)
+        for cls in range(k):
+            mask = pred_classes == cls
+            if np.any(mask):
+                tp[cls] = np.sum(probs[mask, cls])
+
+        denom = n_expected + pred_counts
+        f1_k = np.where(denom > 0, 2.0 * tp / denom, 0.0)
+        expected_f1 = float(np.sum(pi * f1_k))
+
+        penalty = 0.0
+        if target_bounds is not None:
+            for cls, (lo, hi) in target_bounds.items():
+                cnt = pred_counts[cls]
+                if cnt < lo:
+                    penalty += ((lo - cnt) / n) ** 2
+                elif cnt > hi:
+                    penalty += ((cnt - hi) / n) ** 2
+        return expected_f1, penalty, pred_counts
+
+    best_w = w.copy()
+    init_f1, init_pen, _ = eval_f1_and_penalty(best_w)
+    best_obj = init_f1 - 50.0 * init_pen
+
+    step_sizes = [0.15, 0.08, 0.04, 0.02, 0.01]
+    for step in step_sizes:
+        improved = True
+        it = 0
+        while improved and it < max_iter:
+            improved = False
+            it += 1
+            for c in range(k):
+                current_val = best_w[c]
+                for direction in (-1.0, 1.0):
+                    cand_w = best_w.copy()
+                    cand_w[c] = max(current_val + direction * step, 0.05)
+                    cand_f1, cand_pen, _ = eval_f1_and_penalty(cand_w)
+                    cand_obj = cand_f1 - 50.0 * cand_pen
+                    if cand_obj > best_obj:
+                        best_obj = cand_obj
+                        best_w = cand_w
+                        improved = True
+                        break
+
+    return best_w
+
+
 def arbitrate_commuter_pool(
     opp_labels: np.ndarray,
     features: pd.DataFrame,

@@ -25,6 +25,7 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
+import scipy.special as sp
 from scipy.optimize import minimize
 
 from src import calibration, metrics
@@ -42,9 +43,90 @@ from src.models import (
     HierarchicalOpportunityClassifier,
     RegressorEnsemble,
     StoreAttachmentClassifier,
+    StructuralMetaClassifier,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_level2_structural_features(
+    X: pd.DataFrame,
+    probs_base: np.ndarray,
+    probs_hier: np.ndarray,
+    probs_sim: np.ndarray,
+    pred_fuel: np.ndarray,
+    pred_nf: np.ndarray,
+    p_fuel_active: np.ndarray,
+    p_store_active: np.ndarray,
+    mu_fuel_pos: np.ndarray,
+    sigma_fuel_pos: np.ndarray,
+) -> pd.DataFrame:
+    """Builds the compact Level-2 Structural Stacking Feature Matrix."""
+    n = len(X)
+    df = pd.DataFrame(index=X.index)
+
+    # 1. Base, hierarchical, and simulation probabilities
+    for c in range(probs_base.shape[1]):
+        df[f"p_base_{c}"] = probs_base[:, c]
+        df[f"p_hier_{c}"] = probs_hier[:, c]
+        df[f"p_sim_{c}"] = probs_sim[:, c]
+
+    # 2. Continuous regression predictions and attachment probabilities
+    df["pred_fuel"] = pred_fuel
+    df["pred_nf"] = pred_nf
+    df["p_fuel_active"] = p_fuel_active
+    df["p_store_active"] = p_store_active
+    df["mu_fuel_pos"] = mu_fuel_pos
+    df["sigma_fuel_pos"] = sigma_fuel_pos
+
+    # 3. Exact physical fuel hurdle features
+    litres_pred = np.expm1(np.minimum(pred_fuel * 2.352825386185113, 15.0))
+    df["pred_litres"] = litres_pred
+
+    m3_fuel_litres = X["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in X.columns else np.zeros(n)
+    m3_fuel_rand = X["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in X.columns else np.zeros(n)
+    ever_fuel = (X["active_m6_fuel"].to_numpy() > 0) if "active_m6_fuel" in X.columns else (
+        (X["ever_fuel"].to_numpy() > 0) if "ever_fuel" in X.columns else np.ones(n, dtype=bool)
+    )
+
+    if "real_fuel_hurdle_litres" in X.columns:
+        h_litres = X["real_fuel_hurdle_litres"].to_numpy()
+    else:
+        pump_price = np.clip(
+            np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
+            20.5, 27.5,
+        )
+        h_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
+
+    df["fuel_hurdle_ratio"] = (litres_pred + 0.5) / (h_litres + 0.5)
+    df["fuel_hurdle_margin_litres"] = litres_pred - h_litres
+
+    z_hurdle = (1.0 / 2.352825386185113) * np.log1p(h_litres)
+    z_diff = (z_hurdle - mu_fuel_pos) / np.maximum(sigma_fuel_pos, 0.05)
+    phi = 0.5 * (1.0 + sp.erf(z_diff / np.sqrt(2.0)))
+    df["p_exceed_fuel"] = np.where(ever_fuel, p_fuel_active * (1.0 - phi), 0.0)
+
+    # 4. Joint hurdle inactivity and survival hazards
+    df["joint_hurdle_inactivity"] = (1.0 - p_fuel_active) * (1.0 - p_store_active)
+    if "survival_prob_empirical" in X.columns:
+        df["survival_prob_empirical"] = X["survival_prob_empirical"].to_numpy()
+    if "fuel_survival_prob" in X.columns:
+        df["fuel_survival_prob"] = X["fuel_survival_prob"].to_numpy()
+
+    # 5. Category clearance ratios
+    for cat in ("beverages", "food_and_beverage", "other"):
+        col_m3 = f"m3spend_{cat}"
+        col_m1 = f"m1spend_{cat}" if f"m1spend_{cat}" in X.columns else None
+        col_q2 = f"q2spend_{cat}" if f"q2spend_{cat}" in X.columns else None
+        if col_m3 in X.columns:
+            m3_s = X[col_m3].to_numpy()
+            h_cat = np.maximum(1.25 * m3_s, m3_s + 20.0)
+            if col_m1:
+                df[f"{cat}_m1_hurdle_ratio"] = (3.0 * X[col_m1].to_numpy() + 1.0) / (h_cat + 1.0)
+            if col_q2:
+                df[f"{cat}_q2_hurdle_ratio"] = (X[col_q2].to_numpy() + 1.0) / (h_cat + 1.0)
+
+    return df.fillna(0.0).astype("float64")
 
 
 @dataclass
@@ -58,6 +140,7 @@ class TournamentResult:
     pool_probs_sim: np.ndarray
     pool_phys_fg: np.ndarray
     pool_phys_inact: np.ndarray
+    pool_level2_X: pd.DataFrame
     pool_y_fuel: np.ndarray
     pool_y_nonfuel: np.ndarray
     pool_y_opp: np.ndarray
@@ -96,6 +179,7 @@ class CalibrationArtifacts:
     target_priors: np.ndarray
     precision_weighted_target_priors: np.ndarray
     commuter_weights: tuple[float, float, float]
+    level2_meta_classifier: Any = None
 
 
 class TournamentEngine:
@@ -125,8 +209,11 @@ class TournamentEngine:
         f2_eval = pd.Timestamp("2025-07-01")
         f2_train = self.cfg.training_cutoffs(boundary=f2_eval)  # <= 2025-04-01
 
-        f3_eval = pd.Timestamp("2025-09-01")
-        f3_train = self.cfg.training_cutoffs(boundary=f3_eval)  # <= 2025-06-01
+        f3_eval = pd.Timestamp("2025-08-01")
+        f3_train = self.cfg.training_cutoffs(boundary=f3_eval)  # <= 2025-05-01
+
+        f4_eval = pd.Timestamp("2025-09-01")
+        f4_train = self.cfg.training_cutoffs(boundary=f4_eval)  # <= 2025-06-01
 
         return [
             {
@@ -142,9 +229,15 @@ class TournamentEngine:
                 "weight": 1.25,
             },
             {
-                "name": "Spring_2025-09-01",
+                "name": "LateWinter_2025-08-01",
                 "eval_cutoff": f3_eval,
                 "train_cutoffs": f3_train,
+                "weight": 1.25,
+            },
+            {
+                "name": "Spring_2025-09-01",
+                "eval_cutoff": f4_eval,
+                "train_cutoffs": f4_train,
                 "weight": 1.5,
             },
         ]
@@ -162,6 +255,7 @@ class TournamentEngine:
         pool_probs_sim_list = []
         pool_phys_fg_list = []
         pool_phys_inact_list = []
+        pool_level2_X_list = []
         pool_y_fuel_list = []
         pool_y_nf_list = []
         pool_y_opp_list = []
@@ -308,13 +402,31 @@ class TournamentEngine:
             fold_probs_hier = hier_model.predict_proba(eval_snap.features)
             fold_probs_sim = rule7_sim.predict_proba(eval_snap.features)
 
-            # Hurdle Physical CDF probabilities
+            # Hurdle Physical CDF probabilities & Level-2 Structural Stacking Features
+            p_fuel_active = hurdle_fuel.classifier.predict_proba(eval_snap.features)
+            p_store_active = hurdle_nf.classifier.predict_proba(eval_snap.features)
+            mu_fuel_pos, sigma_fuel_pos = mq_fuel.predict_conditional_pos(eval_snap.features)
+
             p_phys_fg, p_phys_inact = calibration.compute_physical_hurdle_probabilities(
                 eval_snap.features,
                 hurdle_fuel,
                 np.mean(pred_fuel_direct, axis=1),
                 store_model,
             )
+
+            fold_level2_X = build_level2_structural_features(
+                X=eval_snap.features,
+                probs_base=fold_probs_base,
+                probs_hier=fold_probs_hier,
+                probs_sim=fold_probs_sim,
+                pred_fuel=np.mean(pred_fuel_direct, axis=1),
+                pred_nf=np.mean(pred_nf_direct, axis=1),
+                p_fuel_active=p_fuel_active,
+                p_store_active=p_store_active,
+                mu_fuel_pos=mu_fuel_pos,
+                sigma_fuel_pos=sigma_fuel_pos,
+            )
+            pool_level2_X_list.append(fold_level2_X)
 
             n_fold = len(eval_snap.ids)
             pool_fuel_m_list.append(fold_fuel_m)
@@ -357,6 +469,7 @@ class TournamentEngine:
             pool_probs_sim=np.vstack(pool_probs_sim_list),
             pool_phys_fg=np.concatenate(pool_phys_fg_list),
             pool_phys_inact=np.concatenate(pool_phys_inact_list),
+            pool_level2_X=pd.concat(pool_level2_X_list, axis=0, ignore_index=True),
             pool_y_fuel=np.concatenate(pool_y_fuel_list),
             pool_y_nonfuel=np.concatenate(pool_y_nf_list),
             pool_y_opp=np.concatenate(pool_y_opp_list),
@@ -433,7 +546,13 @@ class TournamentEngine:
         blup_eta_nf = calibration.fit_blup_shrinkage(tourney.pool_y_nonfuel, raw_nf, blup_nf_vec, act_mask_nf)
         logger.info("Fitted BLUP shrinkage: fuel_eta=%.3f, nonfuel_eta=%.3f", blup_eta_f, blup_eta_nf)
 
-        # 5. Opportunity Probability Fusion
+        # 5. Level-2 Structural Meta-Learner (Wolpert 1992 Stacking)
+        logger.info("Training Level-2 StructuralMetaClassifier on pooled OOF matrix (features=%d)...", tourney.pool_level2_X.shape[1])
+        level2_meta = StructuralMetaClassifier(n_classes=self.n_classes, seed=self.cfg.models.seed)
+        level2_meta.fit(tourney.pool_level2_X, tourney.pool_y_opp, sample_weight=tourney.pool_weights)
+        meta_probs = level2_meta.predict_proba(tourney.pool_level2_X)
+
+        # Base Opportunity Probability Fusion
         def sim_objective(weights: np.ndarray) -> float:
             w_base, w_hier, w_sim, beta_fg, beta_in = weights
             fused = w_base * tourney.pool_probs_base + w_hier * tourney.pool_probs_hier + w_sim * tourney.pool_probs_sim
@@ -460,19 +579,22 @@ class TournamentEngine:
         fused_pool = wb * tourney.pool_probs_base + wh * tourney.pool_probs_hier + ws * tourney.pool_probs_sim
         fused_pool[:, self.fg_idx] += b_fg * tourney.pool_phys_fg
         fused_pool[:, self.inact_idx] += b_in * tourney.pool_phys_inact
-        fused_pool_masked = calibration.apply_eligibility_mask(fused_pool, tourney.pool_masks)
+
+        # Ensemble Level-2 Structural Stacker (0.65) + Direct Fusion (0.35)
+        combined_pool = 0.65 * meta_probs + 0.35 * fused_pool
+        combined_pool_masked = calibration.apply_eligibility_mask(combined_pool, tourney.pool_masks)
 
         # 6. Temperature and Class Weights
         dom_classes = [self.inact_idx, self.stable_idx, self.fg_idx]
         opt_temp, class_weights = calibration.fit_temperature_and_class_weights(
-            fused_pool_masked,
+            combined_pool_masked,
             tourney.pool_y_opp,
             mask=tourney.pool_masks,
             dominant_classes=dom_classes,
             n_trials=200,
             seed=self.cfg.models.seed,
         )
-        scaled_pool = calibration.apply_temperature_scaling(fused_pool_masked, opt_temp)
+        scaled_pool = calibration.apply_temperature_scaling(combined_pool_masked, opt_temp)
         masked_pool = calibration.apply_eligibility_mask(scaled_pool, tourney.pool_masks)
         logger.info("Fitted temperature T=%.2f, class weights max=%.2f, min=%.2f", opt_temp, class_weights.max(), class_weights.min())
 
@@ -512,6 +634,27 @@ class TournamentEngine:
         target_priors = target_priors / target_priors.sum()
         priors_prec_shrunk = target_priors
 
+        # Exact Expected-F1 Plug-In Optimization constrained by competition sanity gates
+        n_pool = len(tourney.pool_y_opp)
+        target_bounds_pool = {
+            self.stable_idx: (int(1920 * n_pool / 5488), int(1990 * n_pool / 5488)),
+            self.fg_idx: (int(1540 * n_pool / 5488), int(1615 * n_pool / 5488)),
+            self.inact_idx: (int(1410 * n_pool / 5488), int(1470 * n_pool / 5488)),
+        }
+        opt_class_weights = calibration.optimize_expected_f1_plug_in(
+            masked_pool,
+            target_priors=priors_prec_shrunk,
+            init_weights=class_weights,
+            target_bounds=target_bounds_pool,
+            max_iter=100,
+        )
+        pred_before = calibration.decide(masked_pool, class_weights)
+        f1_before = calibration.weighted_f1(tourney.pool_y_opp, pred_before, self.n_classes)
+        pred_after = calibration.decide(masked_pool, opt_class_weights)
+        f1_after = calibration.weighted_f1(tourney.pool_y_opp, pred_after, self.n_classes)
+        logger.info("OOF Pool Weighted F1: before plug-in=%.4f, after plug-in=%.4f", f1_before, f1_after)
+        final_class_weights = opt_class_weights if f1_after >= f1_before else class_weights
+
         logger.info(
             "Target priors: Stable=%.3f, Fuel Growth=%.3f, Inact=%.3f, Retail/Adoption Sum=%.3f",
             priors_prec_shrunk[self.stable_idx],
@@ -542,10 +685,11 @@ class TournamentEngine:
             inact_threshold=inact_thresh,
             prob_blend_weights=prob_blend,
             temperature=opt_temp,
-            class_weights=class_weights,
+            class_weights=final_class_weights,
             target_priors=target_priors,
             precision_weighted_target_priors=priors_prec_shrunk,
             commuter_weights=commuter_weights,
+            level2_meta_classifier=level2_meta,
         )
 
 
