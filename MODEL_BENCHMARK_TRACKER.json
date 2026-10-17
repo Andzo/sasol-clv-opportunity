@@ -227,6 +227,63 @@
         }
       ],
       "is_champion": false
+    },
+    {
+      "timestamp": "2026-10-17 22:22:35",
+      "git_commit": "7bb6c4da8593835065a66ca27b6a8d43aac9cae0",
+      "run_id": "run_1792268555",
+      "composite_score": 0.2762540003684145,
+      "fuel_rmse": 0.5963330941488986,
+      "nonfuel_rmse": 0.7434393285188453,
+      "opportunity_f1": 0.4783348567555042,
+      "score_breakdown": {
+        "score_fuel": 0.05824334020990598,
+        "score_nonfuel": 0.026676717456306863,
+        "score_opportunity": 0.1913339427022017,
+        "total_score": 0.2762540003684145
+      },
+      "seat_counts": {
+        "Stable": 1955,
+        "Fuel Growth": 1692,
+        "Inactivity": 1358,
+        "Retail Growth + Adoption": 483,
+        "Adoption (Pure)": 6
+      },
+      "folds": [
+        {
+          "fold": "Winter_2025-06-01",
+          "cutoff_date": "Winter_2025-06-01",
+          "fuel_rmse": 0.594,
+          "nonfuel_rmse": 0.7356,
+          "opp_f1": 0.502,
+          "composite": 0.2895
+        },
+        {
+          "fold": "MidWinter_2025-07-01",
+          "cutoff_date": "MidWinter_2025-07-01",
+          "fuel_rmse": 0.5938,
+          "nonfuel_rmse": 0.7395,
+          "opp_f1": 0.4804,
+          "composite": 0.2795
+        },
+        {
+          "fold": "LateWinter_2025-08-01",
+          "cutoff_date": "LateWinter_2025-08-01",
+          "fuel_rmse": 0.6033,
+          "nonfuel_rmse": 0.7381,
+          "opp_f1": 0.4904,
+          "composite": 0.2803
+        },
+        {
+          "fold": "Spring_2025-09-01",
+          "cutoff_date": "Spring_2025-09-01",
+          "fuel_rmse": 0.5981,
+          "nonfuel_rmse": 0.7471,
+          "opp_f1": 0.5,
+          "composite": 0.2828
+        }
+      ],
+      "is_champion": false
     }
   ]
 }

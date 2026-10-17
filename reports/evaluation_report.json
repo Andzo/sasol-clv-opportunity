@@ -1,45 +1,45 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 5716.6,
+  "elapsed_seconds": 4287.93,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5987656357373725,
-    "rmse_nonfuel": 0.7447366066578969,
-    "weighted_f1": 0.5133513066410877,
-    "macro_f1": 0.14771847595262233
+    "rmse_fuel": 0.5963330941488986,
+    "rmse_nonfuel": 0.7434393285188453,
+    "weighted_f1": 0.4783348567555042,
+    "macro_f1": 0.13939595303907856
   },
-  "leaderboard_composite_score": 0.2888,
-  "proxy_composite_score": 0.2888,
+  "leaderboard_composite_score": 0.27625,
+  "proxy_composite_score": 0.27625,
   "leaderboard_breakdown": {
-    "score_fuel": 0.05725717470106518,
-    "score_nonfuel": 0.026199776964008468,
-    "score_opportunity": 0.2053405226564351,
-    "total_score": 0.28879747432150876
+    "score_fuel": 0.05824334020990598,
+    "score_nonfuel": 0.026676717456306863,
+    "score_opportunity": 0.1913339427022017,
+    "total_score": 0.2762540003684145
   },
   "tournament_folds": {
     "Winter_2025-06-01": {
-      "rmse_fuel": 0.5954,
-      "rmse_nonfuel": 0.7353,
-      "weighted_f1": 0.5019,
-      "leaderboard_composite": 0.2891
+      "rmse_fuel": 0.594,
+      "rmse_nonfuel": 0.7356,
+      "weighted_f1": 0.502,
+      "leaderboard_composite": 0.2895
     },
     "MidWinter_2025-07-01": {
-      "rmse_fuel": 0.5956,
-      "rmse_nonfuel": 0.741,
-      "weighted_f1": 0.4796,
-      "leaderboard_composite": 0.2779
+      "rmse_fuel": 0.5938,
+      "rmse_nonfuel": 0.7395,
+      "weighted_f1": 0.4804,
+      "leaderboard_composite": 0.2795
     },
     "LateWinter_2025-08-01": {
-      "rmse_fuel": 0.6044,
-      "rmse_nonfuel": 0.7391,
-      "weighted_f1": 0.492,
-      "leaderboard_composite": 0.28
+      "rmse_fuel": 0.6033,
+      "rmse_nonfuel": 0.7381,
+      "weighted_f1": 0.4904,
+      "leaderboard_composite": 0.2803
     },
     "Spring_2025-09-01": {
-      "rmse_fuel": 0.5996,
-      "rmse_nonfuel": 0.7454,
-      "weighted_f1": 0.4978,
-      "leaderboard_composite": 0.282
+      "rmse_fuel": 0.5981,
+      "rmse_nonfuel": 0.7471,
+      "weighted_f1": 0.5,
+      "leaderboard_composite": 0.2828
     }
   },
   "baselines": {
@@ -58,53 +58,53 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 2016,
-    "Existing-category growth: Fuel": 1629,
-    "Inactivity": 1490,
-    "Existing-category growth: Other": 144,
-    "Existing-category growth: Beverages": 112,
-    "Existing-category growth: Food & beverage": 96,
-    "New category adoption: Other": 1
+    "Stable": 1955,
+    "Existing-category growth: Fuel": 1692,
+    "Inactivity": 1358,
+    "Existing-category growth: Other": 208,
+    "Existing-category growth: Beverages": 139,
+    "Existing-category growth: Food & beverage": 130,
+    "New category adoption: Other": 6
   },
-  "fuel_mean": 1.4708,
-  "nonfuel_mean": 0.7098,
+  "fuel_mean": 1.4714,
+  "nonfuel_mean": 0.7333,
   "blend_weights": {
     "fuel": {
-      "lgbm_mse": 0.034,
-      "lgbm_huber": 0.0224,
-      "lgbm_tweedie": 0.1686,
-      "xgb_mse": 0.1288,
-      "xgb_huber": 0.1045,
+      "lgbm_mse": 0.0,
+      "lgbm_huber": 0.0,
+      "lgbm_tweedie": 0.2361,
+      "xgb_mse": 0.1223,
+      "xgb_huber": 0.0117,
       "catboost": 0.0,
-      "catboost_huber": 0.0589,
-      "ridge": 0.1195,
-      "extratrees": 0.08,
-      "mlp": 0.0046,
-      "hurdle_bagged": 0.0574,
-      "hurdle_quantile": 0.1426,
-      "phys_basket": 0.0788
+      "catboost_huber": 0.0301,
+      "ridge": 0.1404,
+      "extratrees": 0.0393,
+      "mlp": 0.0082,
+      "hurdle_bagged": 0.0048,
+      "hurdle_quantile": 0.0979,
+      "phys_basket": 0.198
     },
     "nonfuel": {
       "lgbm_mse": 0.0,
       "lgbm_huber": 0.0,
       "lgbm_tweedie": 0.0,
-      "xgb_mse": 0.0724,
-      "xgb_huber": 0.1716,
-      "catboost": 0.0494,
-      "catboost_huber": 0.051,
+      "xgb_mse": 0.0,
+      "xgb_huber": 0.0,
+      "catboost": 0.0,
+      "catboost_huber": 0.0,
       "ridge": 0.0,
-      "extratrees": 0.2719,
+      "extratrees": 0.0,
       "mlp": 0.0,
-      "hurdle_bagged": 0.1704,
-      "hurdle_quantile": 0.2133,
+      "hurdle_bagged": 0.0,
+      "hurdle_quantile": 0.0,
       "phys_basket": 0.0
     }
   },
   "temperature": 1.1,
   "inactivity_threshold": 0.05,
   "shrinkage_powers": {
-    "fuel": 0.0,
-    "nonfuel_alpha": 0.0,
+    "fuel": 0.05,
+    "nonfuel_alpha": 0.05,
     "nonfuel_beta": 0.05
   }
 }
