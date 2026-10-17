@@ -1,35 +1,35 @@
 {
-  "submission_file": "submission_git_1729452_20261017_112516_comp0.2972.csv",
-  "created_at": "2026-10-17T11:25:16.390398",
-  "git_commit": "172945248a538859f0d738bf31e6157d24e475ca",
-  "git_commit_short": "1729452",
+  "submission_file": "submission_git_c03b35e_20261017_200046_comp0.2888.csv",
+  "created_at": "2026-10-17T20:00:46.092027",
+  "git_commit": "c03b35efeb7dbb557448e30e209a1470e6bc1df9",
+  "git_commit_short": "c03b35e",
   "git_branch": "fix/reproducible-pipeline-improvements",
-  "git_dirty": true,
-  "feature_version": "3.3.0",
+  "git_dirty": false,
+  "feature_version": "3.4.0",
   "tournament_folds": {
     "Winter_2025-06-01": {
-      "rmse_fuel": 0.5939,
-      "rmse_nonfuel": 0.7337,
-      "weighted_f1": 0.5078,
-      "leaderboard_composite": 0.2926
+      "rmse_fuel": 0.5954,
+      "rmse_nonfuel": 0.7353,
+      "weighted_f1": 0.5019,
+      "leaderboard_composite": 0.2891
     },
     "MidWinter_2025-07-01": {
-      "rmse_fuel": 0.5944,
-      "rmse_nonfuel": 0.7394,
-      "weighted_f1": 0.4795,
-      "leaderboard_composite": 0.279
+      "rmse_fuel": 0.5956,
+      "rmse_nonfuel": 0.741,
+      "weighted_f1": 0.4796,
+      "leaderboard_composite": 0.2779
     },
     "LateWinter_2025-08-01": {
-      "rmse_fuel": 0.6029,
-      "rmse_nonfuel": 0.7375,
-      "weighted_f1": 0.4895,
-      "leaderboard_composite": 0.2802
+      "rmse_fuel": 0.6044,
+      "rmse_nonfuel": 0.7391,
+      "weighted_f1": 0.492,
+      "leaderboard_composite": 0.28
     },
     "Spring_2025-09-01": {
-      "rmse_fuel": 0.5983,
-      "rmse_nonfuel": 0.7463,
-      "weighted_f1": 0.4965,
-      "leaderboard_composite": 0.2816
+      "rmse_fuel": 0.5996,
+      "rmse_nonfuel": 0.7454,
+      "weighted_f1": 0.4978,
+      "leaderboard_composite": 0.282
     }
   },
   "models": {
@@ -43,6 +43,7 @@
       "catboost_huber",
       "ridge",
       "extratrees",
+      "mlp",
       "hurdle_bagged",
       "hurdle_quantile",
       "phys_basket"
@@ -55,17 +56,17 @@
     "seed": 42
   },
   "evaluation_metrics": {
-    "rmse_fuel": 0.5970005268821812,
-    "rmse_nonfuel": 0.7451873520876285,
-    "weighted_f1": 0.5329649550209391,
-    "macro_f1": 0.1619579937393578
+    "rmse_fuel": 0.5987656357373725,
+    "rmse_nonfuel": 0.7447366066578969,
+    "weighted_f1": 0.5133513066410877,
+    "macro_f1": 0.14771847595262233
   },
-  "leaderboard_composite_score": 0.29719,
+  "leaderboard_composite_score": 0.2888,
   "leaderboard_breakdown": {
-    "score_fuel": 0.0579727593720887,
-    "score_nonfuel": 0.026034061732489476,
-    "score_opportunity": 0.21318598200837566,
-    "total_score": 0.2971928031129538
+    "score_fuel": 0.05725717470106518,
+    "score_nonfuel": 0.026199776964008468,
+    "score_opportunity": 0.2053405226564351,
+    "total_score": 0.28879747432150876
   },
   "reproduction_command": "python main.py --save-predictions"
 }
