@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "3.2.0"
+FEATURE_VERSION = "3.3.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 180.0
@@ -129,7 +129,8 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     p_m3 = (tot_m3_rand / tot_m3_litres) if tot_m3_litres > 0 else 23.50
     out["network_fuel_price_m1_m3_ratio"] = pd.Series(p_m1 / max(p_m3, 1e-4), index=win.index)
 
-    pump_price_clamped = out["fuel_price_m3"].clip(20.0, 27.0).fillna(p_m3)
+    st_price = win["station_pump_price_m3"] if "station_pump_price_m3" in win.columns else p_m3
+    pump_price_clamped = out["fuel_price_m3"].clip(20.0, 27.0).fillna(st_price).fillna(p_m3)
     out["real_fuel_hurdle_litres"] = np.maximum(
         1.25 * win["m3_fuel_litres"],
         win["m3_fuel_litres"] + 20.0 / pump_price_clamped,
@@ -911,6 +912,14 @@ def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) 
     fg_tx = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["TransactionId"].nunique()
     tot_tx = summer_tx[summer_tx["is_qualifying"]].groupby("LocationId")["TransactionId"].nunique()
     fg_rate = (fg_tx / tot_tx.replace(0.0, np.nan)).clip(0.0, 1.0).fillna(0.5)
+
+    # Station-level recent fuel pump price (empirical median per LocationId in m3)
+    m3_fuel = hist[(hist["_time"] >= t - pd.DateOffset(months=3)) & hist["is_fuel_sale"] & (hist["qty"] > 2.0) & (hist["amount"] > 50.0)]
+    if len(m3_fuel) > 0:
+        st_price = (m3_fuel["amount"] / m3_fuel["qty"]).groupby(m3_fuel["LocationId"]).median().clip(19.0, 28.0)
+        out["station_pump_price_m3"] = primary_loc.map(st_price).fillna(23.50).astype("float64")
+    else:
+        out["station_pump_price_m3"] = 23.50
 
     out["station_summer_fuel_index"] = primary_loc.map(f_idx).fillna(1.0).astype("float64")
     out["station_summer_nf_index"] = primary_loc.map(nf_idx).fillna(1.0).astype("float64")

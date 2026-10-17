@@ -160,7 +160,11 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
 
     # Inactivity shrinkage and gating
     p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
-    p_store_eval = np.clip(eval_nf_raw / np.maximum(np.percentile(eval_nf_raw[eval_nf_raw > 0], 90), 0.1), 0.0, 1.0)
+    p_store_eval = (
+        eval_level2_X["p_store_active"].to_numpy()
+        if "p_store_active" in eval_level2_X.columns
+        else np.clip(eval_nf_raw / np.maximum(np.percentile(eval_nf_raw[eval_nf_raw > 0], 90), 0.1), 0.0, 1.0)
+    )
     eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_cal, p_active_eval, cal.fuel_shrinkage_power)
     eval_fuel_pred = calibration.apply_inactivity_gate(eval_fuel_pred, p_active_eval, threshold=cal.inact_threshold)
     eval_nf_pred = calibration.apply_dual_shrinkage(eval_nf_cal, p_active_eval, p_store_eval, cal.nf_alpha, cal.nf_beta)
@@ -246,6 +250,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
+        target_type="nonfuel",
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     final_phys_fuel = PhysicalBasketTicketRegressor(
@@ -253,6 +258,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
+        target_type="fuel",
     ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
     final_phys_nf = PhysicalBasketTicketRegressor(
@@ -260,6 +266,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
+        target_type="nonfuel",
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -399,7 +406,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
 
     # Inactivity shrinkage and dynamic zero-gating
     p_active_test = 1.0 - test_probs_masked[:, inact_idx]
-    p_store_test = final_store_model.predict_proba(test_feats)
+    p_store_test = final_hurdle_nf.classifier.predict_proba(test_feats)
     test_pred_fuel = calibration.apply_shrinkage(test_fuel_cal, p_active_test, cal.fuel_shrinkage_power)
     test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=cal.inact_threshold)
     test_pred_nonfuel = calibration.apply_dual_shrinkage(

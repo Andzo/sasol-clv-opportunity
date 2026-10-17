@@ -397,11 +397,13 @@ class PhysicalBasketTicketRegressor:
         seed: int = 42,
         n_jobs: int = -1,
         use_gpu: bool = False,
+        target_type: str = "fuel",
     ) -> None:
         self.scale = scale
         self.seed = seed
         self.n_jobs = n_jobs
         self.use_gpu = use_gpu
+        self.target_type = target_type
         self.classifier = StoreAttachmentClassifier(seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
 
         from lightgbm import LGBMRegressor
@@ -433,8 +435,10 @@ class PhysicalBasketTicketRegressor:
             cap_raw = float(np.percentile(y_raw, 99.2))
             y_raw_capped = np.clip(y_raw, 0.0, cap_raw)
 
-            # Target baskets proxy from m3_baskets or spend
-            if "m3_baskets" in X_pos.columns:
+            # Target baskets proxy from m3_nonfuel_baskets or m3_baskets
+            if self.target_type == "nonfuel" and "m3_nonfuel_baskets" in X_pos.columns:
+                baskets_pos = np.clip(X_pos["m3_nonfuel_baskets"].to_numpy(), 1.0, 100.0)
+            elif "m3_baskets" in X_pos.columns:
                 baskets_pos = np.clip(X_pos["m3_baskets"].to_numpy(), 1.0, 150.0)
             else:
                 baskets_pos = np.ones(len(y_pos), dtype="float64")

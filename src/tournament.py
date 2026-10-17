@@ -126,6 +126,22 @@ def build_level2_structural_features(
             if col_q2:
                 df[f"{cat}_q2_hurdle_ratio"] = (X[col_q2].to_numpy() + 1.0) / (h_cat + 1.0)
 
+    # 6. Rule 6 Nominal Rand Increments
+    pump_price_est = np.clip(
+        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
+        20.5, 27.5,
+    )
+    fuel_future_rand = litres_pred * pump_price_est
+    fuel_monetary_increment = np.maximum(0.0, fuel_future_rand - m3_fuel_rand)
+    df["fuel_monetary_increment"] = fuel_monetary_increment
+
+    nf_pred_rand = np.expm1(np.minimum(pred_nf * 2.352825386185113, 15.0))
+    m3_nf_rand = X["m3_nonfuel_rand"].to_numpy() if "m3_nonfuel_rand" in X.columns else np.zeros(n)
+    nf_monetary_increment = np.maximum(0.0, nf_pred_rand - m3_nf_rand)
+    df["nf_monetary_increment"] = nf_monetary_increment
+
+    df["fuel_vs_nf_monetary_margin"] = fuel_monetary_increment - nf_monetary_increment
+
     return df.fillna(0.0).astype("float64")
 
 
@@ -332,6 +348,7 @@ class TournamentEngine:
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
+                target_type="nonfuel",
             ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
             # 3. Physical Basket x Ticket Regressors
@@ -340,6 +357,7 @@ class TournamentEngine:
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
+                target_type="fuel",
             ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             phys_nf = PhysicalBasketTicketRegressor(
@@ -347,6 +365,7 @@ class TournamentEngine:
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
+                target_type="nonfuel",
             ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
             # 4. Classifiers
@@ -600,7 +619,11 @@ class TournamentEngine:
 
         # 7. Shrinkage powers and dynamic inactivity threshold
         p_act_pool = 1.0 - masked_pool[:, self.inact_idx]
-        p_store_pool = np.clip(raw_nf / np.maximum(np.percentile(raw_nf[raw_nf > 0], 90), 0.1), 0.0, 1.0)
+        p_store_pool = (
+            tourney.pool_level2_X["p_store_active"].to_numpy()
+            if "p_store_active" in tourney.pool_level2_X.columns
+            else np.clip(raw_nf / np.maximum(np.percentile(raw_nf[raw_nf > 0], 90), 0.1), 0.0, 1.0)
+        )
         fuel_cal = calibration.apply_linear_calibration(raw_fuel, fuel_slope, fuel_intercept)
         fuel_shrinkage = calibration.fit_shrinkage_power(tourney.pool_y_fuel, fuel_cal, p_act_pool)
         nf_cal = calibration.apply_linear_calibration(raw_nf, nf_slope, nf_intercept)

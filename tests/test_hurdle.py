@@ -120,4 +120,17 @@ def test_multi_quantile_two_part_hurdle(synthetic_data):
     assert not np.isnan(preds).any()
     assert (preds >= 0.0).all()
 
+    # Test nonfuel target type
+    mq_nf = MultiQuantileTwoPartHurdle(seed=42, n_jobs=1, target_type="nonfuel")
+    for q in mq_nf.lgb_quantiles:
+        q.set_params(n_estimators=10)
+    for q in mq_nf.cb_quantiles:
+        q.set_params(iterations=10)
+    mq_nf.l2_regressor.set_params(n_estimators=10)
+    mq_nf.fit(X, y)
+    preds_nf = mq_nf.predict(X)
+    assert len(preds_nf) == len(X)
+    assert not np.isnan(preds_nf).any()
+
+
 

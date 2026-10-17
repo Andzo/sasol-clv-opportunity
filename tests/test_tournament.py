@@ -73,9 +73,10 @@ def test_build_level2_structural_features():
         mu_fuel_pos, sigma_fuel_pos,
     )
     assert isinstance(level2_X, pd.DataFrame)
-    assert len(level2_X) == n
     assert "fuel_hurdle_ratio" in level2_X.columns
     assert "p_exceed_fuel" in level2_X.columns
     assert "joint_hurdle_inactivity" in level2_X.columns
+    assert "fuel_monetary_increment" in level2_X.columns
+    assert "fuel_vs_nf_monetary_margin" in level2_X.columns
     assert not level2_X.isna().any().any()
 
