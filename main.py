@@ -6,6 +6,10 @@ from src.pipeline import run_pipeline
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(description="Sasol CLV & Opportunity ML Pipeline Runner")
     parser.add_argument(
         "--no-cache", action="store_true", help="Bypass feature and snapshot disk caches"

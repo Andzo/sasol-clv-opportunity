@@ -67,7 +67,7 @@ def _get_git_info() -> dict[str, Any]:
 def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[str, Any]:
     """Execute the full end-to-end training, validation, and submission pipeline."""
     start_time = time.time()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", force=True)
     logger.info("Initializing Sasol CLV Tournament Pipeline (Seed=%d)", cfg.models.seed)
 
     label_cfg = cfg.label_config
