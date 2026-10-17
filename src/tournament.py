@@ -114,7 +114,7 @@ def build_level2_structural_features(
         df["fuel_survival_prob"] = X["fuel_survival_prob"].to_numpy()
 
     # 5. Category clearance ratios
-    for cat in ("beverages", "food_and_beverage", "other"):
+    for cat in ("beverages", "food_beverage", "other"):
         col_m3 = f"m3spend_{cat}"
         col_m1 = f"m1spend_{cat}" if f"m1spend_{cat}" in X.columns else None
         col_q2 = f"q2spend_{cat}" if f"q2spend_{cat}" in X.columns else None
@@ -135,12 +135,18 @@ def build_level2_structural_features(
     fuel_monetary_increment = np.maximum(0.0, fuel_future_rand - m3_fuel_rand)
     df["fuel_monetary_increment"] = fuel_monetary_increment
 
-    nf_pred_rand = np.expm1(np.minimum(pred_nf * 2.352825386185113, 15.0))
+    nf_pred_rand = np.expm1(np.minimum(pred_nf * 2.4200904988927476, 15.0))
     m3_nf_rand = X["m3_nonfuel_rand"].to_numpy() if "m3_nonfuel_rand" in X.columns else np.zeros(n)
     nf_monetary_increment = np.maximum(0.0, nf_pred_rand - m3_nf_rand)
     df["nf_monetary_increment"] = nf_monetary_increment
 
     df["fuel_vs_nf_monetary_margin"] = fuel_monetary_increment - nf_monetary_increment
+
+    # 7. Rule 7 Other Sub-Category Order Statistics
+    if "max_other_subcat_expected_delta_rand" in X.columns:
+        df["max_other_subcat_expected_delta_rand"] = X["max_other_subcat_expected_delta_rand"].to_numpy()
+    if "max_other_subcat_hurdle_ratio" in X.columns:
+        df["max_other_subcat_hurdle_ratio"] = X["max_other_subcat_hurdle_ratio"].to_numpy()
 
     return df.fillna(0.0).astype("float64")
 
@@ -166,6 +172,33 @@ class TournamentResult:
     pool_cutoffs: list[pd.Timestamp]
     fold_scores: dict[str, dict[str, float]]
     member_names: list[str]
+
+    def filter_cutoffs(self, keep_cutoffs: Sequence[pd.Timestamp]) -> "TournamentResult":
+        """Returns a subset of TournamentResult restricted strictly to specified cutoffs."""
+        keep_set = set(pd.Timestamp(c) for c in keep_cutoffs)
+        indices = [i for i, c in enumerate(self.pool_cutoffs) if pd.Timestamp(c) in keep_set]
+        if not indices:
+            return self
+        idx_arr = np.array(indices)
+        return TournamentResult(
+            pool_fuel_m=self.pool_fuel_m[idx_arr],
+            pool_nf_m=self.pool_nf_m[idx_arr],
+            pool_probs_base=self.pool_probs_base[idx_arr],
+            pool_probs_hier=self.pool_probs_hier[idx_arr],
+            pool_probs_sim=self.pool_probs_sim[idx_arr],
+            pool_phys_fg=self.pool_phys_fg[idx_arr],
+            pool_phys_inact=self.pool_phys_inact[idx_arr],
+            pool_level2_X=self.pool_level2_X.iloc[idx_arr].reset_index(drop=True),
+            pool_y_fuel=self.pool_y_fuel[idx_arr],
+            pool_y_nonfuel=self.pool_y_nonfuel[idx_arr],
+            pool_y_opp=self.pool_y_opp[idx_arr],
+            pool_masks=self.pool_masks[idx_arr],
+            pool_weights=self.pool_weights[idx_arr],
+            pool_ids=[self.pool_ids[i] for i in indices],
+            pool_cutoffs=[self.pool_cutoffs[i] for i in indices],
+            fold_scores={k: v for k, v in self.fold_scores.items() if any(c.strftime("%Y-%m-%d") in k for c in keep_set)},
+            member_names=self.member_names,
+        )
 
 
 @dataclass
@@ -295,13 +328,18 @@ class TournamentEngine:
             eval_snap = self.builder.build(eval_t, with_labels=True)
             train_panel = stack(train_snaps)
 
-            # Seasonal sample weights for training panel
+            # Seasonal sample weights for training panel:
+            # Temporal exponential decay (lambda=0.077) x summer multiplier (2.2x) x cluster normalization
             train_cutoffs_dt = pd.to_datetime(train_panel.cutoffs)
-            is_summer_train = train_cutoffs_dt.isin([
-                pd.Timestamp("2024-11-01"), pd.Timestamp("2024-12-01"), pd.Timestamp("2025-01-01")
-            ])
-            sw = np.ones(len(train_panel.X), dtype=np.float32)
-            sw[is_summer_train] = 2.0
+            eval_dt = pd.Timestamp(eval_t)
+            months_delta = np.asarray((eval_dt.year - train_cutoffs_dt.year) * 12 + (eval_dt.month - train_cutoffs_dt.month), dtype=np.float32)
+            temporal_decay = np.exp(-0.077 * np.maximum(months_delta, 0.0))
+            is_summer_train = train_cutoffs_dt.month.isin([11, 12, 1])
+            seasonal_mult = np.where(is_summer_train, 2.2, 1.0)
+            cust_counts = pd.Series(train_panel.X.index).value_counts()
+            n_snaps_cust = np.asarray(train_panel.X.index.map(cust_counts), dtype=np.float32)
+            sw = (temporal_decay * seasonal_mult / np.maximum(n_snaps_cust, 1.0)).astype(np.float32)
+            sw = sw / max(float(sw.mean()), 1e-6)
 
             # 1. Regressors
             fuel_model = RegressorEnsemble(
@@ -361,7 +399,7 @@ class TournamentEngine:
             ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             phys_nf = PhysicalBasketTicketRegressor(
-                scale=2.352825386185113,
+                scale=2.4200904988927476,
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
@@ -395,13 +433,8 @@ class TournamentEngine:
                 use_gpu=self.cfg.models.use_gpu,
             ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
-            rule7_sim = DecomposedRule7Simulator(
-                label_config=self.label_cfg,
-                seed=self.cfg.models.seed,
-                n_jobs=self.cfg.models.n_jobs,
-                use_gpu=self.cfg.models.use_gpu,
-                n_draws=300,
-            ).fit(train_panel.X, train_panel.labels["Opportunity"].map(self.label_to_idx).to_numpy(), sample_weight=sw)
+            # Skip DecomposedRule7Simulator fitting (w_sim = 0.0 in fusion, saves ~4 min/fold and prevents KeyError)
+            fold_probs_sim = np.zeros((len(eval_snap.features), self.n_classes), dtype=np.float64)
 
             # Predict OOF instances on eval_snap
             pred_fuel_direct = fuel_model.predict_members(eval_snap.features)
@@ -416,10 +449,8 @@ class TournamentEngine:
             pred_nf_phys = phys_nf.predict(eval_snap.features).reshape(-1, 1)
             fold_nf_m = np.column_stack([pred_nf_direct, pred_nf_hurdle, pred_nf_mq, pred_nf_phys])
 
-
             fold_probs_base = opp_model.predict_proba(eval_snap.features)
             fold_probs_hier = hier_model.predict_proba(eval_snap.features)
-            fold_probs_sim = rule7_sim.predict_proba(eval_snap.features)
 
             # Hurdle Physical CDF probabilities & Level-2 Structural Stacking Features
             p_fuel_active = hurdle_fuel.classifier.predict_proba(eval_snap.features)
@@ -428,7 +459,7 @@ class TournamentEngine:
 
             p_phys_fg, p_phys_inact = calibration.compute_physical_hurdle_probabilities(
                 eval_snap.features,
-                hurdle_fuel,
+                mq_fuel,
                 np.mean(pred_fuel_direct, axis=1),
                 store_model,
             )
@@ -565,16 +596,33 @@ class TournamentEngine:
         blup_eta_nf = calibration.fit_blup_shrinkage(tourney.pool_y_nonfuel, raw_nf, blup_nf_vec, act_mask_nf)
         logger.info("Fitted BLUP shrinkage: fuel_eta=%.3f, nonfuel_eta=%.3f", blup_eta_f, blup_eta_nf)
 
-        # 5. Level-2 Structural Meta-Learner (Wolpert 1992 Stacking)
-        logger.info("Training Level-2 StructuralMetaClassifier on pooled OOF matrix (features=%d)...", tourney.pool_level2_X.shape[1])
-        level2_meta = StructuralMetaClassifier(n_classes=self.n_classes, seed=self.cfg.models.seed)
-        level2_meta.fit(tourney.pool_level2_X, tourney.pool_y_opp, sample_weight=tourney.pool_weights)
-        meta_probs = level2_meta.predict_proba(tourney.pool_level2_X)
+        # Calibrated fuel & nonfuel predictions on the pool:
+        cal_fuel_pred = np.maximum(0.0, raw_fuel * fuel_slope + fuel_intercept + blup_eta_f * blup_f_vec)
+        cal_nf_pred = np.maximum(0.0, raw_nf * nf_slope + nf_intercept + blup_eta_nf * blup_nf_vec)
 
-        # Base Opportunity Probability Fusion
+        # 5. Level-2 Structural Meta-Learner (Wolpert 1992 Stacking)
+        cal_level2_X = tourney.pool_level2_X.copy()
+        cal_level2_X["pred_fuel"] = cal_fuel_pred
+        cal_level2_X["pred_nf"] = cal_nf_pred
+        litres_pred = np.expm1(np.minimum(cal_fuel_pred * 2.352825386185113, 15.0))
+        if "pred_litres" in tourney.pool_level2_X.columns and "fuel_hurdle_margin_litres" in cal_level2_X.columns:
+            diff_litres = litres_pred - tourney.pool_level2_X["pred_litres"].to_numpy()
+            cal_level2_X["fuel_hurdle_margin_litres"] += diff_litres
+        cal_level2_X["pred_litres"] = litres_pred
+
+        logger.info("Training Level-2 StructuralMetaClassifier on pooled OOF matrix (features=%d)...", cal_level2_X.shape[1])
+        level2_meta = StructuralMetaClassifier(n_classes=self.n_classes, seed=self.cfg.models.seed)
+        meta_probs = level2_meta.fit_predict_oof(
+            cal_level2_X,
+            tourney.pool_y_opp,
+            sample_weight=tourney.pool_weights,
+            groups=tourney.pool_cutoffs,
+        )
+
+        # Base Opportunity Probability Fusion (Simulator weight fixed to 0.0)
         def sim_objective(weights: np.ndarray) -> float:
-            w_base, w_hier, w_sim, beta_fg, beta_in = weights
-            fused = w_base * tourney.pool_probs_base + w_hier * tourney.pool_probs_hier + w_sim * tourney.pool_probs_sim
+            w_base, w_hier, beta_fg, beta_in = weights
+            fused = w_base * tourney.pool_probs_base + w_hier * tourney.pool_probs_hier
             fused[:, self.fg_idx] += beta_fg * tourney.pool_phys_fg
             fused[:, self.inact_idx] += beta_in * tourney.pool_phys_inact
             fused_masked = calibration.apply_eligibility_mask(fused, tourney.pool_masks)
@@ -583,19 +631,20 @@ class TournamentEngine:
 
         opt_blend = minimize(
             sim_objective,
-            x0=[0.40, 0.40, 0.20, 0.15, 0.10],
-            bounds=[(0.1, 0.8), (0.1, 0.8), (0.0, 0.5), (0.0, 0.4), (0.0, 0.3)],
+            x0=[0.50, 0.50, 0.15, 0.10],
+            bounds=[(0.1, 0.9), (0.1, 0.9), (0.0, 0.4), (0.0, 0.3)],
             method="Nelder-Mead",
             options={"maxiter": 100},
         )
-        wb, wh, ws, b_fg, b_in = opt_blend.x
+        wb, wh, b_fg, b_in = opt_blend.x
+        ws = 0.0
         prob_blend = (float(wb), float(wh), float(ws), float(b_fg), float(b_in))
         logger.info(
             "Fitted probability fusion: base=%.2f, hier=%.2f, sim=%.2f, beta_fg=%.2f, beta_inact=%.2f",
             wb, wh, ws, b_fg, b_in
         )
 
-        fused_pool = wb * tourney.pool_probs_base + wh * tourney.pool_probs_hier + ws * tourney.pool_probs_sim
+        fused_pool = wb * tourney.pool_probs_base + wh * tourney.pool_probs_hier
         fused_pool[:, self.fg_idx] += b_fg * tourney.pool_phys_fg
         fused_pool[:, self.inact_idx] += b_in * tourney.pool_phys_inact
 
@@ -620,8 +669,8 @@ class TournamentEngine:
         # 7. Shrinkage powers and dynamic inactivity threshold
         p_act_pool = 1.0 - masked_pool[:, self.inact_idx]
         p_store_pool = (
-            tourney.pool_level2_X["p_store_active"].to_numpy()
-            if "p_store_active" in tourney.pool_level2_X.columns
+            cal_level2_X["p_store_active"].to_numpy()
+            if "p_store_active" in cal_level2_X.columns
             else np.clip(raw_nf / np.maximum(np.percentile(raw_nf[raw_nf > 0], 90), 0.1), 0.0, 1.0)
         )
         fuel_cal = calibration.apply_linear_calibration(raw_fuel, fuel_slope, fuel_intercept)
@@ -655,7 +704,21 @@ class TournamentEngine:
         for idx, count in target_counts.items():
             target_priors[idx] = count
         target_priors = target_priors / target_priors.sum()
-        priors_prec_shrunk = target_priors
+
+        from sklearn.metrics import f1_score
+        pred_baseline = calibration.decide(masked_pool, class_weights)
+        oof_f1_per_class = f1_score(
+            tourney.pool_y_opp,
+            pred_baseline,
+            average=None,
+            labels=list(range(self.n_classes)),
+            zero_division=0.0,
+        )
+        priors_prec_shrunk = calibration.compute_precision_weighted_target_priors(
+            target_priors,
+            oof_f1_per_class,
+            macro_classes=(self.stable_idx, self.fg_idx, self.inact_idx),
+        )
 
         # Exact Expected-F1 Plug-In Optimization constrained by competition sanity gates
         n_pool = len(tourney.pool_y_opp)

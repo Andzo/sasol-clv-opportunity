@@ -63,7 +63,7 @@ class ModelConfig:
         "lgbm_mse", "lgbm_huber", "lgbm_tweedie",
         "xgb_mse", "xgb_huber",
         "catboost", "catboost_huber",
-        "ridge", "extratrees",
+        "ridge", "extratrees", "mlp",
     )
     classification_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
     seed: int = 42

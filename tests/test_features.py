@@ -111,6 +111,15 @@ def test_build_features_schema_and_reproducibility():
         "real_fuel_hurdle_litres",
         "mundlak_perm_fuel_litres",
         "mundlak_shock_fuel_litres",
+        "station_weekend_to_weekday_ratio",
+        "station_payday_ratio",
+        "station_large_fill_share",
+        "m1spend_beverages",
+        "q2spend_beverages",
+        "cat_primary_location_id",
+        "cat_top_nonfuel_level2",
+        "cat_top_nonfuel_level3",
+        "cat_payday_commuter_archetype",
     ]
     for col in new_cols:
         assert col in feats1.columns, f"Missing expected feature: {col}"

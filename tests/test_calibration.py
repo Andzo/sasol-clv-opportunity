@@ -1,5 +1,6 @@
 """Unit tests for calibration and post-processing algorithms."""
 import numpy as np
+import pandas as pd
 from src.calibration import (
     apply_eligibility_mask,
     apply_inactivity_gate,
@@ -369,6 +370,37 @@ def test_decide_with_prior_alignment():
     uncal_dist = np.sum(np.abs(uncal_counts - target_prior))
     cal_dist = np.sum(np.abs(cal_counts - target_prior))
     assert cal_dist < uncal_dist
+
+
+def test_conformal_selective_arbitration():
+    from src.calibration import conformal_selective_arbitration
+
+    rng = np.random.default_rng(42)
+    n, k = 100, 4
+    probs = rng.uniform(0.1, 1.0, size=(n, k))
+    probs = probs / probs.sum(axis=1, keepdims=True)
+
+    features = pd.DataFrame({
+        "m3_fuel_litres": np.full(n, 10.0),
+        "m3_fuel_rand": np.full(n, 235.0),
+    })
+    pred_fuel = np.full(n, 1.0)
+    class_weights = np.ones(k)
+    target_priors = np.full(k, 0.25)
+
+    decisions = conformal_selective_arbitration(
+        probs=probs,
+        features=features,
+        pred_fuel=pred_fuel,
+        class_weights=class_weights,
+        target_priors=target_priors,
+        tau_conf=0.15,
+        fg_idx=1,
+        stable_idx=0,
+    )
+    assert len(decisions) == n
+    assert (decisions >= 0).all() and (decisions < k).all()
+
 
 
 

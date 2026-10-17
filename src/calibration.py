@@ -873,4 +873,88 @@ def arbitrate_commuter_pool(
     return labels
 
 
+def conformal_selective_arbitration(
+    probs: np.ndarray,
+    features: pd.DataFrame,
+    pred_fuel: np.ndarray,
+    class_weights: np.ndarray,
+    target_priors: np.ndarray,
+    macro_classes: tuple[int, ...] = (0, 1, 2),
+    fg_idx: int = 1,
+    stable_idx: int = 2,
+    inact_idx: int = 0,
+    mu_fuel_pos: np.ndarray | None = None,
+    sigma_fuel_pos: np.ndarray | None = None,
+    tau_conf: float = 0.40,
+) -> np.ndarray:
+    """Rank-Based Conformal Prediction Sets for Selective Boundary Arbitration.
+
+    Angelopoulos & Bates (2023).
+    Partitions customers into high-confidence Conformal Singletons (which are locked)
+    and boundary Ambiguous instances (on which prior alignment dual ascent is solved).
+    """
+    n, k = probs.shape
+    weighted_probs = (probs * class_weights) / np.maximum((probs * class_weights).sum(axis=1, keepdims=True), 1e-12)
+    sorted_probs = np.sort(weighted_probs, axis=1)[:, ::-1]
+    margins = sorted_probs[:, 0] - sorted_probs[:, 1]
+    top1_classes = np.argmax(weighted_probs, axis=1)
+
+    # Physical fuel hurdle threshold z_hurdle
+    m3_fuel_litres = features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in features.columns else np.zeros(n)
+    m3_fuel_rand = features["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in features.columns else np.zeros(n)
+    pump_price = np.clip(
+        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
+        20.5, 27.5,
+    )
+    h_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
+    z_hurdle = (1.0 / 2.352825386185113) * np.log1p(h_litres)
+
+    if mu_fuel_pos is None:
+        mu_fuel_pos = pred_fuel
+    if sigma_fuel_pos is None:
+        sigma_fuel_pos = np.full(n, 0.20)
+
+    # 80% conformal interval [mu - 1.28*sigma, mu + 1.28*sigma]
+    ci_low = mu_fuel_pos - 1.28 * sigma_fuel_pos
+    ci_high = mu_fuel_pos + 1.28 * sigma_fuel_pos
+
+    is_singleton = np.zeros(n, dtype=bool)
+    for i in range(n):
+        c = top1_classes[i]
+        if margins[i] > tau_conf:
+            if c == fg_idx:
+                if ci_low[i] > z_hurdle[i]:
+                    is_singleton[i] = True
+            elif c == stable_idx:
+                if ci_high[i] < z_hurdle[i]:
+                    is_singleton[i] = True
+            else:
+                is_singleton[i] = True
+
+    decisions = np.zeros(n, dtype=int)
+    decisions[is_singleton] = top1_classes[is_singleton]
+
+    ambiguous_idx = np.where(~is_singleton)[0]
+    if len(ambiguous_idx) > 0:
+        singleton_counts = np.bincount(decisions[is_singleton], minlength=k)
+        total_targets = target_priors * n
+        remaining_targets = np.maximum(total_targets - singleton_counts, 0.0)
+        rem_sum = remaining_targets.sum()
+        if rem_sum > 0:
+            sub_target_priors = remaining_targets / rem_sum
+        else:
+            sub_target_priors = target_priors
+
+        sub_probs = probs[ambiguous_idx]
+        sub_decisions = decide_with_prior_alignment(
+            sub_probs,
+            class_weights=class_weights,
+            target_priors=sub_target_priors,
+            macro_classes=macro_classes,
+        )
+        decisions[ambiguous_idx] = sub_decisions
+
+    return decisions
+
+
 

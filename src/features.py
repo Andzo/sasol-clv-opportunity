@@ -24,10 +24,50 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "3.3.0"
+FEATURE_VERSION = "3.4.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 180.0
+
+CAT_STRUCTURAL_FEATURES: tuple[str, ...] = (
+    "cat_primary_location_id",
+    "cat_top_nonfuel_level2",
+    "cat_top_nonfuel_level3",
+    "cat_payday_commuter_archetype",
+)
+
+NONFUEL_LEVEL2_CATEGORIES: tuple[str, ...] = (
+    "Automotive Products", "Beverages", "Braai & Ice", "Breads & rolls", "Car Wash",
+    "Carrier Bags", "Coffee", "Confectionary", "Food & beverage", "Frozen food",
+    "Gas", "General merchandise", "Groceries", "Ice-cream", "Krispy Kreme",
+    "Lubricants", "Miscellaneous", "Perishables", "Print media", "Promotional items",
+    "Seattle", "Snacking", "Tobacco", "Unknown", "Value added services",
+)
+NONFUEL_L2_MAP: dict[str, int] = {c: i + 1 for i, c in enumerate(NONFUEL_LEVEL2_CATEGORIES)}
+
+NONFUEL_LEVEL3_CATEGORIES: tuple[str, ...] = (
+    "Alternate snacking", "BI Confectionary", "BI Meals", "Batteries", "Bill Payments",
+    "Biltong", "Biscuits", "Bought in_BI", "Braai", "Breads & rolls",
+    "Car Wash", "Carrier Bags", "Cellphone Accessories", "Chips", "Chocolate",
+    "Cigarettes", "Coffee", "Coffee Packaging", "Coffee Recipe Items", "Dairy and eggs",
+    "Dairy and eggs - Butter", "Dairy and eggs - Cheese", "Dairy and eggs - Eggs", "Dairy drinks", "E-Cigarettes & Vape",
+    "Edible groceries", "Edible groceries - Canned Food", "Edible groceries - Infant Edible", "Edible groceries - Pharmaceutical Edible", "Electronics",
+    "Empties & crates", "Energy", "Entertainment", "Events & ticketing", "FPG Biltong",
+    "FPG Bread & rolls", "FPG Chicken full & pieces", "FPG Confectionary", "FPG Meals", "FPG Pies",
+    "FPG Sandwiches & Subs", "FPG Savoury", "Flowers", "Food & beverage consumables", "Freshly Prepaired",
+    "Freshly prepared_FPG", "Frozen meals", "Frozen meat", "Fruit & veg", "Gaming",
+    "Gas", "General merchandise", "Gums & rolls", "Hardware", "Health & energy",
+    "Hot Chocolate", "Ice", "Ice Tea & Coffee", "Ice-Cream", "Juice",
+    "Krispy Kreme", "Lotto", "Lubricants - Additives", "Lubricants - Lubricants", "Lubricants - Other",
+    "Milk - Fresh Cream", "Milk - Fresh Milk", "Milk - Long Life", "Milk - Other Milk Products", "Miscellaneous",
+    "Non-edible groceries", "Non-edible groceries - Infant Non-Edible", "Non-edible groceries - Personal Care", "Non-edible groceries - Pet", "Nougat",
+    "Novelty Sweets", "Occasions", "Other VAS", "Prepacks", "Prepaid",
+    "Prepared Beverages", "Print media", "Processed meats", "Promotional items", "Promotions",
+    "Seattle", "Soft drinks", "Speciality", "Sport drinks", "Stationery",
+    "Sugar based confectionary", "Sunglasses", "Tea", "Tobacco products", "Toys",
+    "Unknown", "Vehicle Products", "Water", "Yoghurt",
+)
+NONFUEL_L3_MAP: dict[str, int] = {c: i + 1 for i, c in enumerate(NONFUEL_LEVEL3_CATEGORIES)}
 
 
 #: name -> (start_months_ago, end_months_ago); the window is [t - start, t - end).
@@ -240,6 +280,9 @@ def _category_block(
     s = hist[hist["in_scope"]]
     m6_lo = _months_before(t, 6)
     m3_lo = _months_before(t, 3)
+    m1_lo = _months_before(t, 1)
+    q2_lo = _months_before(t, 6)
+    q2_hi = _months_before(t, 3)
     keys = ["ID", "ItemCategoryLevel2"]
 
     def pivot(series: pd.Series, fill: float | None) -> pd.DataFrame:
@@ -250,6 +293,8 @@ def _category_block(
     m3_baskets = pivot(q[q["_time"] >= m3_lo].groupby(keys)["TransactionId"].nunique(), 0.0)
     m6_spend = pivot(s[s["_time"] >= m6_lo].groupby(keys)["amount"].sum(), 0.0)
     m3_spend = pivot(s[s["_time"] >= m3_lo].groupby(keys)["amount"].sum(), 0.0)
+    m1_spend = pivot(s[s["_time"] >= m1_lo].groupby(keys)["amount"].sum(), 0.0)
+    q2_spend = pivot(s[(s["_time"] >= q2_lo) & (s["_time"] < q2_hi)].groupby(keys)["amount"].sum(), 0.0)
     last_time = pivot(q.groupby(keys)["_time"].max(), None)
 
     active_m6 = m6_baskets.gt(0).astype("float64")
@@ -267,7 +312,9 @@ def _category_block(
         "active_m3": active_m3,
         "rate": rate_m6,
         "recency": recency,
+        "m1spend": m1_spend,
         "m3spend": m3_spend,
+        "q2spend": q2_spend,
         "m3baskets": m3_baskets,
     }
     frames = []
@@ -619,18 +666,54 @@ def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
     out["nonfuel_headroom_rand"] = nf_hurdle - m3_nf_rand
 
     # 3. Major Retail Hurdles (Beverages & Food & beverage)
-    m3_bev = feats["cat_m3_rand_beverages"] if "cat_m3_rand_beverages" in feats.columns else pd.Series(0.0, index=feats.index)
+    m3_bev = feats["m3spend_beverages"] if "m3spend_beverages" in feats.columns else (
+        feats["cat_m3_rand_beverages"] if "cat_m3_rand_beverages" in feats.columns else pd.Series(0.0, index=feats.index)
+    )
     H_bev = np.maximum(m3_bev + 20.0, 1.25 * m3_bev)
     out["bev_hurdle_rand"] = H_bev
     out["bev_headroom_rand"] = H_bev - m3_bev
 
-    m3_food = feats["cat_m3_rand_food_beverage"] if "cat_m3_rand_food_beverage" in feats.columns else pd.Series(0.0, index=feats.index)
+    m3_food = feats["m3spend_food_beverage"] if "m3spend_food_beverage" in feats.columns else (
+        feats["cat_m3_rand_food_beverage"] if "cat_m3_rand_food_beverage" in feats.columns else pd.Series(0.0, index=feats.index)
+    )
     H_food = np.maximum(m3_food + 20.0, 1.25 * m3_food)
     out["food_hurdle_rand"] = H_food
     out["food_headroom_rand"] = H_food - m3_food
 
     # 4. Relative Z-score competition (Rule 6 argmax)
     out["z_diff_fuel_nonfuel"] = z_f - z_nf
+
+    # 5. Rule 7 Other-mapped Sub-Category Order Statistics
+    other_cats = [
+        "Automotive Products", "Braai & Ice", "Breads & rolls", "Car Wash", "Coffee",
+        "Confectionary", "Frozen food", "Gas", "General merchandise", "Groceries",
+        "Ice-cream", "Krispy Kreme", "Lubricants", "Miscellaneous", "NA",
+        "Perishables", "Promotional items", "Seattle", "Snacking", "Tobacco", "Unknown",
+    ]
+    max_delta_rand = np.zeros(len(feats), dtype=np.float64)
+    max_hurdle_ratio = np.zeros(len(feats), dtype=np.float64)
+    for c in other_cats:
+        c_safe = safe_name(c)
+        col_m3 = f"m3spend_{c_safe}"
+        if col_m3 in feats.columns:
+            m3_c = feats[col_m3].to_numpy(dtype=np.float64)
+            col_m1 = f"m1spend_{c_safe}"
+            m1_c = feats[col_m1].to_numpy(dtype=np.float64) if col_m1 in feats.columns else np.zeros(len(feats))
+            col_q2 = f"q2spend_{c_safe}"
+            q2_c = feats[col_q2].to_numpy(dtype=np.float64) if col_q2 in feats.columns else np.zeros(len(feats))
+            col_ever = f"ever_{c_safe}"
+            ever_c = (feats[col_ever].to_numpy() > 0) if col_ever in feats.columns else (m3_c > 0)
+
+            H_c = np.maximum(1.25 * m3_c, m3_c + 20.0)
+            proj_spend = np.maximum(3.0 * m1_c, 0.5 * (3.0 * m1_c + q2_c))
+            delta_rand = np.where(ever_c & (proj_spend >= H_c), proj_spend - m3_c, 0.0)
+            ratio_c = np.where(ever_c, (3.0 * m1_c + 1.0) / (H_c + 1.0), 0.0)
+
+            max_delta_rand = np.maximum(max_delta_rand, delta_rand)
+            max_hurdle_ratio = np.maximum(max_hurdle_ratio, ratio_c)
+
+    out["max_other_subcat_expected_delta_rand"] = max_delta_rand
+    out["max_other_subcat_hurdle_ratio"] = max_hurdle_ratio
 
     return out
 
@@ -865,9 +948,9 @@ def _level3_and_svd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) ->
         if cat in spend_matrix.columns:
             l3_matrix[cat] = spend_matrix[cat]
 
-    from sklearn.decomposition import TruncatedSVD
-    svd = TruncatedSVD(n_components=16, random_state=42)
-    reduced = svd.fit_transform(l3_matrix)
+    from sklearn.random_projection import GaussianRandomProjection
+    proj = GaussianRandomProjection(n_components=16, random_state=42)
+    reduced = proj.fit_transform(l3_matrix.to_numpy())
     for i in range(16):
         out[f"svd_dim_{i}"] = reduced[:, i]
 
@@ -875,12 +958,19 @@ def _level3_and_svd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) ->
 
 
 def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFrame:
-    """Station-Level Historical Seasonal Multipliers mapped to customer primary location."""
+    """Station-Level Historical Seasonal Multipliers and Behavioral Elasticity."""
     out = pd.DataFrame(index=ids)
     if "LocationId" not in hist.columns or len(hist) == 0:
         out["station_summer_fuel_index"] = 1.0
         out["station_summer_nf_index"] = 1.0
         out["station_summer_fg_rate"] = 0.5
+        out["station_weekend_to_weekday_ratio"] = 1.0
+        out["station_payday_ratio"] = 1.0
+        out["station_large_fill_share"] = 0.15
+        out["station_pump_price_m3"] = 23.50
+        out["cat_primary_location_id"] = np.zeros(len(ids), dtype=np.int64)
+        out["cat_top_nonfuel_level2"] = np.zeros(len(ids), dtype=np.int64)
+        out["cat_top_nonfuel_level3"] = np.zeros(len(ids), dtype=np.int64)
         return out
 
     q = hist[hist["is_qualifying"]]
@@ -895,23 +985,92 @@ def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) 
     else:
         primary_loc = pd.Series(np.nan, index=ids)
 
+    # 1. Structural categorical: cat_primary_location_id
+    loc_clean = pd.to_numeric(primary_loc, errors="coerce").fillna(0).astype("int64")
+    out["cat_primary_location_id"] = (loc_clean % 100000).astype("int64")
+
+    # 2. Structural categorical: cat_top_nonfuel_level2
+    if "ItemCategoryLevel2" in hist.columns:
+        nf_tx = hist[hist["is_nonfuel"] & hist["ItemCategoryLevel2"].notna()]
+        if len(nf_tx) > 0:
+            l2_counts = nf_tx.groupby(["ID", "ItemCategoryLevel2"]).size().reset_index(name="count")
+            top_l2 = (
+                l2_counts.sort_values(["ID", "count"], ascending=[True, False])
+                .drop_duplicates(subset=["ID"])
+                .set_index("ID")["ItemCategoryLevel2"]
+                .reindex(ids)
+            )
+            out["cat_top_nonfuel_level2"] = top_l2.map(NONFUEL_L2_MAP).fillna(0).astype("int64")
+        else:
+            out["cat_top_nonfuel_level2"] = np.zeros(len(ids), dtype=np.int64)
+    else:
+        out["cat_top_nonfuel_level2"] = np.zeros(len(ids), dtype=np.int64)
+
+    # 3. Structural categorical: cat_top_nonfuel_level3
+    if "ItemCategoryLevel3" in hist.columns:
+        nf_l3_tx = hist[hist["is_nonfuel"] & hist["ItemCategoryLevel3"].notna()]
+        if len(nf_l3_tx) > 0:
+            l3_counts = nf_l3_tx.groupby(["ID", "ItemCategoryLevel3"]).size().reset_index(name="count")
+            top_l3 = (
+                l3_counts.sort_values(["ID", "count"], ascending=[True, False])
+                .drop_duplicates(subset=["ID"])
+                .set_index("ID")["ItemCategoryLevel3"]
+                .reindex(ids)
+            )
+            out["cat_top_nonfuel_level3"] = top_l3.map(NONFUEL_L3_MAP).fillna(0).astype("int64")
+        else:
+            out["cat_top_nonfuel_level3"] = np.zeros(len(ids), dtype=np.int64)
+    else:
+        out["cat_top_nonfuel_level3"] = np.zeros(len(ids), dtype=np.int64)
+
+    # Station-level behavioral elasticity indicators (100% observable across all history)
+    fuel_tx = hist[hist["is_fuel_cat"]]
+    if len(fuel_tx) > 0:
+        is_weekend = fuel_tx["_time"].dt.weekday >= 5
+        wknd_spend = fuel_tx[is_weekend].groupby("LocationId")["amount"].sum() / 2.0
+        wkdy_spend = fuel_tx[~is_weekend].groupby("LocationId")["amount"].sum() / 5.0
+        weekend_ratio = (wknd_spend / wkdy_spend.replace(0.0, np.nan)).clip(0.2, 5.0).fillna(1.0)
+        out["station_weekend_to_weekday_ratio"] = primary_loc.map(weekend_ratio).fillna(1.0).astype("float64")
+    else:
+        out["station_weekend_to_weekday_ratio"] = 1.0
+
+    is_payday = hist["_time"].dt.day >= 25
+    payday_spend = hist[is_payday].groupby("LocationId")["amount"].sum() / 7.0
+    normal_spend = hist[~is_payday].groupby("LocationId")["amount"].sum() / 23.5
+    payday_ratio = (payday_spend / normal_spend.replace(0.0, np.nan)).clip(0.5, 4.0).fillna(1.0)
+    out["station_payday_ratio"] = primary_loc.map(payday_ratio).fillna(1.0).astype("float64")
+
+    fuel_sales = hist[hist["is_fuel_sale"] & (hist["qty"] > 0)]
+    if len(fuel_sales) > 0:
+        large_fills = fuel_sales[fuel_sales["qty"] > 45.0].groupby("LocationId")["TransactionId"].nunique()
+        all_fills = fuel_sales.groupby("LocationId")["TransactionId"].nunique()
+        large_share = (large_fills / all_fills.replace(0, np.nan)).clip(0.0, 1.0).fillna(0.15)
+        out["station_large_fill_share"] = primary_loc.map(large_share).fillna(0.15).astype("float64")
+    else:
+        out["station_large_fill_share"] = 0.15
+
     is_summer = hist["_time"].dt.month.isin([12, 1, 2])
     summer_tx = hist[is_summer]
     nonsummer_tx = hist[~is_summer]
     summer_months = max(summer_tx["_time"].dt.to_period("M").nunique(), 1)
     nonsummer_months = max(nonsummer_tx["_time"].dt.to_period("M").nunique(), 1)
 
-    f_summer = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / summer_months
-    f_nonsummer = nonsummer_tx[nonsummer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / nonsummer_months
-    f_idx = (f_summer / f_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
+    if len(summer_tx) > 0 and len(nonsummer_tx) > 0:
+        f_summer = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / summer_months
+        f_nonsummer = nonsummer_tx[nonsummer_tx["is_fuel_cat"]].groupby("LocationId")["amount"].sum() / nonsummer_months
+        f_idx = (f_summer / f_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
 
-    nf_summer = summer_tx[summer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / summer_months
-    nf_nonsummer = nonsummer_tx[nonsummer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / nonsummer_months
-    nf_idx = (nf_summer / nf_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
+        nf_summer = summer_tx[summer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / summer_months
+        nf_nonsummer = nonsummer_tx[nonsummer_tx["is_nonfuel"]].groupby("LocationId")["amount"].sum() / nonsummer_months
+        nf_idx = (nf_summer / nf_nonsummer.replace(0.0, np.nan)).clip(0.5, 2.5).fillna(1.0)
 
-    fg_tx = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["TransactionId"].nunique()
-    tot_tx = summer_tx[summer_tx["is_qualifying"]].groupby("LocationId")["TransactionId"].nunique()
-    fg_rate = (fg_tx / tot_tx.replace(0.0, np.nan)).clip(0.0, 1.0).fillna(0.5)
+        fg_tx = summer_tx[summer_tx["is_fuel_cat"]].groupby("LocationId")["TransactionId"].nunique()
+        tot_tx = summer_tx[summer_tx["is_qualifying"]].groupby("LocationId")["TransactionId"].nunique()
+        fg_rate = (fg_tx / tot_tx.replace(0.0, np.nan)).clip(0.0, 1.0).fillna(0.5)
+    else:
+        f_idx = pd.Series(1.0, index=primary_loc.dropna().unique())
+        nf_idx = pd.Series(1.0, index=primary_loc.dropna().unique())
+        fg_rate = pd.Series(0.5, index=primary_loc.dropna().unique())
 
     # Station-level recent fuel pump price (empirical median per LocationId in m3)
     m3_fuel = hist[(hist["_time"] >= t - pd.DateOffset(months=3)) & hist["is_fuel_sale"] & (hist["qty"] > 2.0) & (hist["amount"] > 50.0)]
@@ -1003,13 +1162,26 @@ def build_features(
         _station_seasonal_block(hist, ids, t),
         _mundlak_block(hist, win, ids, observed_months),
     ]
-    feats = pd.concat(blocks, axis=1)
-    hurdle_block = _hurdle_physics_block(feats)
-    # Ablated static snapshot calendar constants and hardcoded Dec 2024 features.
-    # Relative seasonality is captured cleanly by the yoy_q window across all snapshots,
-    # preventing trees from memorizing the single summer snapshot in the training history.
-    feats = pd.concat([feats, hurdle_block], axis=1)
+    base_feats = pd.concat(blocks, axis=1)
+    hurdle_block = _hurdle_physics_block(base_feats)
+    # 4. Structural categorical: cat_payday_commuter_archetype (4-state interaction of is_commuter x is_payday_shopper)
+    commuter_col = base_feats["m6_commuter_share"] if "m6_commuter_share" in base_feats.columns else np.zeros(len(base_feats))
+    payday_col = base_feats["payday_spend_share_m3"] if "payday_spend_share_m3" in base_feats.columns else np.zeros(len(base_feats))
+    is_commuter = (commuter_col >= 0.40).astype(int)
+    is_payday = (payday_col >= 0.35).astype(int)
+    archetype_df = pd.DataFrame(
+        {"cat_payday_commuter_archetype": (2 * is_commuter + is_payday).astype("int64")},
+        index=ids,
+    )
+
+    feats = pd.concat([base_feats, hurdle_block, archetype_df], axis=1)
+
+    for c in CAT_STRUCTURAL_FEATURES:
+        if c in feats.columns:
+            feats[c] = feats[c].fillna(0).astype("int64")
+    num_cols = [c for c in feats.columns if c not in CAT_STRUCTURAL_FEATURES]
+    feats[num_cols] = feats[num_cols].astype("float64")
 
     feats.index.name = "ID"
-    return feats.astype("float64")
+    return feats
 
