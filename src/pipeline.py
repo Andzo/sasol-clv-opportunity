@@ -544,6 +544,22 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         weights=cal.commuter_weights,
     )
     test_opp_labels = list(test_opp_labels)
+
+    if save_predictions:
+        eda_cache = cfg.paths.reports_dir / "eda" / "cache"
+        eda_cache.mkdir(parents=True, exist_ok=True)
+        test_df = pd.DataFrame({
+            "pred_fuel_raw": test_fuel_raw,
+            "pred_fuel_final": test_pred_fuel,
+            "pred_nonfuel_raw": test_nf_raw,
+            "pred_nonfuel_final": test_pred_nonfuel,
+            "pred_opportunity": test_opp_labels,
+            "p_active": p_active_test,
+            "p_store": p_store_active_test,
+        }, index=pd.Index(test_ids, name="ID"))
+        for i, l in enumerate(opp_labels):
+            test_df[f"prob_{l}"] = test_probs_masked[:, i]
+        test_df.to_parquet(eda_cache / "test_predictions.parquet")
         logger.info("Saved test predictions to %s", eda_cache / "test_predictions.parquet")
 
     # 6. Submission Build & Strict Validation
