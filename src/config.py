@@ -88,7 +88,7 @@ class PipelineConfig:
 
     paths: Paths = field(default_factory=Paths)
     models: ModelConfig = field(default_factory=ModelConfig)
-    first_train_cutoff: str = "2024-07-01"
+    first_train_cutoff: str = "2024-09-01"
     cutoff_step_months: int = 1
     horizon_months: int = 3
     calibration_cutoff: str = "2025-06-01"

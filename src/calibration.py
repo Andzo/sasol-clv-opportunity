@@ -504,7 +504,7 @@ def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[t
     y_arr = np.asarray(y_true, dtype="float64")
     for m in range(n_members):
         pred_m = member_preds[:, m]
-        pos_mask = (pred_m > 0) & (y_arr > 0)
+        pos_mask = pred_m > 1e-5
         if pos_mask.sum() >= 20:
             a, b = fit_linear_calibration(y_arr[pos_mask], pred_m[pos_mask], force_zero_intercept=True)
         else:
@@ -513,13 +513,104 @@ def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[t
     return params
 
 
-
 def apply_member_debiasing(member_preds: np.ndarray, debias_params: list[tuple[float, float]]) -> np.ndarray:
     """Applies per-member linear recalibration on positive predictions."""
     out = member_preds.copy()
     for m, (a, b) in enumerate(debias_params):
         pos_mask = out[:, m] > 0
         out[pos_mask, m] = np.clip(apply_linear_calibration(out[pos_mask, m], a, b), 0.0, None)
+    return out
+
+
+def build_regression_meta_matrix(
+    debiased_fuel_m: np.ndarray,
+    debiased_nf_m: np.ndarray,
+    p_fuel_active: np.ndarray,
+    p_store_active: np.ndarray,
+    mu_fuel_pos: np.ndarray,
+    mu_nf_pos: np.ndarray,
+) -> np.ndarray:
+    """Constructs the unified cross-target regression meta-matrix M_reg (30 columns)."""
+    p_fuel_act_col = np.asarray(p_fuel_active, dtype=np.float64).reshape(-1, 1)
+    p_store_act_col = np.asarray(p_store_active, dtype=np.float64).reshape(-1, 1)
+    mu_f_col = np.asarray(mu_fuel_pos, dtype=np.float64).reshape(-1, 1)
+    mu_nf_col = np.asarray(mu_nf_pos, dtype=np.float64).reshape(-1, 1)
+
+    exp_fuel_hurdle = p_fuel_act_col * mu_f_col
+    exp_nf_hurdle = p_store_act_col * mu_nf_col
+
+    return np.column_stack([
+        debiased_fuel_m,
+        debiased_nf_m,
+        p_fuel_act_col,
+        p_store_act_col,
+        exp_fuel_hurdle,
+        exp_nf_hurdle,
+    ])
+
+
+def fit_nonnegative_ridge(
+    M: np.ndarray,
+    y: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+    alpha: float = 10.0,
+    hurdle_indices: Sequence[int] | None = None,
+    min_hurdle_weight: float = 0.0,
+) -> np.ndarray:
+    """Fits non-negative Ridge regression weights w >= 0 minimizing weighted MSE + alpha * ||w||_2^2.
+
+    Optionally enforces min_hurdle_weight constraint sum_{j in hurdle_indices} w_j >= min_hurdle_weight.
+    """
+    n, p = M.shape
+    w = np.ones(n, dtype=np.float64) if sample_weight is None else np.asarray(sample_weight, dtype=np.float64)
+    w = w / max(float(w.mean()), 1e-6)
+    sqrt_w = np.sqrt(w)
+
+    Mw = M * sqrt_w[:, None]
+    yw = y * sqrt_w
+
+    if min_hurdle_weight > 0.0 and hurdle_indices is not None and len(hurdle_indices) > 0:
+        h_list = list(hurdle_indices)
+
+        def obj(beta: np.ndarray) -> float:
+            res = Mw @ beta - yw
+            return float(0.5 * np.mean(res**2) + (alpha / (2.0 * n)) * np.sum(beta**2))
+
+        def grad(beta: np.ndarray) -> np.ndarray:
+            res = Mw @ beta - yw
+            return (Mw.T @ res) / n + (alpha / n) * beta
+
+        bnds = [(0.0, None) for _ in range(p)]
+        cons = [{"type": "ineq", "fun": lambda beta: np.sum(beta[h_list]) - min_hurdle_weight}]
+
+        Mw_aug = np.vstack([Mw, np.sqrt(alpha) * np.eye(p)])
+        yw_aug = np.concatenate([yw, np.zeros(p)])
+        from scipy.optimize import nnls, minimize
+        beta_init, _ = nnls(Mw_aug, yw_aug)
+        if np.sum(beta_init[h_list]) < min_hurdle_weight:
+            beta_init[h_list] += (min_hurdle_weight - np.sum(beta_init[h_list])) / len(h_list)
+
+        res = minimize(obj, beta_init, jac=grad, bounds=bnds, constraints=cons, method="SLSQP", options={"maxiter": 200})
+        if res.success:
+            return np.maximum(0.0, res.x)
+
+    from scipy.optimize import nnls
+    Mw_aug = np.vstack([Mw, np.sqrt(alpha) * np.eye(p)])
+    yw_aug = np.concatenate([yw, np.zeros(p)])
+    beta, _ = nnls(Mw_aug, yw_aug)
+    return np.maximum(0.0, beta)
+
+
+def apply_extreme_dead_gate(
+    pred: np.ndarray,
+    p_active: np.ndarray,
+    m3_baskets: np.ndarray,
+    threshold: float = 0.02,
+) -> np.ndarray:
+    """Zeroes out predicted spend only for extreme dead accounts with zero recent baskets."""
+    dead_mask = (p_active < threshold) & (m3_baskets == 0)
+    out = np.asarray(pred, dtype=np.float64).copy()
+    out[dead_mask] = 0.0
     return out
 
 

@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "3.4.0"
+FEATURE_VERSION = "4.0.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 180.0
@@ -919,15 +919,16 @@ GLOBAL_TOP_35_LEVEL3: tuple[str, ...] = (
 
 
 def _level3_and_svd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFrame:
-    """Granular ItemCategoryLevel3 routine concentration (HHI) and 16-component TruncatedSVD."""
+    """Granular ItemCategoryLevel3 routine concentration (HHI) and spend summary statistics."""
     out = pd.DataFrame(index=ids)
     w_m6 = hist[(hist["_time"] >= t - pd.DateOffset(months=6)) & hist["in_scope"]]
     if len(w_m6) == 0 or "ItemCategoryLevel3" not in w_m6.columns or "ID" not in w_m6.columns:
         for cat in GLOBAL_TOP_35_LEVEL3:
             out[f"l3_share_{safe_name(cat)}"] = 0.0
         out["level3_hhi_concentration"] = 0.0
-        for i in range(16):
-            out[f"svd_dim_{i}"] = 0.0
+        out["l3_active_count"] = 0.0
+        out["l3_top1_share"] = 0.0
+        out["l3_top3_share"] = 0.0
         return out
 
     spend_matrix = w_m6.groupby(["ID", "ItemCategoryLevel3"])["amount"].sum().unstack(fill_value=0.0).reindex(ids).fillna(0.0)
@@ -942,17 +943,10 @@ def _level3_and_svd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) ->
             out[f"l3_share_{clean_cat}"] = 0.0
 
     out["level3_hhi_concentration"] = (shares ** 2).sum(axis=1)
-
-    l3_matrix = pd.DataFrame(0.0, index=ids, columns=GLOBAL_TOP_35_LEVEL3)
-    for cat in GLOBAL_TOP_35_LEVEL3:
-        if cat in spend_matrix.columns:
-            l3_matrix[cat] = spend_matrix[cat]
-
-    from sklearn.random_projection import GaussianRandomProjection
-    proj = GaussianRandomProjection(n_components=16, random_state=42)
-    reduced = proj.fit_transform(l3_matrix.to_numpy())
-    for i in range(16):
-        out[f"svd_dim_{i}"] = reduced[:, i]
+    out["l3_active_count"] = (spend_matrix > 0).sum(axis=1).astype("float64")
+    sorted_shares = np.sort(shares.to_numpy(), axis=1)[:, ::-1]
+    out["l3_top1_share"] = sorted_shares[:, 0].astype("float64")
+    out["l3_top3_share"] = sorted_shares[:, :min(3, sorted_shares.shape[1])].sum(axis=1).astype("float64")
 
     return out
 
@@ -1120,6 +1114,143 @@ def _mundlak_block(
     return out
 
 
+def _prior_quarter_official_label_block(
+    hist: pd.DataFrame,
+    win: pd.DataFrame,
+    ids: pd.Index,
+    t: pd.Timestamp,
+    label_config: Mapping[str, Any],
+    data_start: pd.Timestamp,
+) -> pd.DataFrame:
+    """Official Prior-Quarter Label & Markov State-Transition Features (EDA Section 18.2).
+
+    At cutoff t, the outcome window [t - 3m, t) (m3) and preceding baseline [t - 6m, t - 3m) (q2)
+    are strictly observed and leakage-safe whenever t - 3m >= data_start.
+    """
+    out = pd.DataFrame(index=ids)
+    t_prior = t - pd.DateOffset(months=3)
+    min_tx = int(label_config.get("minimum_historical_transactions", 3))
+
+    # Continuous two-quarter persistence from win
+    m3_f = win["m3_fuel_litres"] if "m3_fuel_litres" in win.columns else pd.Series(0.0, index=ids)
+    q2_f = win["q2_fuel_litres"] if "q2_fuel_litres" in win.columns else pd.Series(0.0, index=ids)
+
+    out["q2_fuel_active"] = (q2_f > 0).astype("float64")
+    out["two_quarter_fuel_persistence"] = ((m3_f > 0).astype("float64") + (q2_f > 0).astype("float64")).astype("float64")
+
+    # If t_prior is before data_start, no prior quarter exists
+    if t_prior <= data_start or len(hist) == 0:
+        out["prior_q_was_eligible"] = 0.0
+        out["prior_q_is_inactive"] = np.nan
+        out["prior_q_is_stable"] = np.nan
+        out["prior_q_is_fuel_growth"] = np.nan
+        out["prior_q_is_retail_growth"] = np.nan
+        out["prior_q_is_adoption"] = np.nan
+        out["prior_q_winning_increment_log"] = np.nan
+        out["prior_q_n_qualifying_growth_cats"] = np.nan
+        out["prior_q_fuel_active"] = np.nan
+        out["prior_q_nf_active"] = np.nan
+        return out
+
+    # Determine eligibility at t_prior: >= min_tx qualifying transactions strictly before t_prior
+    h_before_prior = hist[hist["_time"] < t_prior]
+    if len(h_before_prior) > 0:
+        q_before = h_before_prior[h_before_prior["is_qualifying"]]
+        n_prior_tx = q_before.groupby("ID")["TransactionId"].nunique()
+        eligible_prior = set(n_prior_tx[n_prior_tx >= min_tx].index)
+    else:
+        eligible_prior = set()
+
+    is_elig = pd.Series([1.0 if cid in eligible_prior else 0.0 for cid in ids], index=ids, dtype="float64")
+    out["prior_q_was_eligible"] = is_elig
+
+    # Reconstruct realized label at t_prior using official rules
+    try:
+        import label_rules
+        raw = label_rules.raw_labels(hist, str(t_prior.date()), label_config).set_index("ID")
+    except Exception:
+        raw = pd.DataFrame()
+
+    # Reconstruct growth category count across all in-scope categories
+    p = hist[~hist["ItemName"].isin(label_config.get("adjustment_items", []))]
+    h_sub = p[p["_time"] < t_prior]
+    recent = h_sub[h_sub["_time"] >= t_prior - pd.DateOffset(months=3)]
+    future = p[(p["_time"] >= t_prior) & (p["_time"] < t)]
+    mapping = label_config.get("category_mapping", {})
+    cats = sorted(c for c, v in mapping.items() if v.get("included", False))
+
+    if len(future) > 0 and len(cats) > 0:
+        def _cat_matrix(frame: pd.DataFrame, count: bool = False) -> pd.DataFrame:
+            frame_sub = frame[frame["ItemCategoryLevel2"].isin(cats)]
+            if count:
+                frame_sub = frame_sub[(frame_sub["_quantity"] > 0) & (frame_sub["_amount"] > 0)]
+            g = frame_sub.groupby(["ID", "ItemCategoryLevel2"])
+            s = g["TransactionId"].nunique() if count else g["_amount"].sum()
+            return s.unstack(fill_value=0).reindex(index=ids, columns=cats, fill_value=0).astype("int64")
+
+        historical_cnt = _cat_matrix(h_sub, True)
+        future_cnt = _cat_matrix(future, True)
+        prev_spd = _cat_matrix(recent)
+        fut_spd = _cat_matrix(future)
+        delta_spd = fut_spd - prev_spd
+        SCALE = 1000000
+        min_rand_scaled = int(label_config.get("growth_min_rand", 20.0) * SCALE)
+        rel_growth = label_config.get("growth_min_relative", 0.25)
+
+        grow = historical_cnt.gt(0) & future_cnt.ge(label_config.get("growth_min_purchases", 1))
+        grow &= delta_spd.ge(min_rand_scaled)
+        if rel_growth is not None:
+            grow &= fut_spd.gt(prev_spd.clip(lower=0) * (1 + rel_growth))
+        n_growth_cats = grow.sum(axis=1)
+    else:
+        n_growth_cats = pd.Series(0, index=ids)
+
+    if len(raw) > 0:
+        raw_reindexed = raw.reindex(ids)
+        opp = raw_reindexed["Opportunity"]
+        is_inact = (opp == "Inactivity").astype("float64")
+        is_stable = (opp == "Stable").astype("float64")
+        is_fg = (opp == "Existing-category growth: Fuel").astype("float64")
+        is_rg = (opp.str.startswith("Existing-category growth") & (opp != "Existing-category growth: Fuel")).astype("float64")
+        is_adopt = opp.str.startswith("New category adoption").astype("float64")
+        inc_log = np.log1p(np.maximum(raw_reindexed["winning_increment_rand"].fillna(0.0), 0.0))
+        f_act = (raw_reindexed["fuel_litres"].fillna(0.0) > 0).astype("float64")
+        nf_act = (raw_reindexed["nonfuel_rand"].fillna(0.0) > 0).astype("float64")
+    else:
+        is_inact = pd.Series(np.nan, index=ids)
+        is_stable = pd.Series(np.nan, index=ids)
+        is_fg = pd.Series(np.nan, index=ids)
+        is_rg = pd.Series(np.nan, index=ids)
+        is_adopt = pd.Series(np.nan, index=ids)
+        inc_log = pd.Series(np.nan, index=ids)
+        f_act = pd.Series(np.nan, index=ids)
+        nf_act = pd.Series(np.nan, index=ids)
+
+    non_elig_mask = is_elig == 0.0
+    is_inact[non_elig_mask] = np.nan
+    is_stable[non_elig_mask] = np.nan
+    is_fg[non_elig_mask] = np.nan
+    is_rg[non_elig_mask] = np.nan
+    is_adopt[non_elig_mask] = np.nan
+    inc_log[non_elig_mask] = np.nan
+    f_act[non_elig_mask] = np.nan
+    nf_act[non_elig_mask] = np.nan
+    n_growth = n_growth_cats.astype("float64")
+    n_growth[non_elig_mask] = np.nan
+
+    out["prior_q_is_inactive"] = is_inact
+    out["prior_q_is_stable"] = is_stable
+    out["prior_q_is_fuel_growth"] = is_fg
+    out["prior_q_is_retail_growth"] = is_rg
+    out["prior_q_is_adoption"] = is_adopt
+    out["prior_q_winning_increment_log"] = inc_log
+    out["prior_q_n_qualifying_growth_cats"] = n_growth
+    out["prior_q_fuel_active"] = f_act
+    out["prior_q_nf_active"] = nf_act
+
+    return out
+
+
 def build_features(
     tx: pd.DataFrame,
     cutoff: pd.Timestamp | str,
@@ -1161,6 +1292,7 @@ def build_features(
         _level3_and_svd_block(hist, ids, t),
         _station_seasonal_block(hist, ids, t),
         _mundlak_block(hist, win, ids, observed_months),
+        _prior_quarter_official_label_block(hist, win, ids, t, label_config, data_start),
     ]
     base_feats = pd.concat(blocks, axis=1)
     hurdle_block = _hurdle_physics_block(base_feats)

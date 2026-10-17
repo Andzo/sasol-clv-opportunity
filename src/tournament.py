@@ -20,7 +20,7 @@ Orchestrates:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import numpy as np
@@ -53,23 +53,40 @@ def build_level2_structural_features(
     X: pd.DataFrame,
     probs_base: np.ndarray,
     probs_hier: np.ndarray,
-    probs_sim: np.ndarray,
-    pred_fuel: np.ndarray,
-    pred_nf: np.ndarray,
-    p_fuel_active: np.ndarray,
-    p_store_active: np.ndarray,
-    mu_fuel_pos: np.ndarray,
-    sigma_fuel_pos: np.ndarray,
+    probs_sim: np.ndarray | None = None,
+    pred_fuel: np.ndarray = None,
+    pred_nf: np.ndarray = None,
+    p_fuel_active: np.ndarray = None,
+    p_store_active: np.ndarray = None,
+    mu_fuel_pos: np.ndarray = None,
+    sigma_fuel_pos: np.ndarray = None,
 ) -> pd.DataFrame:
     """Builds the compact Level-2 Structural Stacking Feature Matrix."""
     n = len(X)
     df = pd.DataFrame(index=X.index)
 
-    # 1. Base, hierarchical, and simulation probabilities
+    # 1. Base and hierarchical probabilities (p_sim_* dropped to eliminate uninformative zero features)
     for c in range(probs_base.shape[1]):
         df[f"p_base_{c}"] = probs_base[:, c]
         df[f"p_hier_{c}"] = probs_hier[:, c]
-        df[f"p_sim_{c}"] = probs_sim[:, c]
+
+    # Prior-Quarter Official Label Transition Features (EDA Section 18.2)
+    prior_q_cols = [
+        "prior_q_was_eligible",
+        "prior_q_is_inactive",
+        "prior_q_is_stable",
+        "prior_q_is_fuel_growth",
+        "prior_q_is_retail_growth",
+        "prior_q_is_adoption",
+        "prior_q_winning_increment_log",
+        "prior_q_n_qualifying_growth_cats",
+        "prior_q_fuel_active",
+        "prior_q_nf_active",
+        "two_quarter_fuel_persistence",
+    ]
+    for c in prior_q_cols:
+        if c in X.columns:
+            df[c] = X[c].to_numpy()
 
     # 2. Continuous regression predictions and attachment probabilities
     df["pred_fuel"] = pred_fuel
@@ -151,6 +168,57 @@ def build_level2_structural_features(
     return df.fillna(0.0).astype("float64")
 
 
+def select_top_features_by_gain(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+    top_k: int = 165,
+    seed: int = 42,
+    n_jobs: int = -1,
+) -> list[str]:
+    """Selects top_k numeric features using LightGBM feature importance (gain)."""
+    if X.shape[1] <= top_k:
+        return list(X.columns)
+
+    essential = [
+        "m3_fuel_litres", "m3_fuel_rand", "m3_nonfuel_rand", "m1_fuel_litres",
+        "m1_baskets", "m3_baskets", "days_since_last_purchase",
+        "real_fuel_hurdle_litres", "active_m6_fuel", "prior_q_fuel_active", "prior_q_nf_active",
+    ]
+    essential_in_X = [c for c in essential if c in X.columns]
+
+    from lightgbm import LGBMRegressor
+    numeric_cols = [c for c in X.columns if not c.startswith("cat_")]
+    X_num = X[numeric_cols]
+
+    clf = LGBMRegressor(
+        n_estimators=100,
+        learning_rate=0.08,
+        num_leaves=31,
+        random_state=seed,
+        n_jobs=n_jobs,
+        verbose=-1,
+        importance_type="gain",
+    )
+    if sample_weight is not None:
+        clf.fit(X_num, y, sample_weight=sample_weight)
+    else:
+        clf.fit(X_num, y)
+
+    importances = clf.feature_importances_
+    sorted_idx = np.argsort(importances)[::-1]
+
+    selected_set = set(essential_in_X)
+    for i in sorted_idx:
+        if len(selected_set) >= top_k:
+            break
+        selected_set.add(numeric_cols[i])
+
+    selected_cols = [c for c in numeric_cols if c in selected_set]
+    cat_cols = [c for c in X.columns if c.startswith("cat_")]
+    return selected_cols + cat_cols
+
+
 @dataclass
 class TournamentResult:
     """Out-of-fold predictions and ground truths pooled across all tournament folds."""
@@ -172,6 +240,10 @@ class TournamentResult:
     pool_cutoffs: list[pd.Timestamp]
     fold_scores: dict[str, dict[str, float]]
     member_names: list[str]
+    pool_p_fuel_act: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    pool_p_store_act: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    pool_mu_fuel_pos: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    pool_mu_nf_pos: np.ndarray = field(default_factory=lambda: np.zeros(0))
 
     def filter_cutoffs(self, keep_cutoffs: Sequence[pd.Timestamp]) -> "TournamentResult":
         """Returns a subset of TournamentResult restricted strictly to specified cutoffs."""
@@ -198,6 +270,10 @@ class TournamentResult:
             pool_cutoffs=[self.pool_cutoffs[i] for i in indices],
             fold_scores={k: v for k, v in self.fold_scores.items() if any(c.strftime("%Y-%m-%d") in k for c in keep_set)},
             member_names=self.member_names,
+            pool_p_fuel_act=self.pool_p_fuel_act[idx_arr] if len(self.pool_p_fuel_act) == len(self.pool_cutoffs) else self.pool_p_fuel_act,
+            pool_p_store_act=self.pool_p_store_act[idx_arr] if len(self.pool_p_store_act) == len(self.pool_cutoffs) else self.pool_p_store_act,
+            pool_mu_fuel_pos=self.pool_mu_fuel_pos[idx_arr] if len(self.pool_mu_fuel_pos) == len(self.pool_cutoffs) else self.pool_mu_fuel_pos,
+            pool_mu_nf_pos=self.pool_mu_nf_pos[idx_arr] if len(self.pool_mu_nf_pos) == len(self.pool_cutoffs) else self.pool_mu_nf_pos,
         )
 
 
@@ -304,6 +380,10 @@ class TournamentEngine:
         pool_probs_sim_list = []
         pool_phys_fg_list = []
         pool_phys_inact_list = []
+        pool_p_fuel_act_list = []
+        pool_p_store_act_list = []
+        pool_mu_fuel_pos_list = []
+        pool_mu_nf_pos_list = []
         pool_level2_X_list = []
         pool_y_fuel_list = []
         pool_y_nf_list = []
@@ -329,26 +409,42 @@ class TournamentEngine:
             train_panel = stack(train_snaps)
 
             # Seasonal sample weights for training panel:
-            # Temporal exponential decay (lambda=0.077) x summer multiplier (2.2x) x cluster normalization
+            # Temporal exponential decay (lambda=0.10) x summer multiplier (2.2x), removing 15x n_snaps_cust distortion
             train_cutoffs_dt = pd.to_datetime(train_panel.cutoffs)
             eval_dt = pd.Timestamp(eval_t)
             months_delta = np.asarray((eval_dt.year - train_cutoffs_dt.year) * 12 + (eval_dt.month - train_cutoffs_dt.month), dtype=np.float32)
-            temporal_decay = np.exp(-0.077 * np.maximum(months_delta, 0.0))
+            temporal_decay = np.exp(-0.10 * np.maximum(months_delta, 0.0))
             is_summer_train = train_cutoffs_dt.month.isin([11, 12, 1])
             seasonal_mult = np.where(is_summer_train, 2.2, 1.0)
-            cust_counts = pd.Series(train_panel.X.index).value_counts()
-            n_snaps_cust = np.asarray(train_panel.X.index.map(cust_counts), dtype=np.float32)
-            sw = (temporal_decay * seasonal_mult / np.maximum(n_snaps_cust, 1.0)).astype(np.float32)
+            sw = (temporal_decay * seasonal_mult).astype(np.float32)
             sw = sw / max(float(sw.mean()), 1e-6)
 
-            # 1. Regressors
+            # Target-specific feature pruning (top 165 numeric features per target)
+            fuel_features = select_top_features_by_gain(
+                train_panel.X,
+                train_panel.labels["CLV_fuel"].to_numpy(),
+                sample_weight=sw,
+                top_k=165,
+                seed=self.cfg.models.seed,
+                n_jobs=self.cfg.models.n_jobs,
+            )
+            nf_features = select_top_features_by_gain(
+                train_panel.X,
+                train_panel.labels["CLV_nonfuel"].to_numpy(),
+                sample_weight=sw,
+                top_k=165,
+                seed=self.cfg.models.seed,
+                n_jobs=self.cfg.models.n_jobs,
+            )
+
+            # 1. Regressors (fitted on top-165 selected features)
             fuel_model = RegressorEnsemble(
                 members=self.cfg.models.regression_members,
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 tweedie_power=1.25,
                 use_gpu=self.cfg.models.use_gpu,
-            ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[fuel_features], train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             nf_model = RegressorEnsemble(
                 members=self.cfg.models.regression_members,
@@ -356,16 +452,16 @@ class TournamentEngine:
                 n_jobs=self.cfg.models.n_jobs,
                 tweedie_power=1.40,
                 use_gpu=self.cfg.models.use_gpu,
-            ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[nf_features], train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
-            # 2. Hurdle Models (5 Seeds + MultiQuantile)
+            # 2. Hurdle Models (5 Seeds + MultiQuantile on selected features)
             hurdle_fuel = BaggedTwoPartFuelHurdle(
                 seeds=(42, 100, 2024, 777, 314),
                 huber_alpha=0.85,
                 power_shrinkage=0.98,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
-            ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[fuel_features], train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             hurdle_nf = BaggedTwoPartNonfuelHurdle(
                 seeds=(42, 100, 2024, 777, 314),
@@ -374,20 +470,20 @@ class TournamentEngine:
                 zero_gate_threshold=0.04,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
-            ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[nf_features], train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
             mq_fuel = MultiQuantileTwoPartHurdle(
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
-            ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[fuel_features], train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             mq_nf = MultiQuantileTwoPartHurdle(
                 seed=self.cfg.models.seed,
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
                 target_type="nonfuel",
-            ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[nf_features], train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
             # 3. Physical Basket x Ticket Regressors
             phys_fuel = PhysicalBasketTicketRegressor(
@@ -396,7 +492,7 @@ class TournamentEngine:
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
                 target_type="fuel",
-            ).fit(train_panel.X, train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[fuel_features], train_panel.labels["CLV_fuel"].to_numpy(), sample_weight=sw)
 
             phys_nf = PhysicalBasketTicketRegressor(
                 scale=2.4200904988927476,
@@ -404,7 +500,7 @@ class TournamentEngine:
                 n_jobs=self.cfg.models.n_jobs,
                 use_gpu=self.cfg.models.use_gpu,
                 target_type="nonfuel",
-            ).fit(train_panel.X, train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
+            ).fit(train_panel.X[nf_features], train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
             # 4. Classifiers
             opp_weights = [0.40, 0.25, 0.35] if tuple(self.cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -437,25 +533,31 @@ class TournamentEngine:
             fold_probs_sim = np.zeros((len(eval_snap.features), self.n_classes), dtype=np.float64)
 
             # Predict OOF instances on eval_snap
-            pred_fuel_direct = fuel_model.predict_members(eval_snap.features)
-            pred_fuel_hurdle = hurdle_fuel.predict(eval_snap.features).reshape(-1, 1)
-            pred_fuel_mq = mq_fuel.predict(eval_snap.features).reshape(-1, 1)
-            pred_fuel_phys = phys_fuel.predict(eval_snap.features).reshape(-1, 1)
+            pred_fuel_direct = fuel_model.predict_members(eval_snap.features[fuel_features])
+            pred_fuel_hurdle = hurdle_fuel.predict(eval_snap.features[fuel_features]).reshape(-1, 1)
+            pred_fuel_mq = mq_fuel.predict(eval_snap.features[fuel_features]).reshape(-1, 1)
+            pred_fuel_phys = phys_fuel.predict(eval_snap.features[fuel_features]).reshape(-1, 1)
             fold_fuel_m = np.column_stack([pred_fuel_direct, pred_fuel_hurdle, pred_fuel_mq, pred_fuel_phys])
 
-            pred_nf_direct = nf_model.predict_members(eval_snap.features)
-            pred_nf_hurdle = hurdle_nf.predict(eval_snap.features).reshape(-1, 1)
-            pred_nf_mq = mq_nf.predict(eval_snap.features).reshape(-1, 1)
-            pred_nf_phys = phys_nf.predict(eval_snap.features).reshape(-1, 1)
+            pred_nf_direct = nf_model.predict_members(eval_snap.features[nf_features])
+            pred_nf_hurdle = hurdle_nf.predict(eval_snap.features[nf_features]).reshape(-1, 1)
+            pred_nf_mq = mq_nf.predict(eval_snap.features[nf_features]).reshape(-1, 1)
+            pred_nf_phys = phys_nf.predict(eval_snap.features[nf_features]).reshape(-1, 1)
             fold_nf_m = np.column_stack([pred_nf_direct, pred_nf_hurdle, pred_nf_mq, pred_nf_phys])
 
             fold_probs_base = opp_model.predict_proba(eval_snap.features)
             fold_probs_hier = hier_model.predict_proba(eval_snap.features)
 
             # Hurdle Physical CDF probabilities & Level-2 Structural Stacking Features
-            p_fuel_active = hurdle_fuel.classifier.predict_proba(eval_snap.features)
-            p_store_active = hurdle_nf.classifier.predict_proba(eval_snap.features)
-            mu_fuel_pos, sigma_fuel_pos = mq_fuel.predict_conditional_pos(eval_snap.features)
+            p_fuel_active = hurdle_fuel.classifier.predict_proba(eval_snap.features[fuel_features])
+            p_store_active = hurdle_nf.classifier.predict_proba(eval_snap.features[nf_features])
+            mu_fuel_pos, sigma_fuel_pos = mq_fuel.predict_conditional_pos(eval_snap.features[fuel_features])
+            mu_nf_pos, sigma_nf_pos = mq_nf.predict_conditional_pos(eval_snap.features[nf_features])
+
+            pool_p_fuel_act_list.append(p_fuel_active)
+            pool_p_store_act_list.append(p_store_active)
+            pool_mu_fuel_pos_list.append(mu_fuel_pos)
+            pool_mu_nf_pos_list.append(mu_nf_pos)
 
             p_phys_fg, p_phys_inact = calibration.compute_physical_hurdle_probabilities(
                 eval_snap.features,
@@ -529,6 +631,10 @@ class TournamentEngine:
             pool_cutoffs=pool_cutoffs_list,
             fold_scores=fold_scores,
             member_names=member_names,
+            pool_p_fuel_act=np.concatenate(pool_p_fuel_act_list),
+            pool_p_store_act=np.concatenate(pool_p_store_act_list),
+            pool_mu_fuel_pos=np.concatenate(pool_mu_fuel_pos_list),
+            pool_mu_nf_pos=np.concatenate(pool_mu_nf_pos_list),
         )
 
     def fit_calibration(self, tourney: TournamentResult) -> CalibrationArtifacts:
@@ -541,31 +647,38 @@ class TournamentEngine:
         debiased_fuel_m = calibration.apply_member_debiasing(tourney.pool_fuel_m, fuel_debias)
         debiased_nf_m = calibration.apply_member_debiasing(tourney.pool_nf_m, nf_debias)
 
-        # 2. Weighted NNLS blend weights with hurdle floor enforcement
-        sqrt_w = np.sqrt(tourney.pool_weights)[:, None]
-        hurdle_indices = [
-            tourney.member_names.index("hurdle_bagged"),
-            tourney.member_names.index("hurdle_quantile"),
-        ]
-        fuel_blend_weights = calibration.fit_blend_weights(
-            debiased_fuel_m * sqrt_w,
-            tourney.pool_y_fuel * np.sqrt(tourney.pool_weights),
-            hurdle_indices=hurdle_indices,
+        # 2. Cross-Target Regression Stacking via Non-Negative Ridge (30 meta-features)
+        M_reg_pool = calibration.build_regression_meta_matrix(
+            debiased_fuel_m=debiased_fuel_m,
+            debiased_nf_m=debiased_nf_m,
+            p_fuel_active=tourney.pool_p_fuel_act,
+            p_store_active=tourney.pool_p_store_act,
+            mu_fuel_pos=tourney.pool_mu_fuel_pos,
+            mu_nf_pos=tourney.pool_mu_nf_pos,
+        )
+        fuel_blend_weights = calibration.fit_nonnegative_ridge(
+            M=M_reg_pool,
+            y=tourney.pool_y_fuel,
+            sample_weight=tourney.pool_weights,
+            alpha=10.0,
+            hurdle_indices=[10, 11, 28],
             min_hurdle_weight=0.20,
         )
-        nf_blend_weights = calibration.fit_blend_weights(
-            debiased_nf_m * sqrt_w,
-            tourney.pool_y_nonfuel * np.sqrt(tourney.pool_weights),
-            hurdle_indices=hurdle_indices,
+        nf_blend_weights = calibration.fit_nonnegative_ridge(
+            M=M_reg_pool,
+            y=tourney.pool_y_nonfuel,
+            sample_weight=tourney.pool_weights,
+            alpha=10.0,
+            hurdle_indices=[23, 24, 29],
             min_hurdle_weight=0.35,
         )
-        logger.info("Fitted fuel blend weights (%d members, hurdle floor 0.20): %s", len(fuel_blend_weights), np.round(fuel_blend_weights, 3))
-        logger.info("Fitted nonfuel blend weights (%d members, hurdle floor 0.35): %s", len(nf_blend_weights), np.round(nf_blend_weights, 3))
+        logger.info("Fitted fuel cross-target blend weights (%d meta-features, hurdle floor 0.20): %s", len(fuel_blend_weights), np.round(fuel_blend_weights, 3))
+        logger.info("Fitted nonfuel cross-target blend weights (%d meta-features, hurdle floor 0.35): %s", len(nf_blend_weights), np.round(nf_blend_weights, 3))
 
         # 3. Overall linear calibration (strictly zero intercept to protect zero floor)
-        raw_fuel = debiased_fuel_m @ fuel_blend_weights
+        raw_fuel = M_reg_pool @ fuel_blend_weights
         fuel_slope, fuel_intercept = calibration.fit_linear_calibration(tourney.pool_y_fuel, raw_fuel, force_zero_intercept=True)
-        raw_nf = debiased_nf_m @ nf_blend_weights
+        raw_nf = M_reg_pool @ nf_blend_weights
         nf_slope, nf_intercept = calibration.fit_linear_calibration(tourney.pool_y_nonfuel, raw_nf, force_zero_intercept=True)
         logger.info("Fuel linear cal (zero-intercept): slope=%.3f, intercept=%.3f", fuel_slope, fuel_intercept)
         logger.info("Nonfuel linear cal (zero-intercept): slope=%.3f, intercept=%.3f", nf_slope, nf_intercept)
@@ -596,9 +709,12 @@ class TournamentEngine:
         blup_eta_nf = calibration.fit_blup_shrinkage(tourney.pool_y_nonfuel, raw_nf, blup_nf_vec, act_mask_nf)
         logger.info("Fitted BLUP shrinkage: fuel_eta=%.3f, nonfuel_eta=%.3f", blup_eta_f, blup_eta_nf)
 
-        # Calibrated fuel & nonfuel predictions on the pool:
+        # Calibrated fuel & nonfuel predictions on the pool with extreme dead gating:
         cal_fuel_pred = np.maximum(0.0, raw_fuel * fuel_slope + fuel_intercept + blup_eta_f * blup_f_vec)
         cal_nf_pred = np.maximum(0.0, raw_nf * nf_slope + nf_intercept + blup_eta_nf * blup_nf_vec)
+        m3_b_pool = tourney.pool_level2_X["m1_baskets"].to_numpy() if "m1_baskets" in tourney.pool_level2_X.columns else np.zeros(len(cal_fuel_pred))
+        cal_fuel_pred = calibration.apply_extreme_dead_gate(cal_fuel_pred, tourney.pool_p_fuel_act, m3_b_pool)
+        cal_nf_pred = calibration.apply_extreme_dead_gate(cal_nf_pred, tourney.pool_p_store_act, m3_b_pool)
 
         # 5. Level-2 Structural Meta-Learner (Wolpert 1992 Stacking)
         cal_level2_X = tourney.pool_level2_X.copy()
@@ -691,19 +807,9 @@ class TournamentEngine:
             fuel_shrinkage, nf_alpha, nf_beta, inact_thresh
         )
 
-        # 8. Target Priors for the Test Set (2025-12-01 Summer):
-        target_counts = {
-            self.stable_idx: 1955.0,
-            self.fg_idx: 1575.0,
-            self.inact_idx: 1445.0,
-            self.label_to_idx["Existing-category growth: Other"]: 305.0,
-            self.label_to_idx["Existing-category growth: Beverages"]: 133.0,
-            self.label_to_idx["Existing-category growth: Food & beverage"]: 75.0,
-        }
-        target_priors = np.zeros(self.n_classes, dtype=np.float64)
-        for idx, count in target_counts.items():
-            target_priors[idx] = count
-        target_priors = target_priors / target_priors.sum()
+        # 8. Seasonally-Adjusted Empirical Prior from training labels in pool (EDA Section 13.1 & 18.2)
+        pi_empirical = np.bincount(tourney.pool_y_opp, minlength=self.n_classes).astype(np.float64)
+        target_priors = pi_empirical / pi_empirical.sum()
 
         from sklearn.metrics import f1_score
         pred_baseline = calibration.decide(masked_pool, class_weights)

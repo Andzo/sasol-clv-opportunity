@@ -42,6 +42,7 @@ from src.tournament import (
     TournamentResult,
     apply_boundary_arbitration,
     build_level2_structural_features,
+    select_top_features_by_gain,
 )
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,10 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_probs_sim = tourney_res.pool_probs_sim[eval_mask_indices]
         eval_phys_fg = tourney_res.pool_phys_fg[eval_mask_indices]
         eval_phys_inact = tourney_res.pool_phys_inact[eval_mask_indices]
+        eval_p_fuel_act = tourney_res.pool_p_fuel_act[eval_mask_indices]
+        eval_p_store_act = tourney_res.pool_p_store_act[eval_mask_indices]
+        eval_mu_fuel_pos = tourney_res.pool_mu_fuel_pos[eval_mask_indices]
+        eval_mu_nf_pos = tourney_res.pool_mu_nf_pos[eval_mask_indices]
         eval_level2_X = tourney_res.pool_level2_X.iloc[eval_mask_indices].copy()
         eval_ids = [tourney_res.pool_ids[i] for i in eval_mask_indices]
     else:
@@ -121,15 +126,29 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_probs_sim = np.zeros((len(eval_ids), n_classes))
         eval_phys_fg = np.zeros(len(eval_ids))
         eval_phys_inact = np.zeros(len(eval_ids))
+        eval_p_fuel_act = np.zeros(len(eval_ids))
+        eval_p_store_act = np.zeros(len(eval_ids))
+        eval_mu_fuel_pos = np.zeros(len(eval_ids))
+        eval_mu_nf_pos = np.zeros(len(eval_ids))
         eval_level2_X = pd.DataFrame()
 
-    # Apply per-member debiasing and blend weights
+    # Apply per-member debiasing
     eval_fuel_debiased = calibration.apply_member_debiasing(eval_fuel_m, cal_eval.fuel_debias)
-    eval_fuel_raw = eval_fuel_debiased @ cal_eval.fuel_blend_weights
+    eval_nf_debiased = calibration.apply_member_debiasing(eval_nf_m, cal_eval.nf_debias)
+
+    # Build Cross-Target Regression Meta-Matrix (30 features)
+    M_reg_eval = calibration.build_regression_meta_matrix(
+        debiased_fuel_m=eval_fuel_debiased,
+        debiased_nf_m=eval_nf_debiased,
+        p_fuel_active=eval_p_fuel_act,
+        p_store_active=eval_p_store_act,
+        mu_fuel_pos=eval_mu_fuel_pos,
+        mu_nf_pos=eval_mu_nf_pos,
+    )
+    eval_fuel_raw = M_reg_eval @ cal_eval.fuel_blend_weights
     eval_fuel_cal = calibration.apply_linear_calibration(eval_fuel_raw, cal_eval.fuel_slope, cal_eval.fuel_intercept)
 
-    eval_nf_debiased = calibration.apply_member_debiasing(eval_nf_m, cal_eval.nf_debias)
-    eval_nf_raw = eval_nf_debiased @ cal_eval.nf_blend_weights
+    eval_nf_raw = M_reg_eval @ cal_eval.nf_blend_weights
     eval_nf_cal = calibration.apply_linear_calibration(eval_nf_raw, cal_eval.nf_slope, cal_eval.nf_intercept)
 
     # Customer BLUP fixed effects for forward holdout evaluation
@@ -145,16 +164,20 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         eval_nf_cal, eval_blup_nf_vec, cal_eval.blup_eta_nf, active_mask=(eval_nf_cal > 0.05)
     )
 
+    eval_m3_b = eval_snap.features["m3_baskets"].to_numpy() if "m3_baskets" in eval_snap.features.columns else np.zeros(len(eval_ids))
+    eval_fuel_pred = calibration.apply_extreme_dead_gate(eval_fuel_cal, eval_p_fuel_act, eval_m3_b)
+    eval_nf_pred = calibration.apply_extreme_dead_gate(eval_nf_cal, eval_p_store_act, eval_m3_b)
+
     # Opportunity Probability Fusion & Level-2 Stacking
     wb, wh, ws, b_fg, b_in = cal_eval.prob_blend_weights
-    eval_probs_fused = wb * eval_probs_base + wh * eval_probs_hier + ws * eval_probs_sim
+    eval_probs_fused = wb * eval_probs_base + wh * eval_probs_hier
     eval_probs_fused[:, fg_idx] += b_fg * eval_phys_fg
     eval_probs_fused[:, inact_idx] += b_in * eval_phys_inact
 
     if cal_eval.level2_meta_classifier is not None and len(eval_level2_X) > 0:
-        eval_level2_X["pred_fuel"] = eval_fuel_cal
-        eval_level2_X["pred_nf"] = eval_nf_cal
-        litres_eval = np.expm1(np.minimum(eval_fuel_cal * 2.352825386185113, 15.0))
+        eval_level2_X["pred_fuel"] = eval_fuel_pred
+        eval_level2_X["pred_nf"] = eval_nf_pred
+        litres_eval = np.expm1(np.minimum(eval_fuel_pred * 2.352825386185113, 15.0))
         if "pred_litres" in eval_level2_X.columns and "fuel_hurdle_margin_litres" in eval_level2_X.columns:
             eval_level2_X["fuel_hurdle_margin_litres"] += litres_eval - eval_level2_X["pred_litres"].to_numpy()
         eval_level2_X["pred_litres"] = litres_eval
@@ -165,24 +188,36 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs_fused, cal_eval.temperature)
     eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
 
-    # Opportunity Decision with Calibrated Decision Weights
-    eval_opp_decisions = calibration.decide(eval_probs_masked, cal_eval.class_weights)
-    eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
+    # Exact 3-step decision sequence on eval_snap:
+    # 1. Active feasibility veto
+    m1_b_eval = eval_snap.features["m1_baskets"].to_numpy() if "m1_baskets" in eval_snap.features.columns else np.zeros(len(eval_snap.features))
+    d_last_eval = eval_snap.features["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in eval_snap.features.columns else np.full(len(eval_snap.features), 999.0)
+    eval_active_veto = (m1_b_eval > 0) | (d_last_eval < 45)
+    eval_probs_masked[eval_active_veto, inact_idx] = 0.0
+    eval_probs_masked = eval_probs_masked / np.maximum(eval_probs_masked.sum(axis=1, keepdims=True), 1e-12)
 
-    # Inactivity shrinkage and gating using continuous p_active_eval
-    p_active_eval = 1.0 - eval_probs_masked[:, inact_idx]
-    p_store_eval = (
-        eval_level2_X["p_store_active"].to_numpy()
-        if "p_store_active" in eval_level2_X.columns
-        else np.clip(eval_nf_raw / np.maximum(np.percentile(eval_nf_raw[eval_nf_raw > 0], 90), 0.1), 0.0, 1.0)
+    # 2. Prior alignment via dual ascent
+    eval_opp_decisions = calibration.decide_with_prior_alignment(
+        eval_probs_masked,
+        class_weights=cal_eval.class_weights,
+        target_priors=cal_eval.precision_weighted_target_priors,
+        macro_classes=(inact_idx, stable_idx, fg_idx),
     )
-    eval_fuel_pred = calibration.apply_shrinkage(eval_fuel_cal, p_active_eval, cal_eval.fuel_shrinkage_power)
-    eval_fuel_pred = calibration.apply_inactivity_gate(eval_fuel_pred, p_active_eval, threshold=cal_eval.inact_threshold)
-    eval_nf_pred = calibration.apply_dual_shrinkage(eval_nf_cal, p_active_eval, p_store_eval, cal_eval.nf_alpha, cal_eval.nf_beta)
-    eval_nf_pred = calibration.apply_inactivity_gate(eval_nf_pred, p_active_eval, threshold=cal_eval.inact_threshold)
+    eval_opp_labels = np.array([idx_to_label[i] for i in eval_opp_decisions], dtype=object)
 
-    # Boundary Arbitration on false inactives
-    eval_opp_labels = apply_boundary_arbitration(eval_opp_labels, eval_snap.features, eval_fuel_pred)
+    # 3. Commuter Hurdle Arbitration
+    target_fg_seats_eval = int(round(cal_eval.precision_weighted_target_priors[fg_idx] * len(eval_snap.features)))
+    eval_opp_labels = calibration.arbitrate_commuter_pool(
+        opp_labels=eval_opp_labels,
+        features=eval_snap.features,
+        pred_fuel=eval_fuel_pred,
+        p_phys_fg=eval_phys_fg,
+        p_clf_fg=eval_probs_masked[:, fg_idx],
+        p_clf_stable=eval_probs_masked[:, stable_idx],
+        target_fg_capacity=target_fg_seats_eval,
+        weights=cal_eval.commuter_weights,
+    )
+    eval_opp_labels = list(eval_opp_labels)
 
     # Score evaluation snapshot
     eval_scores = metrics.score(
@@ -214,36 +249,53 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     full_panel = stack(full_snaps)
     logger.info("Full training panel: %d instances x %d features", len(full_panel.X), full_panel.X.shape[1])
 
-    # Temporal exponential decay (lambda=0.077) x summer multiplier (2.2x) x cluster normalization
+    # Temporal exponential decay (lambda=0.10) x summer multiplier (2.2x), removing 15x n_snaps_cust distortion
     full_cutoffs_dt = pd.to_datetime(full_panel.cutoffs)
     test_dt = pd.Timestamp(test_cutoff)
     months_delta_full = np.asarray((test_dt.year - full_cutoffs_dt.year) * 12 + (test_dt.month - full_cutoffs_dt.month), dtype=np.float32)
-    temporal_decay_full = np.exp(-0.077 * np.maximum(months_delta_full, 0.0))
+    temporal_decay_full = np.exp(-0.10 * np.maximum(months_delta_full, 0.0))
     is_summer_full = full_cutoffs_dt.month.isin([11, 12, 1])
     seasonal_mult_full = np.where(is_summer_full, 2.2, 1.0)
-    full_cust_counts = pd.Series(full_panel.X.index).value_counts()
-    n_snaps_cust_full = np.asarray(full_panel.X.index.map(full_cust_counts), dtype=np.float32)
-    full_sample_weights = (temporal_decay_full * seasonal_mult_full / np.maximum(n_snaps_cust_full, 1.0)).astype(np.float32)
+    full_sample_weights = (temporal_decay_full * seasonal_mult_full).astype(np.float32)
     full_sample_weights = full_sample_weights / max(float(full_sample_weights.mean()), 1e-6)
-    logger.info("Full panel sample weighting applied: temporal decay x summer (2.2x) x cluster normalization")
+    logger.info("Full panel sample weighting applied: temporal decay (0.10) x summer (2.2x)")
 
-    logger.info("Fitting Phase 2 final_fuel_model (RegressorEnsemble)...")
+    # Target-specific feature pruning (top 165 numeric features per target)
+    logger.info("Pruning top 165 features for fuel and nonfuel regressors...")
+    final_fuel_features = select_top_features_by_gain(
+        full_panel.X,
+        full_panel.labels["CLV_fuel"].to_numpy(),
+        sample_weight=full_sample_weights,
+        top_k=165,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+    )
+    final_nf_features = select_top_features_by_gain(
+        full_panel.X,
+        full_panel.labels["CLV_nonfuel"].to_numpy(),
+        sample_weight=full_sample_weights,
+        top_k=165,
+        seed=cfg.models.seed,
+        n_jobs=cfg.models.n_jobs,
+    )
+
+    logger.info("Fitting Phase 2 final_fuel_model (RegressorEnsemble on top-165 features)...")
     final_fuel_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.25,
         use_gpu=cfg.models.use_gpu,
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_fuel_features], full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
-    logger.info("Fitting Phase 2 final_nf_model (RegressorEnsemble)...")
+    logger.info("Fitting Phase 2 final_nf_model (RegressorEnsemble on top-165 features)...")
     final_nf_model = RegressorEnsemble(
         members=cfg.models.regression_members,
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         tweedie_power=1.40,
         use_gpu=cfg.models.use_gpu,
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_nf_features], full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_hurdle_fuel (BaggedTwoPartFuelHurdle)...")
     final_hurdle_fuel = BaggedTwoPartFuelHurdle(
@@ -252,7 +304,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         power_shrinkage=0.98,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_fuel_features], full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_hurdle_nf (BaggedTwoPartNonfuelHurdle)...")
     final_hurdle_nf = BaggedTwoPartNonfuelHurdle(
@@ -262,14 +314,14 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         zero_gate_threshold=0.04,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_nf_features], full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_mq_fuel (MultiQuantileTwoPartHurdle)...")
     final_mq_fuel = MultiQuantileTwoPartHurdle(
         seed=cfg.models.seed,
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_fuel_features], full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_mq_nf (MultiQuantileTwoPartHurdle)...")
     final_mq_nf = MultiQuantileTwoPartHurdle(
@@ -277,7 +329,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
         target_type="nonfuel",
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_nf_features], full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_phys_fuel (PhysicalBasketTicketRegressor)...")
     final_phys_fuel = PhysicalBasketTicketRegressor(
@@ -286,7 +338,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
         target_type="fuel",
-    ).fit(full_panel.X, full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_fuel_features], full_panel.labels["CLV_fuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_phys_nf (PhysicalBasketTicketRegressor)...")
     final_phys_nf = PhysicalBasketTicketRegressor(
@@ -295,7 +347,7 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         n_jobs=cfg.models.n_jobs,
         use_gpu=cfg.models.use_gpu,
         target_type="nonfuel",
-    ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
+    ).fit(full_panel.X[final_nf_features], full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
     logger.info("Fitting Phase 2 final_opp_model (ClassifierEnsemble)...")
     opp_weights = [0.40, 0.25, 0.35] if tuple(cfg.models.classification_members) == ("lgbm", "catboost", "xgb") else None
@@ -326,8 +378,6 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         use_gpu=cfg.models.use_gpu,
     ).fit(full_panel.X, full_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=full_sample_weights)
 
-    # Skip fitting final_rule7_sim (ws = 0.0 in fusion, saves ~4 min compute and prevents KeyError)
-
     # 5. Phase 3: Test Customer Inference (2025-12-01)
     logger.info("--- Phase 3: Test Customer Inference (%s) ---", test_cutoff.date())
     test_snap = builder.build(test_cutoff, with_labels=False)
@@ -339,26 +389,41 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_mask_rows = [test_id_to_row[cid] for cid in test_ids]
     aligned_mask = test_snap.mask[test_mask_rows]
 
-    # Predict test members
-    test_pred_f_direct = final_fuel_model.predict_members(test_feats)
-    test_pred_f_hurdle = final_hurdle_fuel.predict(test_feats).reshape(-1, 1)
-    test_pred_f_mq = final_mq_fuel.predict(test_feats).reshape(-1, 1)
-    test_pred_f_phys = final_phys_fuel.predict(test_feats).reshape(-1, 1)
+    # Predict test members using top-165 selected features
+    test_pred_f_direct = final_fuel_model.predict_members(test_feats[final_fuel_features])
+    test_pred_f_hurdle = final_hurdle_fuel.predict(test_feats[final_fuel_features]).reshape(-1, 1)
+    test_pred_f_mq = final_mq_fuel.predict(test_feats[final_fuel_features]).reshape(-1, 1)
+    test_pred_f_phys = final_phys_fuel.predict(test_feats[final_fuel_features]).reshape(-1, 1)
     test_fuel_m = np.column_stack([test_pred_f_direct, test_pred_f_hurdle, test_pred_f_mq, test_pred_f_phys])
 
-    test_pred_nf_direct = final_nf_model.predict_members(test_feats)
-    test_pred_nf_hurdle = final_hurdle_nf.predict(test_feats).reshape(-1, 1)
-    test_pred_nf_mq = final_mq_nf.predict(test_feats).reshape(-1, 1)
-    test_pred_nf_phys = final_phys_nf.predict(test_feats).reshape(-1, 1)
+    test_pred_nf_direct = final_nf_model.predict_members(test_feats[final_nf_features])
+    test_pred_nf_hurdle = final_hurdle_nf.predict(test_feats[final_nf_features]).reshape(-1, 1)
+    test_pred_nf_mq = final_mq_nf.predict(test_feats[final_nf_features]).reshape(-1, 1)
+    test_pred_nf_phys = final_phys_nf.predict(test_feats[final_nf_features]).reshape(-1, 1)
     test_nf_m = np.column_stack([test_pred_nf_direct, test_pred_nf_hurdle, test_pred_nf_mq, test_pred_nf_phys])
 
-    # Per-member debiasing and blend weights
+    # Per-member debiasing
     test_fuel_debiased = calibration.apply_member_debiasing(test_fuel_m, cal.fuel_debias)
-    test_fuel_raw = test_fuel_debiased @ cal.fuel_blend_weights
+    test_nf_debiased = calibration.apply_member_debiasing(test_nf_m, cal.nf_debias)
+
+    p_fuel_active_test = final_hurdle_fuel.classifier.predict_proba(test_feats[final_fuel_features])
+    p_store_active_test = final_hurdle_nf.classifier.predict_proba(test_feats[final_nf_features])
+    mu_fuel_pos_test, sigma_fuel_pos_test = final_mq_fuel.predict_conditional_pos(test_feats[final_fuel_features])
+    mu_nf_pos_test, sigma_nf_pos_test = final_mq_nf.predict_conditional_pos(test_feats[final_nf_features])
+
+    # Build Cross-Target Regression Meta-Matrix (30 features)
+    M_reg_test = calibration.build_regression_meta_matrix(
+        debiased_fuel_m=test_fuel_debiased,
+        debiased_nf_m=test_nf_debiased,
+        p_fuel_active=p_fuel_active_test,
+        p_store_active=p_store_active_test,
+        mu_fuel_pos=mu_fuel_pos_test,
+        mu_nf_pos=mu_nf_pos_test,
+    )
+    test_fuel_raw = M_reg_test @ cal.fuel_blend_weights
     test_fuel_cal = calibration.apply_linear_calibration(test_fuel_raw, cal.fuel_slope, cal.fuel_intercept)
 
-    test_nf_debiased = calibration.apply_member_debiasing(test_nf_m, cal.nf_debias)
-    test_nf_raw = test_nf_debiased @ cal.nf_blend_weights
+    test_nf_raw = M_reg_test @ cal.nf_blend_weights
     test_nf_cal = calibration.apply_linear_calibration(test_nf_raw, cal.nf_slope, cal.nf_intercept)
 
     # Customer BLUP fixed effects for test customers
@@ -374,36 +439,35 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         test_nf_cal, test_blup_nf_vec, cal.blup_eta_nf, active_mask=(test_nf_cal > 0.05)
     )
 
+    test_m3_b = test_feats["m3_baskets"].to_numpy() if "m3_baskets" in test_feats.columns else np.zeros(len(test_ids))
+    test_pred_fuel = calibration.apply_extreme_dead_gate(test_fuel_cal, p_fuel_active_test, test_m3_b)
+    test_pred_nonfuel = calibration.apply_extreme_dead_gate(test_nf_cal, p_store_active_test, test_m3_b)
+
     # Opportunity Classifier Inferences
     test_probs_base = final_opp_model.predict_proba(test_feats)
     test_probs_hier = final_hier_model.predict_proba(test_feats)
-    test_probs_sim = np.zeros((len(test_feats), n_classes), dtype=np.float64)
 
     # Physical hurdle exceedance & joint inactivity CDF probabilities using calibrated fuel predictions
     p_phys_fg_test, p_phys_inact_test = calibration.compute_physical_hurdle_probabilities(
         test_feats,
         final_mq_fuel,
-        test_fuel_cal,
+        test_pred_fuel,
         final_store_model,
     )
 
     wb, wh, ws, b_fg, b_in = cal.prob_blend_weights
-    test_probs_fused = wb * test_probs_base + wh * test_probs_hier + ws * test_probs_sim
+    test_probs_fused = wb * test_probs_base + wh * test_probs_hier
     test_probs_fused[:, fg_idx] += b_fg * p_phys_fg_test
     test_probs_fused[:, inact_idx] += b_in * p_phys_inact_test
-
-    p_fuel_active_test = final_hurdle_fuel.classifier.predict_proba(test_feats)
-    p_store_active_test = final_hurdle_nf.classifier.predict_proba(test_feats)
-    mu_fuel_pos_test, sigma_fuel_pos_test = final_mq_fuel.predict_conditional_pos(test_feats)
 
     if cal.level2_meta_classifier is not None:
         test_level2_X = build_level2_structural_features(
             X=test_feats,
             probs_base=test_probs_base,
             probs_hier=test_probs_hier,
-            probs_sim=test_probs_sim,
-            pred_fuel=test_fuel_cal,
-            pred_nf=test_nf_cal,
+            probs_sim=None,
+            pred_fuel=test_pred_fuel,
+            pred_nf=test_pred_nonfuel,
             p_fuel_active=p_fuel_active_test,
             p_store_active=p_store_active_test,
             mu_fuel_pos=mu_fuel_pos_test,
@@ -415,7 +479,8 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_probs_scaled = calibration.apply_temperature_scaling(test_probs_fused, cal.temperature)
     test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
 
-    # Feasibility veto: Customers with recent activity cannot be Inactivity
+    # 3-Step Decision Pipeline on test_snap (identical to eval_snap):
+    # 1. Active feasibility veto
     m1_b = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))
     d_last = test_feats["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in test_feats.columns else np.full(len(test_feats), 999.0)
     test_active_veto = (m1_b > 0) | (d_last < 45)
@@ -423,29 +488,55 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
     test_probs_masked[test_active_veto, inact_idx] = 0.0
     test_probs_masked = test_probs_masked / np.maximum(test_probs_masked.sum(axis=1, keepdims=True), 1e-12)
 
-    # Conformal Selective Prior Alignment
-    test_opp_decisions = calibration.conformal_selective_arbitration(
-        probs=test_probs_masked,
-        features=test_feats,
-        pred_fuel=test_fuel_cal,
+    # Compute Seasonally-Adjusted Test Target Priors (50% 2024-12 Summer + 50% 2025-09 Latest Regime)
+    mask_summer24 = (pd.to_datetime(full_panel.cutoffs) == pd.Timestamp("2024-12-01"))
+    mask_regime25 = (pd.to_datetime(full_panel.cutoffs) == pd.Timestamp("2025-09-01"))
+    y_opp_full = full_panel.labels["Opportunity"].map(label_to_idx).to_numpy()
+    if np.any(mask_summer24) and np.any(mask_regime25):
+        pi_summer24 = np.bincount(y_opp_full[mask_summer24], minlength=n_classes).astype(np.float64)
+        pi_summer24 = pi_summer24 / pi_summer24.sum()
+        pi_regime25 = np.bincount(y_opp_full[mask_regime25], minlength=n_classes).astype(np.float64)
+        pi_regime25 = pi_regime25 / pi_regime25.sum()
+        pi_test_empirical = 0.50 * pi_summer24 + 0.50 * pi_regime25
+    else:
+        pi_test_empirical = cal.target_priors
+
+    pred_baseline_pool = calibration.decide(
+        calibration.apply_eligibility_mask(
+            calibration.apply_temperature_scaling(
+                tourney_res.pool_probs_base, cal.temperature
+            ), tourney_res.pool_masks
+        ), cal.class_weights
+    )
+    from sklearn.metrics import f1_score
+    oof_f1_test = f1_score(
+        tourney_res.pool_y_opp,
+        pred_baseline_pool,
+        average=None,
+        labels=list(range(n_classes)),
+        zero_division=0.0,
+    )
+    test_target_priors = calibration.compute_precision_weighted_target_priors(
+        pi_test_empirical,
+        oof_f1_test,
+        macro_classes=(stable_idx, fg_idx, inact_idx),
+    )
+
+    # 2. Prior alignment via dual ascent
+    test_opp_decisions = calibration.decide_with_prior_alignment(
+        test_probs_masked,
         class_weights=cal.class_weights,
-        target_priors=cal.precision_weighted_target_priors,
+        target_priors=test_target_priors,
         macro_classes=(inact_idx, stable_idx, fg_idx),
-        fg_idx=fg_idx,
-        stable_idx=stable_idx,
-        inact_idx=inact_idx,
-        mu_fuel_pos=mu_fuel_pos_test,
-        sigma_fuel_pos=sigma_fuel_pos_test,
-        tau_conf=0.40,
     )
     test_opp_labels = np.array([idx_to_label[i] for i in test_opp_decisions], dtype=object)
 
-    # Commuter Pool Arbitration
-    target_fg_seats = int(round(cal.precision_weighted_target_priors[fg_idx] * len(test_feats)))
+    # 3. Commuter Hurdle Arbitration
+    target_fg_seats = int(round(test_target_priors[fg_idx] * len(test_feats)))
     test_opp_labels = calibration.arbitrate_commuter_pool(
         opp_labels=test_opp_labels,
         features=test_feats,
-        pred_fuel=test_fuel_cal,
+        pred_fuel=test_pred_fuel,
         p_phys_fg=p_phys_fg_test,
         p_clf_fg=test_probs_masked[:, fg_idx],
         p_clf_stable=test_probs_masked[:, stable_idx],
@@ -453,31 +544,6 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
         weights=cal.commuter_weights,
     )
     test_opp_labels = list(test_opp_labels)
-
-    # Inactivity shrinkage and dynamic zero-gating using continuous p_active_test saved before active_veto
-    p_store_test = final_hurdle_nf.classifier.predict_proba(test_feats)
-    test_pred_fuel = calibration.apply_shrinkage(test_fuel_cal, p_active_test, cal.fuel_shrinkage_power)
-    test_pred_fuel = calibration.apply_inactivity_gate(test_pred_fuel, p_active_test, threshold=cal.inact_threshold)
-    test_pred_nonfuel = calibration.apply_dual_shrinkage(
-        test_nf_cal, p_active_test, p_store_test, cal.nf_alpha, cal.nf_beta
-    )
-    test_pred_nonfuel = calibration.apply_inactivity_gate(test_pred_nonfuel, p_active_test, threshold=cal.inact_threshold)
-
-    if save_predictions:
-        eda_cache = cfg.paths.reports_dir / "eda" / "cache"
-        eda_cache.mkdir(parents=True, exist_ok=True)
-        test_df = pd.DataFrame({
-            "pred_fuel_raw": test_fuel_raw,
-            "pred_fuel_final": test_pred_fuel,
-            "pred_nonfuel_raw": test_nf_raw,
-            "pred_nonfuel_final": test_pred_nonfuel,
-            "pred_opportunity": test_opp_labels,
-            "p_active": p_active_test,
-            "p_store": p_store_test,
-        }, index=pd.Index(test_ids, name="ID"))
-        for i, l in enumerate(opp_labels):
-            test_df[f"prob_{l}"] = test_probs_masked[:, i]
-        test_df.to_parquet(eda_cache / "test_predictions.parquet")
         logger.info("Saved test predictions to %s", eda_cache / "test_predictions.parquet")
 
     # 6. Submission Build & Strict Validation

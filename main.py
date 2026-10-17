@@ -15,7 +15,7 @@ def main() -> int:
         "--no-cache", action="store_true", help="Bypass feature and snapshot disk caches"
     )
     parser.add_argument(
-        "--first-train-cutoff", default="2024-07-01", help="Earliest snapshot cutoff (default: 2024-07-01)"
+        "--first-train-cutoff", default="2024-09-01", help="Earliest snapshot cutoff (default: 2024-09-01)"
     )
     parser.add_argument(
         "--calibration-cutoff", default="2025-06-01", help="Snapshot cutoff for blend/weight calibration"

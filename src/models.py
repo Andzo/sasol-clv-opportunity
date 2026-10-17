@@ -298,15 +298,28 @@ CAT_STRUCTURAL_FEATURES: tuple[str, ...] = (
 )
 
 
+def _prepare_model_X(model: Any, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
+    """Passes full X (with integer categorical IDs) to CatBoost, strips them for all other models."""
+    if not isinstance(X, pd.DataFrame):
+        return X
+    if isinstance(model, (CatBoostRegressor, CatBoostClassifier)):
+        return X
+    cols_to_drop = [c for c in CAT_STRUCTURAL_FEATURES if c in X.columns]
+    if cols_to_drop:
+        return X.drop(columns=cols_to_drop)
+    return X
+
+
 def _fit_with_sample_weight(model: Any, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> None:
     """Safely fits model with sample_weight, properly forwarding to sklearn Pipeline steps and CatBoost cat_features."""
+    X_in = _prepare_model_X(model, X)
     fit_kwargs: dict[str, Any] = {}
     if sample_weight is not None:
         fit_kwargs["sample_weight"] = sample_weight
 
-    # Forward cat_features to CatBoost if present in X
-    if isinstance(model, (CatBoostRegressor, CatBoostClassifier)) and isinstance(X, pd.DataFrame):
-        cats_present = [c for c in CAT_STRUCTURAL_FEATURES if c in X.columns]
+    # Forward cat_features to CatBoost if present in X_in
+    if isinstance(model, (CatBoostRegressor, CatBoostClassifier)) and isinstance(X_in, pd.DataFrame):
+        cats_present = [c for c in CAT_STRUCTURAL_FEATURES if c in X_in.columns]
         if cats_present:
             fit_kwargs["cat_features"] = cats_present
 
@@ -315,27 +328,27 @@ def _fit_with_sample_weight(model: Any, X: pd.DataFrame, y: np.ndarray, sample_w
         step_name = model.steps[-1][0]
         if sample_weight is not None:
             try:
-                model.fit(X, y, **{f"{step_name}__sample_weight": sample_weight})
+                model.fit(X_in, y, **{f"{step_name}__sample_weight": sample_weight})
                 return
             except (TypeError, ValueError):
                 pass
-        model.fit(X, y)
+        model.fit(X_in, y)
         return
 
     try:
-        model.fit(X, y, **fit_kwargs)
+        model.fit(X_in, y, **fit_kwargs)
         return
     except (TypeError, ValueError):
         pass
 
     if sample_weight is not None:
         try:
-            model.fit(X, y, sample_weight=sample_weight)
+            model.fit(X_in, y, sample_weight=sample_weight)
             return
         except (TypeError, ValueError):
             pass
 
-    model.fit(X, y)
+    model.fit(X_in, y)
 
 
 class RegressorEnsemble:
@@ -372,7 +385,7 @@ class RegressorEnsemble:
         """(n_samples, n_members) matrix of clipped member predictions averaged over seeds."""
         col_list = []
         for sub_list in self.models:
-            seed_preds = [np.clip(m.predict(X), 0.0, None) for m in sub_list]
+            seed_preds = [np.clip(m.predict(_prepare_model_X(m, X)), 0.0, None) for m in sub_list]
             col_list.append(np.mean(seed_preds, axis=0))
         return np.column_stack(col_list)
 
@@ -440,7 +453,7 @@ class ClassifierEnsemble:
         for sub_list in self.models:
             seed_probs = []
             for model in sub_list:
-                p = np.asarray(model.predict_proba(X), dtype="float64")
+                p = np.asarray(model.predict_proba(_prepare_model_X(model, X)), dtype="float64")
                 full = np.zeros((len(X), self.n_classes))
                 full[:, self.classes_] = p
                 seed_probs.append(full)
@@ -644,49 +657,6 @@ class HierarchicalOpportunityClassifier:
         self.temp_ret: float = 1.0
         self.temp_fg: float = 1.0
 
-    def _fit_gate_temperature(self, X: pd.DataFrame, y_bin: np.ndarray, sw: np.ndarray | None = None) -> float:
-        """Calibrates gate temperature using 3-fold OOF cross-entropy minimization."""
-        if len(np.unique(y_bin)) < 2:
-            return 1.0
-        from sklearn.model_selection import StratifiedKFold
-        import scipy.special as sp
-        from scipy.optimize import minimize_scalar
-
-        n_pos = int(np.sum(y_bin == 1))
-        n_neg = int(np.sum(y_bin == 0))
-        n_splits = min(3, max(2, min(n_pos, n_neg)))
-        if n_splits < 2:
-            return 1.0
-
-        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.seed)
-        oof_z = np.zeros(len(y_bin), dtype=np.float64)
-        clf = LGBMClassifier(
-            n_estimators=100, learning_rate=0.04, num_leaves=16,
-            random_state=self.seed, n_jobs=self.n_jobs, verbose=-1,
-        )
-        for tr_idx, val_idx in skf.split(X, y_bin):
-            X_tr, y_tr = X.iloc[tr_idx], y_bin[tr_idx]
-            X_val = X.iloc[val_idx]
-            sw_tr = sw[tr_idx] if sw is not None else None
-            if sw_tr is not None:
-                clf.fit(X_tr, y_tr, sample_weight=sw_tr)
-            else:
-                clf.fit(X_tr, y_tr)
-            p_val = np.clip(clf.predict_proba(X_val)[:, 1], 1e-5, 1.0 - 1e-5)
-            oof_z[val_idx] = sp.logit(p_val)
-
-        y_float = np.asarray(y_bin, dtype=np.float64)
-        w = np.ones(len(y_bin), dtype=np.float64) if sw is None else np.asarray(sw, dtype=np.float64)
-        w = w / max(float(w.mean()), 1e-6)
-
-        def nll(T: float) -> float:
-            z_t = oof_z / max(T, 0.1)
-            loss = np.where(y_float == 1, np.log1p(np.exp(-z_t)), np.log1p(np.exp(z_t)))
-            return float(np.mean(loss * w))
-
-        res = minimize_scalar(nll, bounds=(0.5, 3.5), method="bounded")
-        return float(res.x)
-
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "HierarchicalOpportunityClassifier":
         y_arr = np.asarray(y, dtype=int)
         y_inact = (y_arr == self.inact_idx).astype(int)
@@ -716,28 +686,28 @@ class HierarchicalOpportunityClassifier:
         sw_ret = sw[m_ret] if sw is not None else None
         _fit_with_sample_weight(self.clf_ret_multi, X[m_ret], y_ret_multi, sw_ret)
 
-        self.temp_inact = self._fit_gate_temperature(X, y_inact, sw=sw)
-        self.temp_ret = self._fit_gate_temperature(X[m_act], y_ret, sw=sw_act)
-        self.temp_fg = self._fit_gate_temperature(X[m_fs], y_fg, sw=sw_fs)
+        self.temp_inact = 1.0
+        self.temp_ret = 1.0
+        self.temp_fg = 1.0
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         p_inact_raw = (
-            0.40 * self.clf_inact_lgb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_inact_cb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_inact_xgb.predict_proba(X)[:, 1]
+            0.40 * self.clf_inact_lgb.predict_proba(_prepare_model_X(self.clf_inact_lgb, X))[:, 1]
+            + 0.30 * self.clf_inact_cb.predict_proba(_prepare_model_X(self.clf_inact_cb, X))[:, 1]
+            + 0.30 * self.clf_inact_xgb.predict_proba(_prepare_model_X(self.clf_inact_xgb, X))[:, 1]
         )
         p_ret_raw = (
-            0.40 * self.clf_ret_lgb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_ret_cb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_ret_xgb.predict_proba(X)[:, 1]
+            0.40 * self.clf_ret_lgb.predict_proba(_prepare_model_X(self.clf_ret_lgb, X))[:, 1]
+            + 0.30 * self.clf_ret_cb.predict_proba(_prepare_model_X(self.clf_ret_cb, X))[:, 1]
+            + 0.30 * self.clf_ret_xgb.predict_proba(_prepare_model_X(self.clf_ret_xgb, X))[:, 1]
         )
         p_fg_raw = (
-            0.40 * self.clf_fg_lgb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_fg_cb.predict_proba(X)[:, 1]
-            + 0.30 * self.clf_fg_xgb.predict_proba(X)[:, 1]
+            0.40 * self.clf_fg_lgb.predict_proba(_prepare_model_X(self.clf_fg_lgb, X))[:, 1]
+            + 0.30 * self.clf_fg_cb.predict_proba(_prepare_model_X(self.clf_fg_cb, X))[:, 1]
+            + 0.30 * self.clf_fg_xgb.predict_proba(_prepare_model_X(self.clf_fg_xgb, X))[:, 1]
         )
-        p_ret_multi = self.clf_ret_multi.predict_proba(X)
+        p_ret_multi = self.clf_ret_multi.predict_proba(_prepare_model_X(self.clf_ret_multi, X))
 
         import scipy.special as sp
         p_inact = sp.expit(sp.logit(np.clip(p_inact_raw, 1e-5, 1.0 - 1e-5)) / max(self.temp_inact, 0.1))
