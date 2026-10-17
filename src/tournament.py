@@ -560,10 +560,13 @@ class TournamentEngine:
             pool_mu_nf_pos_list.append(mu_nf_pos)
 
             p_phys_fg, p_phys_inact = calibration.compute_physical_hurdle_probabilities(
-                eval_snap.features,
-                mq_fuel,
-                np.mean(pred_fuel_direct, axis=1),
-                store_model,
+                X=eval_snap.features,
+                hurdle_model=mq_fuel,
+                final_fuel_pred=np.mean(pred_fuel_direct, axis=1),
+                store_model=store_model,
+                p_fuel=p_fuel_active,
+                mu_pos=mu_fuel_pos,
+                sigma_pos=sigma_fuel_pos,
             )
 
             fold_level2_X = build_level2_structural_features(

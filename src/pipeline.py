@@ -449,10 +449,13 @@ def run_pipeline(cfg: PipelineConfig, save_predictions: bool = False) -> dict[st
 
     # Physical hurdle exceedance & joint inactivity CDF probabilities using calibrated fuel predictions
     p_phys_fg_test, p_phys_inact_test = calibration.compute_physical_hurdle_probabilities(
-        test_feats,
-        final_mq_fuel,
-        test_pred_fuel,
-        final_store_model,
+        X=test_feats,
+        hurdle_model=final_mq_fuel,
+        final_fuel_pred=test_pred_fuel,
+        store_model=final_store_model,
+        p_fuel=p_fuel_active_test,
+        mu_pos=mu_fuel_pos_test,
+        sigma_pos=sigma_fuel_pos_test,
     )
 
     wb, wh, ws, b_fg, b_in = cal.prob_blend_weights

@@ -527,22 +527,38 @@ class StoreAttachmentClassifier:
         self.xgb = XGBClassifier(**xgb_kwargs)
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "StoreAttachmentClassifier":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_binary = (np.asarray(y) > 0).astype(int)
+        X_lgb = _prepare_model_X(self.lgbm, X)
+        X_cb = _prepare_model_X(self.catboost, X)
+        X_xgb = _prepare_model_X(self.xgb, X)
+        cb_kwargs: dict[str, Any] = {}
+        if isinstance(X_cb, pd.DataFrame):
+            cats = [c for c in CAT_STRUCTURAL_FEATURES if c in X_cb.columns]
+            if cats:
+                cb_kwargs["cat_features"] = cats
         if sample_weight is not None:
             sw = np.asarray(sample_weight, dtype=np.float32)
-            self.lgbm.fit(X, y_binary, sample_weight=sw)
-            self.catboost.fit(X, y_binary, sample_weight=sw)
-            self.xgb.fit(X, y_binary, sample_weight=sw)
+            self.lgbm.fit(X_lgb, y_binary, sample_weight=sw)
+            self.catboost.fit(X_cb, y_binary, sample_weight=sw, **cb_kwargs)
+            self.xgb.fit(X_xgb, y_binary, sample_weight=sw)
         else:
-            self.lgbm.fit(X, y_binary)
-            self.catboost.fit(X, y_binary)
-            self.xgb.fit(X, y_binary)
+            self.lgbm.fit(X_lgb, y_binary)
+            self.catboost.fit(X_cb, y_binary, **cb_kwargs)
+            self.xgb.fit(X_xgb, y_binary)
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        p_lgbm = np.asarray(self.lgbm.predict_proba(X)[:, 1], dtype="float64")
-        p_cb = np.asarray(self.catboost.predict_proba(X)[:, 1], dtype="float64")
-        p_xgb = np.asarray(self.xgb.predict_proba(X)[:, 1], dtype="float64")
+        if isinstance(X, pd.DataFrame) and hasattr(self, "feature_names_in_"):
+            if set(self.feature_names_in_).issubset(X.columns) and len(X.columns) != len(self.feature_names_in_):
+                X = X[self.feature_names_in_]
+        X_lgb = _prepare_model_X(self.lgbm, X)
+        X_cb = _prepare_model_X(self.catboost, X)
+        X_xgb = _prepare_model_X(self.xgb, X)
+        p_lgbm = np.asarray(self.lgbm.predict_proba(X_lgb)[:, 1], dtype="float64")
+        p_cb = np.asarray(self.catboost.predict_proba(X_cb)[:, 1], dtype="float64")
+        p_xgb = np.asarray(self.xgb.predict_proba(X_xgb)[:, 1], dtype="float64")
         return (p_lgbm + p_cb + p_xgb) / 3.0
 
 

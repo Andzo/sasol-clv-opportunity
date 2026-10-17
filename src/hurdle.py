@@ -21,6 +21,14 @@ from sklearn.pipeline import make_pipeline
 from src.models import StoreAttachmentClassifier, make_regressor
 
 
+def _align_features(model: Any, X: pd.DataFrame | np.ndarray) -> pd.DataFrame | np.ndarray:
+    """Safely aligns features in X to model.feature_names_in_ if X is a superset DataFrame."""
+    if isinstance(X, pd.DataFrame) and hasattr(model, "feature_names_in_"):
+        if set(model.feature_names_in_).issubset(X.columns) and len(X.columns) != len(model.feature_names_in_):
+            return X[model.feature_names_in_]
+    return X
+
+
 def _compute_imr(p: np.ndarray) -> np.ndarray:
     """Heckman Inverse Mills Ratio: lambda(p) = phi(Phi^-1(p)) / p."""
     p_clip = np.clip(np.asarray(p, dtype=np.float64), 0.01, 0.99)
@@ -80,6 +88,8 @@ class TwoPartNonfuelHurdle:
         self.regressor = make_regressor("lgbm_huber", seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TwoPartNonfuelHurdle":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         pos_mask = y_arr > 0
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
@@ -93,6 +103,7 @@ class TwoPartNonfuelHurdle:
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_store = self.classifier.predict_proba(X)
         pred_amount = np.clip(self.regressor.predict(X), 0.0, None)
         return p_store * pred_amount
@@ -109,6 +120,8 @@ class TwoPartFuelHurdle:
         self.regressor = make_regressor("lgbm_huber", seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TwoPartFuelHurdle":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         pos_mask = y_arr > 0
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
@@ -122,6 +135,7 @@ class TwoPartFuelHurdle:
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_active = self.classifier.predict_proba(X)
         pred_amount = np.clip(self.regressor.predict(X), 0.0, None)
         return p_active * pred_amount
@@ -162,6 +176,8 @@ class BaggedTwoPartFuelHurdle:
             self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartFuelHurdle":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         pos_mask = y_arr > 0
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
@@ -202,6 +218,7 @@ class BaggedTwoPartFuelHurdle:
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_active = self.classifier.predict_proba(X)
         if self.power_shrinkage != 1.0:
             p_active = p_active ** self.power_shrinkage
@@ -261,6 +278,8 @@ class BaggedTwoPartNonfuelHurdle:
             self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartNonfuelHurdle":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         pos_mask = y_arr > 0
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
@@ -301,6 +320,7 @@ class BaggedTwoPartNonfuelHurdle:
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_store = self.classifier.predict_proba(X)
         if self.power_shrinkage != 1.0:
             p_store = p_store ** self.power_shrinkage
@@ -387,6 +407,8 @@ class MultiQuantileTwoPartHurdle:
         )
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "MultiQuantileTwoPartHurdle":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
 
@@ -438,10 +460,12 @@ class MultiQuantileTwoPartHurdle:
         return self
 
     def predict_proba_active(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         return self.classifier.predict_proba(X)
 
     def predict_conditional_pos(self, X: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         """Returns conditional mean mu_pos and spread sigma_pos."""
+        X = _align_features(self, X)
         A = _extract_anchor_matrix(X, self.target_type)
         if hasattr(self.propensity_model, "classes_") and len(self.propensity_model.classes_) >= 2:
             p_imr = self.propensity_model.predict_proba(self.propensity_scaler.transform(A))[:, 1]
@@ -466,6 +490,7 @@ class MultiQuantileTwoPartHurdle:
         return mu_pos, sigma_pos
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_act = self.predict_proba_active(X)
         mu_pos, _ = self.predict_conditional_pos(X)
         return p_act * mu_pos
@@ -505,6 +530,8 @@ class PhysicalBasketTicketRegressor:
         )
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "PhysicalBasketTicketRegressor":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
         self.classifier.fit(X, y_arr, sample_weight=sample_weight)
 
@@ -553,6 +580,7 @@ class PhysicalBasketTicketRegressor:
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
+        X = _align_features(self, X)
         p_act = self.classifier.predict_proba(X)
         y_raw_hat = np.clip(self.basket_regressor.predict(X), 0.0, None)
         sigma_raw_sq = np.clip(self.ticket_regressor.predict(X), 1e-4, None)

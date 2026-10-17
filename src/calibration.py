@@ -616,10 +616,14 @@ def apply_extreme_dead_gate(
 
 def compute_physical_hurdle_probabilities(
     X: pd.DataFrame,
-    hurdle_model: Any,
-    final_fuel_pred: np.ndarray,
-    store_model: Any,
+    hurdle_model: Any = None,
+    final_fuel_pred: np.ndarray | None = None,
+    store_model: Any = None,
     norm_scale: float = 2.352825386185113,
+    p_fuel: np.ndarray | None = None,
+    mu_pos: np.ndarray | None = None,
+    sigma_pos: np.ndarray | None = None,
+    p_store: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Computes exact probabilistic fuel hurdle inversion and joint inactivity probabilities.
 
@@ -643,13 +647,18 @@ def compute_physical_hurdle_probabilities(
     required_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
     z_hurdle = (1.0 / norm_scale) * np.log1p(required_litres)
 
-    if hasattr(hurdle_model, "predict_conditional_pos") and hasattr(hurdle_model, "predict_proba_active"):
-        p_fuel = hurdle_model.predict_proba_active(X)
-        mu_pos, sigma_pos = hurdle_model.predict_conditional_pos(X)
-    else:
-        p_fuel = np.clip(hurdle_model.predict(X) / np.maximum(final_fuel_pred, 1e-4), 0.0, 1.0)
-        mu_pos = np.clip(final_fuel_pred / np.maximum(p_fuel, 0.05), 0.0, None)
-        sigma_pos = np.maximum(0.14, 0.20 * mu_pos)
+    if p_fuel is None or mu_pos is None or sigma_pos is None:
+        X_h = X[hurdle_model.feature_names_in_] if (hasattr(hurdle_model, "feature_names_in_") and isinstance(X, pd.DataFrame)) else X
+        if hasattr(hurdle_model, "predict_conditional_pos") and hasattr(hurdle_model, "predict_proba_active"):
+            p_fuel = hurdle_model.predict_proba_active(X_h)
+            mu_pos, sigma_pos = hurdle_model.predict_conditional_pos(X_h)
+        else:
+            p_fuel = np.clip(hurdle_model.predict(X_h) / np.maximum(final_fuel_pred, 1e-4), 0.0, 1.0)
+            mu_pos = np.clip(final_fuel_pred / np.maximum(p_fuel, 0.05), 0.0, None)
+            sigma_pos = np.maximum(0.14, 0.20 * mu_pos)
+
+    if final_fuel_pred is None:
+        final_fuel_pred = p_fuel * mu_pos
 
     # Probabilistic CDF inversion via standard normal erf
     z_score = (z_hurdle - (0.65 * mu_pos + 0.35 * final_fuel_pred)) / np.maximum(sigma_pos, 0.05)
@@ -657,7 +666,9 @@ def compute_physical_hurdle_probabilities(
     p_phys_fg = np.where(ever_fuel, p_fuel * (1.0 - phi), 0.0)
 
     # Joint Inactivity probability
-    p_store = store_model.predict_proba(X) if hasattr(store_model, "predict_proba") else np.zeros(n)
+    if p_store is None:
+        X_s = X[store_model.feature_names_in_] if (hasattr(store_model, "feature_names_in_") and isinstance(X, pd.DataFrame)) else X
+        p_store = store_model.predict_proba(X_s) if hasattr(store_model, "predict_proba") else np.zeros(n)
     m1_baskets = X["m1_baskets"].to_numpy() if "m1_baskets" in X.columns else np.zeros(n)
     is_m1_zero = m1_baskets == 0
     p_phys_inact = (1.0 - p_fuel) * (1.0 - p_store) * is_m1_zero.astype(float)
