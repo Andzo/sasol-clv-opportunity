@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+PACKAGE_DIR: Path = Path(__file__).resolve().parent
 
 
 @dataclass(frozen=True)
@@ -22,21 +23,33 @@ class Paths:
 
     root: Path = PROJECT_ROOT
 
+    def _resolve_data_file(self, filename: str) -> Path:
+        root_candidate = self.root / filename
+        if root_candidate.exists():
+            return root_candidate
+        data_candidate = self.root / "data" / filename
+        if data_candidate.exists():
+            return data_candidate
+        return root_candidate
+
     @property
     def train_csv(self) -> Path:
-        return self.root / "train.csv"
+        return self._resolve_data_file("train.csv")
 
     @property
     def test_csv(self) -> Path:
-        return self.root / "test.csv"
+        return self._resolve_data_file("test.csv")
 
     @property
     def sample_submission(self) -> Path:
-        return self.root / "SampleSubmission.csv"
+        return self._resolve_data_file("SampleSubmission.csv")
 
     @property
     def label_config(self) -> Path:
-        return self.root / "label_config.json"
+        candidate = self.root / "src" / "label_config.json"
+        if candidate.exists():
+            return candidate
+        return PACKAGE_DIR / "label_config.json"
 
     @property
     def cache_dir(self) -> Path:
@@ -59,16 +72,24 @@ class Paths:
 class ModelConfig:
     """Model-family selection and determinism controls."""
 
+    # Pruned: lgbm_mse, lgbm_mse_deep, lgbm_huber, catboost, catboost_huber and mlp received 0.0 fuel
+    # blend weight in the last full run, so they only cost training time.
+    # Re-check with reports/member_weights.json (written each run) before adding any back.
     regression_members: tuple[str, ...] = (
-        "lgbm_mse", "lgbm_huber", "lgbm_tweedie",
-        "xgb_mse", "xgb_huber",
-        "catboost", "catboost_huber",
-        "ridge", "extratrees", "mlp",
+        "lgbm_tweedie", "xgb_mse", "xgb_huber", "ridge", "extratrees",
     )
     classification_members: tuple[str, ...] = ("lgbm", "catboost", "xgb")
     seed: int = 42
     n_jobs: int = -1
     use_gpu: bool = False
+    n_seeds_reg: int = 3
+    n_seeds_clf: int = 2
+    hurdle_seeds: tuple[int, ...] = (42, 100, 2024, 777, 314)
+
+    @classmethod
+    def fast(cls, **kw: Any) -> "ModelConfig":
+        """Single-seed configuration for quick experiment iteration."""
+        return cls(n_seeds_reg=1, n_seeds_clf=1, hurdle_seeds=(42,), **kw)
 
 
 @dataclass(frozen=True)
@@ -95,10 +116,27 @@ class PipelineConfig:
     evaluation_cutoff: str = "2025-09-01"
     test_cutoff: str = "2025-12-01"
     use_cache: bool = True
+    # Out-of-fold tournament cutoffs. The last entry is the forward holdout; the rest fit calibration.
+    # Fast mode uses ("2025-06-01", "2025-09-01"): neighbouring monthly folds overlap by 2/3 of their
+    # outcome window so they are highly correlated and cost 2x more for little extra information.
+    # Opportunity probability fusion: "blend" = fixed 0.65*meta + 0.35*(w_base*base + w_hier*hier) (legacy),
+    # "stack" = multinomial log-loss logistic stacker over [log base, log hier, log meta, p_exceed, p_inact].
+    prob_fusion: str = "blend"
+    # Minimum combined weight forced onto hurdle columns in the regression non-negative ridge stack.
+    hurdle_floor_fuel: float = 0.20
+    hurdle_floor_nf: float = 0.35
+    # Causal GM optimizations:
+    # 1. Soft shrinkage overfits in-sample and hurts OOF RMSE by +0.0017 on nonfuel and +0.0014 on fuel.
+    use_soft_shrinkage: bool = False
+    # 2. StructuralMetaClassifier (LGBM+CatBoost+XGB on 96 features) takes 3 min and overfits OOF.
+    use_meta_classifier: bool = False
+    # 3. Commuter arbitration re-assigns customers after dual ascent and drops F1 by -0.018.
+    use_commuter_arbitration: bool = False
+    tournament_cutoffs: tuple[str, ...] = ("2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01")
 
     @cached_property
     def label_config(self) -> dict[str, Any]:
-        """Official label configuration (``label_config.json``)."""
+        """Official label configuration (``src/label_config.json``)."""
         return json.loads(self.paths.label_config.read_text())
 
     @property

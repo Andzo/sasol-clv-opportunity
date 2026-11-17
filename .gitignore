@@ -1,37 +1,44 @@
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 ENV/
 
-# Byte-compiled / optimized / DLL files
+# Byte-compiled / packaging / test artifacts
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+*.egg-info/
+build/
+dist/
 
-# Data & cache files
+# Data, datasets & cache files (never commit competition data)
+*.csv
+*.parquet
+data/
 data_cache/
-train.parquet
 catboost_info/
 
-# Large competition datasets & submissions (compliance with Zindi 'no license to share' rule)
-train.csv
-test.csv
-SampleSubmission.csv
-submission.csv
-submission_git_*.csv
-submissions/*.csv
-submissions/*.parquet
-submissions/*.manifest.json
+# Submissions & generated outputs
+submissions/
 
-# Temporary or IDE files
-*.swp
+# Local documentation & report markdown files (keep README.md as sole Markdown file)
+*.md
+!README.md
+MODEL_BENCHMARK_TRACKER.md
+reports/**/*.md
+reports/*.md
 
-# EDA & Research visual artifacts & caches (keep repository code-only)
+# EDA, backtest & research visual artifacts / runtime caches
 reports/**/*.png
 reports/**/*.html
 reports/*.png
 reports/*.html
 reports/**/cache/
-reports/**/*.parquet
+reports/backtest/
+reports/last_calibrate_only.json
+reports/member_weights.json
 scratch/
 
+# Temporary or IDE files
+*.swp

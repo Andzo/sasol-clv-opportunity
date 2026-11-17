@@ -3,7 +3,7 @@ Model Benchmark Tracker (src/tracker.py)
 
 Tracks internal tournament evaluation runs and maintains the permanent
 'Model to Beat' champion record in MODEL_BENCHMARK_TRACKER.json and
-MODEL_BENCHMARK_TRACKER.md.
+reports/MODEL_BENCHMARK_TRACKER.md.
 """
 
 import json
@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 import datetime
 
 BENCHMARK_JSON_PATH = Path('MODEL_BENCHMARK_TRACKER.json')
-BENCHMARK_MD_PATH = Path('MODEL_BENCHMARK_TRACKER.md')
+BENCHMARK_MD_PATH = Path('reports/MODEL_BENCHMARK_TRACKER.md')
 
 
 def load_benchmark_tracker() -> Dict[str, Any]:
@@ -112,6 +112,7 @@ def save_benchmark_tracker(data: Dict[str, Any]) -> None:
             f"{r.get('nonfuel_rmse', 0.0):.4f} | {r.get('opportunity_f1', 0.0):.4f} | {is_champ} |"
         )
 
+    BENCHMARK_MD_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(BENCHMARK_MD_PATH, 'w') as f:
         f.write('\n'.join(lines) + '\n')
 

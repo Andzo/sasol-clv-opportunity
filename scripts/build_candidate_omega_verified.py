@@ -136,7 +136,7 @@ def audit_historical_ground_truth_pools(builder: SnapshotBuilder) -> None:
 
 
 def build_candidate_omega() -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     assert len(test_ids) == 5488

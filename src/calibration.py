@@ -335,7 +335,7 @@ def fit_dual_shrinkage_powers(
     p_store: np.ndarray,
     base_active_power: float | None = None,
     alpha_grid: Sequence[float] = (0.05, 0.10, 0.15, 0.20),
-    beta_grid: Sequence[float] = (0.05, 0.08, 0.10, 0.12, 0.15, 0.20),
+    beta_grid: Sequence[float] = (0.0, 0.02, 0.05, 0.08, 0.10, 0.12, 0.15, 0.20),
 ) -> tuple[float, float]:
     """Fit optimal dual soft shrinkage powers (alpha, beta) minimizing RMSE on calibration fold.
 
@@ -402,7 +402,7 @@ def fit_inactivity_threshold(
     y_nf_true: np.ndarray,
     y_nf_pred: np.ndarray,
     p_active: np.ndarray,
-    thresholds: Sequence[float] = (0.01, 0.02, 0.03, 0.04, 0.05, 0.08),
+    thresholds: Sequence[float] = (0.0, 0.005, 0.01, 0.02, 0.03, 0.04, 0.05, 0.08),
 ) -> float:
     """Find the optimal zero-gating threshold tau minimizing combined RMSE on calibration instances."""
     best_tau = 0.03
@@ -614,6 +614,31 @@ def apply_extreme_dead_gate(
     return out
 
 
+def finalize_regression_predictions(
+    raw_fuel: np.ndarray,
+    raw_nf: np.ndarray,
+    p_fuel_act: np.ndarray,
+    p_store_act: np.ndarray,
+    m3_baskets: np.ndarray,
+    blup_f_vec: np.ndarray,
+    blup_nf_vec: np.ndarray,
+    cal: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Applies identical slope calibration, BLUP, dual shrinkage, and extreme dead gating across OOF, Eval, and Test."""
+    fuel_cal = apply_linear_calibration(raw_fuel, cal.fuel_slope, cal.fuel_intercept)
+    nf_cal = apply_linear_calibration(raw_nf, cal.nf_slope, cal.nf_intercept)
+
+    fuel_cal = apply_customer_blup(fuel_cal, blup_f_vec, cal.blup_eta_fuel, active_mask=(fuel_cal > 0.05))
+    nf_cal = apply_customer_blup(nf_cal, blup_nf_vec, cal.blup_eta_nf, active_mask=(nf_cal > 0.05))
+
+    fuel_cal = apply_shrinkage(fuel_cal, p_fuel_act, cal.fuel_shrinkage_power)
+    nf_cal = apply_dual_shrinkage(nf_cal, p_fuel_act, p_store_act, cal.nf_alpha, cal.nf_beta)
+
+    fuel_pred = apply_extreme_dead_gate(fuel_cal, p_fuel_act, m3_baskets, threshold=cal.inact_threshold)
+    nf_pred = apply_extreme_dead_gate(nf_cal, p_store_act, m3_baskets, threshold=cal.inact_threshold)
+    return fuel_pred, nf_pred
+
+
 def compute_physical_hurdle_probabilities(
     X: pd.DataFrame,
     hurdle_model: Any = None,
@@ -748,17 +773,18 @@ def decide_with_prior_alignment(
     class_weights: np.ndarray,
     target_priors: np.ndarray,
     macro_classes: tuple[int, ...] | None = None,
-    tolerance: float = 0.001,
-    max_steps: int = 300,
-    step_size: float = 0.20,
+    tolerance: float = 0.0008,
+    max_steps: int = 400,
+    step_size: float = 0.15,
 ) -> np.ndarray:
-    """Prior-Constrained Expected Support-Weighted F1 Decision Rule via Dual Ascent.
+    """Prior-Constrained Expected Support-Weighted F1 Decision Rule via 4-Partition Dual Ascent.
 
-    Finds dual Lagrange multipliers lambda in R^K such that macro class proportions
-    align with historical target priors without threshold drift.
+    Note: ``class_weights`` enter as a per-class constant ``log w_k`` and the dual variables are also per-class
+    constants, so once the ascent converges to ``target_priors`` the weights have no effect on the counts. They
+    only change the starting point; do not tune them separately when counts are aligned to known gates.
     """
     n, k = probs.shape
-    u = np.log(probs * class_weights + 1e-12)
+    u = np.log(np.clip(probs, 1e-12, 1.0) * class_weights + 1e-12)
     lambdas = np.zeros(k, dtype=np.float64)
     target = np.asarray(target_priors, dtype=np.float64)
     target = target / target.sum()
@@ -767,17 +793,22 @@ def decide_with_prior_alignment(
         macro_list = list(range(k))
     else:
         macro_list = [c for c in macro_classes if c < k]
-    if not macro_list:
-        macro_list = list(range(k))
+    retail_list = [c for c in range(k) if c not in macro_list]
+    target_retail_sum = float(sum(target[c] for c in retail_list)) if retail_list else 0.0
 
     for _ in range(max_steps):
         pred = np.argmax(u - lambdas, axis=1)
         counts = np.bincount(pred, minlength=k) / n
         diff = counts - target
-        if np.max(np.abs(diff[macro_list])) <= tolerance:
+        retail_diff = float(sum(counts[c] for c in retail_list)) - target_retail_sum if retail_list else 0.0
+
+        if (len(macro_list) == 0 or np.max(np.abs(diff[macro_list])) <= tolerance) and abs(retail_diff) <= tolerance:
             break
         for c in macro_list:
             lambdas[c] += step_size * diff[c]
+        for c in retail_list:
+            lambdas[c] += step_size * retail_diff
+        lambdas -= np.mean(lambdas)
 
     return np.argmax(u - lambdas, axis=1)
 
@@ -904,7 +935,7 @@ def arbitrate_commuter_pool(
     p_clf_fg: np.ndarray,
     p_clf_stable: np.ndarray,
     target_fg_capacity: int,
-    weights: tuple[float, float, float] = (0.40, 0.35, 0.25),
+    weights: tuple[float, float, float] = (0.0, 0.0, 1.0),
     ever_fuel_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Direct Physical Fuel Hurdle Arbitration between Existing-category growth: Fuel and Stable.

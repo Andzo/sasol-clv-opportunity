@@ -43,7 +43,7 @@ logger = logging.getLogger("build_candidate_u")
 
 
 def build_candidate_u(w_blend: float = 0.85, seeds: list[int] = [42, 100, 2026]) -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     n_test = len(test_ids)

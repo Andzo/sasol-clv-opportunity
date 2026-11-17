@@ -466,7 +466,7 @@ def extract_enriched_snapshot(
 
 
 def build_candidate_w2(blend_w: float = 0.15, n_features: int = 168) -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     assert len(test_ids) == 5488

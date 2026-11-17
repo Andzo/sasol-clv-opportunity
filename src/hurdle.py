@@ -49,30 +49,38 @@ def _with_imr(X: pd.DataFrame | np.ndarray, p: np.ndarray) -> pd.DataFrame:
 
 
 def _extract_anchor_matrix(X: pd.DataFrame | np.ndarray, target_type: str = "fuel") -> np.ndarray:
-    """Extracts continuous log-transformed baseline predictors for the parametric anchor model."""
+    """Extracts continuous log-transformed and z-space baseline predictors for the parametric anchor model."""
     if isinstance(X, pd.DataFrame):
         if target_type == "fuel":
-            candidates = [
+            raw_candidates = [
                 "m1_fuel_litres", "m3_fuel_litres", "q2_fuel_litres", "m6_fuel_litres",
                 "btyd_fuel_exp_baskets_m3", "mundlak_perm_fuel_litres",
             ]
+            z_candidates = ["z_anchor_fuel_mean", "lag1_clv_fuel", "proj_m1_clv_fuel"]
         else:
-            candidates = [
+            raw_candidates = [
                 "m1_nonfuel_rand", "m3_nonfuel_rand", "q2_nonfuel_rand", "m6_nonfuel_rand",
                 "btyd_exp_clv_spend_m3", "mundlak_perm_nf_rand",
             ]
-        present = [c for c in candidates if c in X.columns]
-        if present:
-            vals = np.asarray(X[present].to_numpy(), dtype="float64")
-            vals = np.nan_to_num(vals, nan=0.0)
-            return np.log1p(np.maximum(vals, 0.0))
-        # Fallback if specific columns not present (e.g. test mocks)
+            z_candidates = ["z_anchor_nf_mean", "lag1_clv_nonfuel", "proj_m1_clv_nonfuel"]
+
+        parts = []
+        present_raw = [c for c in raw_candidates if c in X.columns]
+        if present_raw:
+            vals = np.nan_to_num(np.asarray(X[present_raw].to_numpy(), dtype="float64"), nan=0.0)
+            parts.append(np.log1p(np.maximum(vals, 0.0)))
+        present_z = [c for c in z_candidates if c in X.columns]
+        if present_z:
+            z_vals = np.nan_to_num(np.asarray(X[present_z].to_numpy(), dtype="float64"), nan=0.0)
+            parts.append(np.maximum(z_vals, 0.0))
+        if parts:
+            return np.column_stack(parts)
         vals = np.asarray(X.iloc[:, :min(6, X.shape[1])].to_numpy(), dtype="float64")
         return np.log1p(np.maximum(np.nan_to_num(vals, nan=0.0), 0.0))
     else:
         arr = np.asarray(X, dtype="float64")
         if arr.ndim == 1:
-            arr = arr.reshape(-1, 1)
+            arr.reshape(-1, 1)
         sub = arr[:, :min(6, arr.shape[1])]
         return np.log1p(np.maximum(np.nan_to_num(sub, nan=0.0), 0.0))
 
@@ -142,19 +150,15 @@ class TwoPartFuelHurdle:
 
 
 class BaggedTwoPartFuelHurdle:
-    """Multi-seed multi-model bagged two-part hurdle model for fuel CLV.
-
-    Compresses stochastic decision-tree variance by bagging positive spenders
-    across 5 distinct random seeds and dual model architectures (LightGBM Huber + CatBoost).
-    """
+    """Multi-seed multi-model bagged two-part hurdle model for fuel CLV."""
 
     def __init__(
         self,
         seeds: tuple[int, ...] = (42, 100, 2024, 777, 314),
         n_jobs: int = -1,
         use_gpu: bool = False,
-        huber_alpha: float = 0.85,
-        power_shrinkage: float = 0.98,
+        huber_alpha: float = 1.35,
+        power_shrinkage: float = 1.0,
         zero_gate_threshold: float = 0.0,
     ) -> None:
         self.seeds = seeds
@@ -167,9 +171,13 @@ class BaggedTwoPartFuelHurdle:
         self.propensity_scaler = StandardScaler()
         self.propensity_model = LogisticRegression(C=1.0, max_iter=200, random_state=seeds[0])
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
+        self.regressors_mse: list[Any] = []
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
         for s in seeds:
+            self.regressors_mse.append(
+                make_regressor("lgbm_mse", seed=s, n_jobs=n_jobs, use_gpu=use_gpu)
+            )
             self.regressors_lgb.append(
                 make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
             )
@@ -208,11 +216,13 @@ class BaggedTwoPartFuelHurdle:
             z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
         y_innov_pos = y_pos - z_anchor_pos
 
-        for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
+        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
             if sw_pos is not None:
+                reg_mse.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
                 reg_lgb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
                 reg_cb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
             else:
+                reg_mse.fit(X_pos_imr, y_innov_pos)
                 reg_lgb.fit(X_pos_imr, y_innov_pos)
                 reg_cb.fit(X_pos_imr, y_innov_pos)
         return self
@@ -235,29 +245,26 @@ class BaggedTwoPartFuelHurdle:
 
         pred_innov = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
-        for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
+        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
+            p_mse = reg_mse.predict(X_imr)
             p_lgb = reg_lgb.predict(X_imr)
             p_cb = reg_cb.predict(X_imr)
-            pred_innov += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+            pred_innov += (0.35 * p_mse + 0.30 * p_lgb + 0.35 * p_cb) / n_bags
         pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
         return p_active * pred_pos
 
 
 class BaggedTwoPartNonfuelHurdle:
-    """Multi-seed multi-model bagged two-part hurdle model for nonfuel CLV.
-
-    Compresses high-dispersion store spend variance by bagging positive spenders
-    across 5 distinct random seeds and dual model architectures (LightGBM Huber + CatBoost).
-    """
+    """Multi-seed multi-model bagged two-part hurdle model for nonfuel CLV."""
 
     def __init__(
         self,
         seeds: tuple[int, ...] = (42, 100, 2024, 777, 314),
         n_jobs: int = -1,
         use_gpu: bool = False,
-        huber_alpha: float = 0.85,
-        power_shrinkage: float = 0.96,
-        zero_gate_threshold: float = 0.04,
+        huber_alpha: float = 1.35,
+        power_shrinkage: float = 1.0,
+        zero_gate_threshold: float = 0.0,
     ) -> None:
         self.seeds = seeds
         self.n_jobs = n_jobs
@@ -269,9 +276,13 @@ class BaggedTwoPartNonfuelHurdle:
         self.propensity_scaler = StandardScaler()
         self.propensity_model = LogisticRegression(C=1.0, max_iter=200, random_state=seeds[0])
         self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
+        self.regressors_mse: list[Any] = []
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
         for s in seeds:
+            self.regressors_mse.append(
+                make_regressor("lgbm_mse", seed=s, n_jobs=n_jobs, use_gpu=use_gpu)
+            )
             self.regressors_lgb.append(
                 make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
             )
@@ -310,11 +321,13 @@ class BaggedTwoPartNonfuelHurdle:
             z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
         y_innov_pos = y_pos - z_anchor_pos
 
-        for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
+        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
             if sw_pos is not None:
+                reg_mse.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
                 reg_lgb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
                 reg_cb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
             else:
+                reg_mse.fit(X_pos_imr, y_innov_pos)
                 reg_lgb.fit(X_pos_imr, y_innov_pos)
                 reg_cb.fit(X_pos_imr, y_innov_pos)
         return self
@@ -337,10 +350,11 @@ class BaggedTwoPartNonfuelHurdle:
 
         pred_innov = np.zeros(len(X), dtype="float64")
         n_bags = len(self.seeds)
-        for reg_lgb, reg_cb in zip(self.regressors_lgb, self.regressors_cb):
+        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
+            p_mse = reg_mse.predict(X_imr)
             p_lgb = reg_lgb.predict(X_imr)
             p_cb = reg_cb.predict(X_imr)
-            pred_innov += (0.55 * p_lgb + 0.45 * p_cb) / n_bags
+            pred_innov += (0.35 * p_mse + 0.30 * p_lgb + 0.35 * p_cb) / n_bags
         pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
         return p_store * pred_pos
 
@@ -405,6 +419,7 @@ class MultiQuantileTwoPartHurdle:
             num_leaves=28, colsample_bytree=0.6, reg_lambda=8.0,
             random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
         )
+        self.stage25_calibrator = Ridge(alpha=10.0)
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "MultiQuantileTwoPartHurdle":
         if isinstance(X, pd.DataFrame):
@@ -457,6 +472,24 @@ class MultiQuantileTwoPartHurdle:
                     lgb_q.fit(X_pos_imr, y_innov_pos)
                     cb_q.fit(X_pos_imr, y_innov_pos)
 
+            # Fit Stage 2.5 heteroscedastic calibrator on in-sample predictions
+            mu_l2_innov_pos = self.l2_regressor.predict(X_pos_imr)
+            q_preds_pos: list[np.ndarray] = []
+            for lgb_q, cb_q in zip(self.lgb_quantiles, self.cb_quantiles):
+                p_lgb = lgb_q.predict(X_pos_imr)
+                p_cb = cb_q.predict(X_pos_imr)
+                q_preds_pos.append(np.clip(z_anchor_pos + (0.55 * p_lgb + 0.45 * p_cb), 0.0, None))
+
+            mu_quad_pos = sum(w * q for w, q in zip(self.QUAD_WEIGHTS, q_preds_pos))
+            mu_l2_full_pos = np.clip(z_anchor_pos + mu_l2_innov_pos, 0.0, None)
+            sigma_pos_fit = np.maximum(0.14, (q_preds_pos[-1] - q_preds_pos[0]) / 2.5631)
+            tau_skew_pos = (q_preds_pos[-1] + q_preds_pos[0]) / 2.0 - q_preds_pos[2]
+            M_pos = np.column_stack([mu_l2_full_pos, mu_quad_pos, sigma_pos_fit, np.maximum(0.0, tau_skew_pos)])
+            if len(y_pos) >= 5:
+                self.stage25_calibrator.fit(M_pos, y_pos, sample_weight=sw_pos)
+            else:
+                self.stage25_calibrator.fit(M_pos, y_pos)
+
         return self
 
     def predict_proba_active(self, X: pd.DataFrame) -> np.ndarray:
@@ -486,7 +519,11 @@ class MultiQuantileTwoPartHurdle:
         sigma_pos = np.maximum(0.14, (q_preds[-1] - q_preds[0]) / 2.5631)
         tau_skew = (q_preds[-1] + q_preds[0]) / 2.0 - q_preds[2]
 
-        mu_pos = np.clip(0.45 * mu_l2_full + 0.55 * mu_quad + 0.15 * np.maximum(0.0, tau_skew), 0.0, None)
+        M = np.column_stack([mu_l2_full, mu_quad, sigma_pos, np.maximum(0.0, tau_skew)])
+        if hasattr(self.stage25_calibrator, "coef_"):
+            mu_pos = np.clip(self.stage25_calibrator.predict(M), 0.0, None)
+        else:
+            mu_pos = np.clip(0.45 * mu_l2_full + 0.55 * mu_quad + 0.15 * np.maximum(0.0, tau_skew), 0.0, None)
         return mu_pos, sigma_pos
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -585,6 +622,7 @@ class PhysicalBasketTicketRegressor:
         y_raw_hat = np.clip(self.basket_regressor.predict(X), 0.0, None)
         sigma_raw_sq = np.clip(self.ticket_regressor.predict(X), 1e-4, None)
         denom = 1.0 + y_raw_hat
-        z_pos = (1.0 / self.scale) * np.clip(np.log1p(y_raw_hat) - sigma_raw_sq / (2.0 * denom ** 2), 0.0, None)
+        jensen_corr = np.minimum(sigma_raw_sq / (2.0 * denom ** 2), 0.25 * np.log1p(y_raw_hat))
+        z_pos = (1.0 / self.scale) * np.clip(np.log1p(y_raw_hat) - jensen_corr, 0.0, None)
         return p_act * z_pos
 

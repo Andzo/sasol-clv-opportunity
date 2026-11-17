@@ -22,6 +22,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.config import PipelineConfig
+from src.data import resolve_data_file
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("verify_submission")
 
@@ -41,7 +44,12 @@ def calculate_zindi_score(fuel_rmse: float, nonfuel_rmse: float, opp_f1: float) 
 
 
 def verify(submission_path: Path) -> dict:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
+    if not submission_path.exists():
+        raise FileNotFoundError(
+            f"Submission CSV not found at {submission_path}. "
+            "Run `python -m src.main` first to generate a submission."
+        )
     test_df = pd.read_csv(test_csv)
     expected_ids = [str(x) for x in test_df["ID"]]
     n_expected = len(expected_ids)
@@ -66,7 +74,7 @@ def verify(submission_path: Path) -> dict:
     assert (sub["CLV_nonfuel"] >= 0).all(), "CLV_nonfuel contains negative values!"
 
     # 4. Valid opportunity labels
-    label_cfg = json.loads((PROJECT_ROOT / "label_config.json").read_text())
+    label_cfg = PipelineConfig().label_config
     valid_labels = set(label_cfg["opportunity_labels"])
     sub_labels = set(sub["Opportunity"])
     invalid = sub_labels - valid_labels

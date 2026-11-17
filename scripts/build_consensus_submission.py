@@ -24,13 +24,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from src.config import PipelineConfig
+from src.data import load_transactions, resolve_data_file
+from src.dataset import SnapshotBuilder
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("build_consensus")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 def main() -> None:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     n_test = len(test_ids)
@@ -38,11 +42,15 @@ def main() -> None:
 
     # 1. Load submissions
     past_best_csv = PROJECT_ROOT / "submissions" / "submission_20261012_173021_comp0.5253.csv"
+    if not past_best_csv.exists():
+        raise FileNotFoundError(f"Missing baseline submission CSV: {past_best_csv}")
     s_best = pd.read_csv(past_best_csv)
     s_best["ID"] = s_best["ID"].astype(str)
     s_best = s_best.set_index("ID").reindex(test_ids)
 
     cand_b_csv = PROJECT_ROOT / "submissions" / "submission_candidate_b_super_blend_20261013_171418.csv"
+    if not cand_b_csv.exists():
+        raise FileNotFoundError(f"Missing Candidate B submission CSV: {cand_b_csv}")
     s_cand_b = pd.read_csv(cand_b_csv)
     s_cand_b["ID"] = s_cand_b["ID"].astype(str)
     s_cand_b = s_cand_b.set_index("ID").reindex(test_ids)
@@ -63,10 +71,6 @@ def main() -> None:
         pred_nonfuel = 0.50 * s_cand_b["CLV_nonfuel"].to_numpy() + 0.50 * s_best["CLV_nonfuel"].to_numpy()
 
     # 3. Features for arbitration
-    from src.config import PipelineConfig
-    from src.data import load_transactions
-    from src.dataset import SnapshotBuilder
-
     cfg = PipelineConfig()
     tx = load_transactions(cfg)
     builder = SnapshotBuilder(cfg, tx)
@@ -90,7 +94,7 @@ def main() -> None:
     # CLV_fuel = log1p(fuel_litres) / 2.352825386185113
     pred_litres = np.expm1(np.clip(pred_fuel * 2.352825386185113, 0, 15.0))
 
-    # Ground truth growth condition from label_rules.py:
+    # Ground truth growth condition from src/label_rules.py:
     # delta_rand >= 20 Rand (approx 0.9 litres at R23/L) AND future_spend > 1.25 * previous_spend
     is_physical_growth = (pred_litres > 1.25 * m3_litres) & ((pred_litres - m3_litres) >= 1.0)
 

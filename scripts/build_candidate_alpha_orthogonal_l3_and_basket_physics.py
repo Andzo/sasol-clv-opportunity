@@ -297,7 +297,7 @@ class OrthogonalMultiParadigmRegressor:
 
 
 def build_candidate_alpha(n_features: int = 180, blend_w: float = 0.12) -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     assert len(test_ids) == 5488

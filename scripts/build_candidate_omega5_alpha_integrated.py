@@ -27,6 +27,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.data import resolve_data_file
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("build_candidate_omega5")
 
@@ -93,7 +95,7 @@ def solve_spectral_hilbert(
 
 
 def build_candidate_omega5() -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     assert len(test_ids) == 5488
@@ -102,7 +104,11 @@ def build_candidate_omega5() -> Path:
 
     def try_load(pattern: str) -> pd.DataFrame:
         files = sorted(submissions_dir.glob(pattern))
-        assert files, f"Missing submission for pattern {pattern}"
+        if not files:
+            raise FileNotFoundError(
+                f"Missing prerequisite candidate submission matching '{pattern}' in {submissions_dir}. "
+                "Generate the earlier candidate submission CSVs before running Omega-5."
+            )
         df = pd.read_csv(files[-1])
         df["ID"] = df["ID"].astype(str)
         return df.set_index("ID").reindex(test_ids).reset_index()

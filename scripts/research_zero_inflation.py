@@ -98,7 +98,10 @@ def run_zero_inflation_benchmarks(output_dir: Path) -> dict[str, Any]:
     cached_preds = load_cached_predictions(cfg)
     eval_preds = cached_preds.get("eval_predictions")
     if eval_preds is None:
-        raise FileNotFoundError("reports/eda/cache/eval_predictions.parquet required.")
+        raise FileNotFoundError(
+            "reports/eda/cache/eval_predictions.parquet required. "
+            "Run `python -m src.main --save-predictions` first."
+        )
 
     builder, tx = get_builder_and_tx(cfg)
     history_cutoffs = ("2024-09-01", "2024-12-01", "2025-03-01", "2025-06-01", "2025-09-01")

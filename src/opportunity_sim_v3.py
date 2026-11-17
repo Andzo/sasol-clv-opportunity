@@ -1,6 +1,6 @@
 """Module 3: Decomposed 24-Category Monte Carlo Opportunity Simulator.
 
-Models the exact data-generating process defined in LABEL_RULES.md (Rules 5, 6, 7):
+Models the exact data-generating process defined by the official label rules (Rules 5, 6, 7):
 1. 24 sub-category eligibility & qualification models (Growth and Adoption).
 2. Category-specific conditional Rand increment regressions.
 3. 2,000-draw vectorized Monte Carlo simulation with Rule 7 argmax competition.
@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from lightgbm import LGBMClassifier, LGBMRegressor
 
-from label_rules import SCALE
+from src.label_rules import SCALE
 
 logger = logging.getLogger("opportunity_sim_v3")
 
@@ -229,7 +229,7 @@ class VectorizedMonteCarloSimulator:
         ids: Sequence[str],
         config: dict[str, Any],
     ) -> dict[str, Any]:
-        """Extracts exact historical and future qualification matrices matching label_rules.py."""
+        """Extracts exact historical and future qualification matrices matching src/label_rules.py."""
         t = pd.Timestamp(cutoff)
         end = t + pd.DateOffset(months=3)
         mapping = config["category_mapping"]

@@ -80,7 +80,7 @@ def fit_guarded_quadratic_calibrator(y_pred: np.ndarray, target_mean: float, tar
 
 
 def build_candidate_w(blend_w: float = 0.12, n_features: int = 168) -> Path:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     n_test = len(test_ids)

@@ -10,7 +10,18 @@ ID = 'ID'
 SCALE = 1000000
 
 def load_transactions(path):
-    return prepare(pd.read_csv(path, dtype=str, keep_default_na=False))
+    p = Path(path)
+    if not p.exists():
+        data_fallback = p.parent / 'data' / p.name
+        if data_fallback.exists():
+            p = data_fallback
+        else:
+            raise FileNotFoundError(
+                f"Missing transactions CSV: '{p.name}' was not found at {p}. "
+                "Download the Sasol CLV & Opportunity dataset from Zindi and place "
+                "train.csv in the repository root or inside a local data/ directory."
+            )
+    return prepare(pd.read_csv(p, dtype=str, keep_default_na=False))
 
 def prepare(raw):
     d = raw.copy()

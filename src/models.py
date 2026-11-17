@@ -150,35 +150,53 @@ class TabMPLRRegressor:
         return np.clip(pred, 0.0, None)
 
 
+GB_SPEED: float = 2.5  # trees/learning-rate trade: n_estimators / GB_SPEED, learning_rate * GB_SPEED (~2.5x faster fits)
+
+
+def _gb(n_estimators: int, learning_rate: float) -> dict[str, Any]:
+    """Faster boosting schedule preserving total shrinkage (n_estimators * learning_rate)."""
+    return {
+        "n_estimators": max(50, int(round(n_estimators / GB_SPEED))),
+        "learning_rate": float(learning_rate) * GB_SPEED,
+    }
+
+
 def make_regressor(
     name: str,
     seed: int,
     n_jobs: int,
     tweedie_power: float = 1.15,
     use_gpu: bool = False,
-    huber_alpha: float = 0.90,
+    huber_alpha: float = 1.35,
 ) -> Any:
     """Compound Poisson-Gamma (Tweedie), Huber, and squared-error regressors."""
     if name in ("lgbm", "lgbm_tweedie"):
         return LGBMRegressor(
             objective="tweedie", tweedie_variance_power=tweedie_power,
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
+            **_gb(650, 0.018), num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
-            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, max_bin=63, verbose=-1,
         )
     if name == "lgbm_huber":
         return LGBMRegressor(
             objective="huber", alpha=huber_alpha,
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
+            **_gb(650, 0.018), num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
-            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, max_bin=63, verbose=-1,
         )
     if name == "lgbm_mse":
         return LGBMRegressor(
             objective="regression",
-            n_estimators=650, learning_rate=0.018, num_leaves=28, min_child_samples=85,
+            **_gb(650, 0.018), num_leaves=28, min_child_samples=85,
             subsample=0.75, subsample_freq=1, colsample_bytree=0.50, reg_lambda=12.0,
-            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, verbose=-1,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, max_bin=63, verbose=-1,
+        )
+    if name == "lgbm_mse_deep":
+        return LGBMRegressor(
+            objective="regression", num_leaves=45, max_depth=6, min_child_samples=60,
+            **_gb(750, 0.015), colsample_bytree=0.55,
+            subsample=0.80, subsample_freq=1, reg_lambda=15.0,
+            random_state=seed, n_jobs=n_jobs, deterministic=True, force_col_wise=True, max_bin=63, verbose=-1,
         )
     if name == "catboost":
         cb_kwargs: dict[str, Any] = {
@@ -193,7 +211,7 @@ def make_regressor(
         return CatBoostRegressor(**cb_kwargs)
     if name == "catboost_huber":
         cb_kwargs: dict[str, Any] = {
-            "iterations": 550, "learning_rate": 0.035, "depth": 5, "l2_leaf_reg": 10.0, "loss_function": "Huber:delta=0.85",
+            "iterations": 550, "learning_rate": 0.035, "depth": 5, "l2_leaf_reg": 10.0, "loss_function": f"Huber:delta={huber_alpha}",
             "random_seed": seed, "verbose": 0, "allow_writing_files": False,
         }
         if use_gpu:
@@ -205,7 +223,7 @@ def make_regressor(
     if name in ("xgb", "xgb_tweedie"):
         xgb_kwargs: dict[str, Any] = {
             "objective": "reg:tweedie", "tweedie_variance_power": tweedie_power,
-            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            **_gb(550, 0.018), "max_depth": 4, "min_child_weight": 6.5,
             "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
             "random_state": seed, "n_jobs": n_jobs,
         }
@@ -215,7 +233,7 @@ def make_regressor(
     if name == "xgb_huber":
         xgb_kwargs: dict[str, Any] = {
             "objective": "reg:pseudohubererror",
-            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            **_gb(550, 0.018), "max_depth": 4, "min_child_weight": 6.5,
             "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
             "random_state": seed, "n_jobs": n_jobs,
         }
@@ -225,7 +243,7 @@ def make_regressor(
     if name == "xgb_mse":
         xgb_kwargs: dict[str, Any] = {
             "objective": "reg:squarederror",
-            "n_estimators": 550, "learning_rate": 0.018, "max_depth": 4, "min_child_weight": 6.5,
+            **_gb(550, 0.018), "max_depth": 4, "min_child_weight": 6.5,
             "subsample": 0.75, "colsample_bytree": 0.50, "reg_lambda": 14.0, "tree_method": "hist",
             "random_state": seed, "n_jobs": n_jobs,
         }
@@ -262,10 +280,18 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
     """Multiclass probabilistic classifier."""
     if name == "lgbm":
         return LGBMClassifier(
-            objective="multiclass", n_estimators=450, learning_rate=0.018, num_leaves=30,
+            objective="multiclass", **_gb(450, 0.018), num_leaves=30,
             min_child_samples=85, subsample=0.77, subsample_freq=1, colsample_bytree=0.58,
             reg_lambda=10.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
-            force_col_wise=True, verbose=-1,
+            force_col_wise=True, max_bin=63, verbose=-1,
+        )
+    if name == "lgbm_balanced":
+        return LGBMClassifier(
+            objective="multiclass", class_weight="balanced",
+            **_gb(400, 0.018), num_leaves=24,
+            min_child_samples=95, subsample=0.77, subsample_freq=1, colsample_bytree=0.55,
+            reg_lambda=15.0, random_state=seed, n_jobs=n_jobs, deterministic=True,
+            force_col_wise=True, max_bin=63, verbose=-1,
         )
     if name == "catboost":
         cb_kwargs: dict[str, Any] = {
@@ -280,7 +306,7 @@ def make_classifier(name: str, seed: int, n_jobs: int, use_gpu: bool = False) ->
         return CatBoostClassifier(**cb_kwargs)
     if name == "xgb":
         xgb_kwargs: dict[str, Any] = {
-            "objective": "multi:softprob", "n_estimators": 350, "learning_rate": 0.031, "max_depth": 5,
+            "objective": "multi:softprob", **_gb(350, 0.031), "max_depth": 5,
             "min_child_weight": 4.74, "subsample": 0.75, "colsample_bytree": 0.68, "reg_lambda": 9.2,
             "tree_method": "hist", "random_state": seed, "n_jobs": n_jobs,
         }
@@ -423,6 +449,7 @@ class ClassifierEnsemble:
             for m in self.members
         ]
         self.classes_: np.ndarray | None = None
+        self.class_priors_: np.ndarray | None = None
         if weights is not None:
             self.set_weights(weights)
         else:
@@ -435,10 +462,13 @@ class ClassifierEnsemble:
         self.weights = w / w.sum()
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "ClassifierEnsemble":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y = np.asarray(y, dtype=int)
         if y.min() < 0 or y.max() >= self.n_classes:
             raise ValueError("Class indices out of range")
         self.classes_ = np.unique(y)
+        self.class_priors_ = np.bincount(y, minlength=self.n_classes) / float(len(y))
         encoded = np.searchsorted(self.classes_, y)  # contiguous 0..P-1 (required by XGBoost)
         for sub_list in self.models:
             for model in sub_list:
@@ -449,15 +479,22 @@ class ClassifierEnsemble:
         """Per-member probabilities aligned to the full label space, averaged over seeds."""
         if self.classes_ is None:
             raise RuntimeError("Ensemble is not fitted")
+        if isinstance(X, pd.DataFrame) and hasattr(self, "feature_names_in_"):
+            if set(self.feature_names_in_).issubset(X.columns) and len(X.columns) != len(self.feature_names_in_):
+                X = X[self.feature_names_in_]
         out = []
-        for sub_list in self.models:
+        for m_name, sub_list in zip(self.members, self.models):
             seed_probs = []
             for model in sub_list:
                 p = np.asarray(model.predict_proba(_prepare_model_X(model, X)), dtype="float64")
                 full = np.zeros((len(X), self.n_classes))
                 full[:, self.classes_] = p
                 seed_probs.append(full)
-            out.append(np.mean(seed_probs, axis=0))
+            avg_p = np.mean(seed_probs, axis=0)
+            if m_name == "lgbm_balanced" and self.class_priors_ is not None:
+                recal = avg_p * self.class_priors_
+                avg_p = recal / np.maximum(recal.sum(axis=1, keepdims=True), 1e-12)
+            out.append(avg_p)
         return out
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
@@ -674,6 +711,8 @@ class HierarchicalOpportunityClassifier:
         self.temp_fg: float = 1.0
 
     def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "HierarchicalOpportunityClassifier":
+        if isinstance(X, pd.DataFrame):
+            self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype=int)
         y_inact = (y_arr == self.inact_idx).astype(int)
         sw = np.asarray(sample_weight, dtype=np.float32) if sample_weight is not None else None
@@ -708,6 +747,9 @@ class HierarchicalOpportunityClassifier:
         return self
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        if isinstance(X, pd.DataFrame) and hasattr(self, "feature_names_in_"):
+            if set(self.feature_names_in_).issubset(X.columns) and len(X.columns) != len(self.feature_names_in_):
+                X = X[self.feature_names_in_]
         p_inact_raw = (
             0.40 * self.clf_inact_lgb.predict_proba(_prepare_model_X(self.clf_inact_lgb, X))[:, 1]
             + 0.30 * self.clf_inact_cb.predict_proba(_prepare_model_X(self.clf_inact_cb, X))[:, 1]
@@ -938,7 +980,7 @@ class StructuralMetaClassifier:
         sample_weight: np.ndarray | None = None,
         groups: Any | None = None,
     ) -> np.ndarray:
-        """Fits meta-learner and produces 100% out-of-fold probability predictions."""
+        """Fits meta-learner using strictly causal forward-expanding cutoff splits (zero future lookahead)."""
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         X_lr = self._to_logreg_features(X_df)
         y_arr = np.asarray(y, dtype=int)
@@ -946,53 +988,81 @@ class StructuralMetaClassifier:
         n = len(X_df)
         oof_probs = np.zeros((n, self.n_classes), dtype=np.float64)
 
-        from sklearn.model_selection import GroupKFold, StratifiedKFold
-        if groups is not None and len(np.unique(groups)) >= 3:
-            n_splits = min(5, len(np.unique(groups)))
-            cv = GroupKFold(n_splits=n_splits)
-            splits = list(cv.split(X_df, y_arr, groups=groups))
-        else:
-            n_splits = min(5, max(2, n // 50))
-            cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=self.seed)
-            splits = list(cv.split(X_df, y_arr))
-
         from sklearn.base import clone
-        for tr_idx, val_idx in splits:
-            X_tr, y_tr = X_df.iloc[tr_idx], y_arr[tr_idx]
-            X_v = X_df.iloc[val_idx]
-            X_tr_lr = X_lr.iloc[tr_idx]
-            X_v_lr = X_lr.iloc[val_idx]
-            sw_tr = sw[tr_idx] if sw is not None else None
+        from sklearn.model_selection import StratifiedKFold
 
-            fold_lgb = clone(self.lgb)
-            fold_lr = clone(self.logreg)
+        if groups is not None:
+            cutoffs_arr = pd.to_datetime(pd.Series(groups)).to_numpy()
+            unique_cutoffs = np.sort(np.unique(cutoffs_arr))
+        else:
+            unique_cutoffs = np.array([])
 
-            if sw_tr is not None:
-                fold_lgb.fit(X_tr, y_tr, sample_weight=sw_tr)
-                fold_lr.fit(X_tr_lr, y_tr, lr__sample_weight=sw_tr)
-            else:
-                fold_lgb.fit(X_tr, y_tr)
-                fold_lr.fit(X_tr_lr, y_tr)
+        if len(unique_cutoffs) >= 2:
+            # 1. Earliest cutoff c_0: cross-fit strictly within c_0 (zero future cutoffs used)
+            c0_mask = cutoffs_arr == unique_cutoffs[0]
+            c0_indices = np.where(c0_mask)[0]
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.seed)
+            for tr_sub, val_sub in skf.split(X_df.iloc[c0_indices], y_arr[c0_indices]):
+                tr_idx = c0_indices[tr_sub]
+                val_idx = c0_indices[val_sub]
+                self._fit_and_predict_split(X_df, X_lr, y_arr, sw, tr_idx, val_idx, oof_probs)
 
-            p_lgb = fold_lgb.predict_proba(X_v)
-            p_lr = fold_lr.predict_proba(X_v_lr)
+            # 2. Subsequent cutoffs c_m (m >= 1): train strictly on past cutoffs < c_m
+            for c_m in unique_cutoffs[1:]:
+                tr_idx = np.where(cutoffs_arr < c_m)[0]
+                val_idx = np.where(cutoffs_arr == c_m)[0]
+                self._fit_and_predict_split(X_df, X_lr, y_arr, sw, tr_idx, val_idx, oof_probs)
+        else:
+            skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=self.seed)
+            for tr_idx, val_idx in skf.split(X_df, y_arr):
+                self._fit_and_predict_split(X_df, X_lr, y_arr, sw, tr_idx, val_idx, oof_probs)
 
-            full_p = np.zeros((len(X_v), self.n_classes), dtype=np.float64)
-            for i, cls_idx in enumerate(fold_lgb.classes_):
-                if cls_idx < self.n_classes:
-                    full_p[:, cls_idx] += 0.65 * p_lgb[:, i]
-
-            lr_model = fold_lr.named_steps["lr"]
-            for i, cls_idx in enumerate(lr_model.classes_):
-                if cls_idx < self.n_classes:
-                    full_p[:, cls_idx] += 0.35 * p_lr[:, i]
-
-            row_s = full_p.sum(axis=1, keepdims=True)
-            oof_probs[val_idx] = full_p / np.maximum(row_s, 1e-12)
-
-        # Fit final full model on all training data for future test inference
+        # Fit final full model on all training data for forward holdout / test inference
         self.fit(X_df, y_arr, sample_weight=sw)
         return oof_probs
+
+    def _fit_and_predict_split(
+        self,
+        X_df: pd.DataFrame,
+        X_lr: pd.DataFrame,
+        y_arr: np.ndarray,
+        sw: np.ndarray | None,
+        tr_idx: np.ndarray,
+        val_idx: np.ndarray,
+        oof_probs: np.ndarray,
+    ) -> None:
+        from sklearn.base import clone
+        X_tr, y_tr = X_df.iloc[tr_idx], y_arr[tr_idx]
+        X_v = X_df.iloc[val_idx]
+        X_tr_lr = X_lr.iloc[tr_idx]
+        X_v_lr = X_lr.iloc[val_idx]
+        sw_tr = sw[tr_idx] if sw is not None else None
+
+        fold_lgb = clone(self.lgb)
+        fold_lr = clone(self.logreg)
+
+        if sw_tr is not None:
+            fold_lgb.fit(X_tr, y_tr, sample_weight=sw_tr)
+            fold_lr.fit(X_tr_lr, y_tr, lr__sample_weight=sw_tr)
+        else:
+            fold_lgb.fit(X_tr, y_tr)
+            fold_lr.fit(X_tr_lr, y_tr)
+
+        p_lgb = fold_lgb.predict_proba(X_v)
+        p_lr = fold_lr.predict_proba(X_v_lr)
+
+        full_p = np.zeros((len(X_v), self.n_classes), dtype=np.float64)
+        for i, cls_idx in enumerate(fold_lgb.classes_):
+            if cls_idx < self.n_classes:
+                full_p[:, cls_idx] += 0.65 * p_lgb[:, i]
+
+        lr_model = fold_lr.named_steps["lr"]
+        for i, cls_idx in enumerate(lr_model.classes_):
+            if cls_idx < self.n_classes:
+                full_p[:, cls_idx] += 0.35 * p_lr[:, i]
+
+        row_s = full_p.sum(axis=1, keepdims=True)
+        oof_probs[val_idx] = full_p / np.maximum(row_s, 1e-12)
 
     def predict_proba(self, X: pd.DataFrame | np.ndarray) -> np.ndarray:
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)

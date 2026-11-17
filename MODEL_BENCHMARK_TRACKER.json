@@ -284,6 +284,202 @@
         }
       ],
       "is_champion": false
+    },
+    {
+      "timestamp": "2026-10-18 19:13:19",
+      "git_commit": "aade87695c6b16ae742987a30983ca1db89265e8",
+      "run_id": "run_1792343599",
+      "composite_score": 0.2860669627117286,
+      "fuel_rmse": 0.5965611646727426,
+      "nonfuel_rmse": 0.7449316570908461,
+      "opportunity_f1": 0.5044700406974753,
+      "score_breakdown": {
+        "score_fuel": 0.05815087918672598,
+        "score_nonfuel": 0.026128067246012465,
+        "score_opportunity": 0.20178801627899012,
+        "total_score": 0.2860669627117286
+      },
+      "seat_counts": {
+        "Stable": 2038,
+        "Fuel Growth": 1689,
+        "Inactivity": 1253,
+        "Retail Growth + Adoption": 508,
+        "Adoption (Pure)": 5
+      },
+      "folds": [
+        {
+          "fold": "Winter_2025-06-01",
+          "cutoff_date": "Winter_2025-06-01",
+          "fuel_rmse": 0.595,
+          "nonfuel_rmse": 0.7355,
+          "opp_f1": 0.5051,
+          "composite": 0.2904
+        },
+        {
+          "fold": "MidWinter_2025-07-01",
+          "cutoff_date": "MidWinter_2025-07-01",
+          "fuel_rmse": 0.5945,
+          "nonfuel_rmse": 0.7382,
+          "opp_f1": 0.4804,
+          "composite": 0.2798
+        },
+        {
+          "fold": "LateWinter_2025-08-01",
+          "cutoff_date": "LateWinter_2025-08-01",
+          "fuel_rmse": 0.6038,
+          "nonfuel_rmse": 0.7381,
+          "opp_f1": 0.4893,
+          "composite": 0.2796
+        },
+        {
+          "fold": "Spring_2025-09-01",
+          "cutoff_date": "Spring_2025-09-01",
+          "fuel_rmse": 0.5973,
+          "nonfuel_rmse": 0.7452,
+          "opp_f1": 0.5008,
+          "composite": 0.2842
+        }
+      ],
+      "is_champion": false
+    },
+    {
+      "timestamp": "2026-10-18 22:36:56",
+      "git_commit": "aade87695c6b16ae742987a30983ca1db89265e8",
+      "run_id": "run_1792355816",
+      "composite_score": 0.28680789846656735,
+      "fuel_rmse": 0.5965656867388979,
+      "nonfuel_rmse": 0.7445372485328441,
+      "opportunity_f1": 0.505964455393919,
+      "score_breakdown": {
+        "score_fuel": 0.05814904591666302,
+        "score_nonfuel": 0.026273070392336718,
+        "score_opportunity": 0.2023857821575676,
+        "total_score": 0.28680789846656735
+      },
+      "seat_counts": {
+        "Stable": 1955,
+        "Fuel Growth": 1575,
+        "Inactivity": 1449,
+        "Retail Growth + Adoption": 509,
+        "Adoption (Pure)": 8
+      },
+      "folds": [
+        {
+          "fold": "Winter_2025-06-01",
+          "cutoff_date": "Winter_2025-06-01",
+          "fuel_rmse": 0.5951,
+          "nonfuel_rmse": 0.7356,
+          "opp_f1": 0.5049,
+          "composite": 0.2903
+        },
+        {
+          "fold": "MidWinter_2025-07-01",
+          "cutoff_date": "MidWinter_2025-07-01",
+          "fuel_rmse": 0.594,
+          "nonfuel_rmse": 0.7383,
+          "opp_f1": 0.4818,
+          "composite": 0.2805
+        },
+        {
+          "fold": "LateWinter_2025-08-01",
+          "cutoff_date": "LateWinter_2025-08-01",
+          "fuel_rmse": 0.6033,
+          "nonfuel_rmse": 0.7379,
+          "opp_f1": 0.491,
+          "composite": 0.2805
+        },
+        {
+          "fold": "Spring_2025-09-01",
+          "cutoff_date": "Spring_2025-09-01",
+          "fuel_rmse": 0.5968,
+          "nonfuel_rmse": 0.7446,
+          "opp_f1": 0.5022,
+          "composite": 0.2852
+        }
+      ],
+      "is_champion": false
+    },
+    {
+      "timestamp": "2026-10-18 23:50:42",
+      "git_commit": "aade87695c6b16ae742987a30983ca1db89265e8",
+      "run_id": "run_1792360242",
+      "composite_score": 0.2892650610740072,
+      "fuel_rmse": 0.5976013051332529,
+      "nonfuel_rmse": 0.7434587285273906,
+      "opportunity_f1": 0.5121656883803223,
+      "score_breakdown": {
+        "score_fuel": 0.057729200621654216,
+        "score_nonfuel": 0.026669585100224023,
+        "score_opportunity": 0.20486627535212892,
+        "total_score": 0.2892650610740072
+      },
+      "seat_counts": {
+        "Stable": 1954,
+        "Fuel Growth": 1575,
+        "Inactivity": 1449,
+        "Retail Growth + Adoption": 510,
+        "Adoption (Pure)": 1
+      },
+      "folds": [
+        {
+          "fold": "Winter_2025-06-01",
+          "cutoff_date": "Winter_2025-06-01",
+          "fuel_rmse": 0.5944,
+          "nonfuel_rmse": 0.7344,
+          "opp_f1": 0.5031,
+          "composite": 0.2903
+        },
+        {
+          "fold": "Spring_2025-09-01",
+          "cutoff_date": "Spring_2025-09-01",
+          "fuel_rmse": 0.5968,
+          "nonfuel_rmse": 0.7447,
+          "opp_f1": 0.5018,
+          "composite": 0.285
+        }
+      ],
+      "is_champion": false
+    },
+    {
+      "timestamp": "2026-10-19 00:25:17",
+      "git_commit": "aade87695c6b16ae742987a30983ca1db89265e8",
+      "run_id": "run_1792362317",
+      "composite_score": 0.2889674939512233,
+      "fuel_rmse": 0.5976013049189304,
+      "nonfuel_rmse": 0.7434587242653403,
+      "opportunity_f1": 0.5114217664388181,
+      "score_breakdown": {
+        "score_fuel": 0.05772920070854175,
+        "score_nonfuel": 0.026669586667154275,
+        "score_opportunity": 0.20456870657552725,
+        "total_score": 0.2889674939512233
+      },
+      "seat_counts": {
+        "Stable": 1953,
+        "Fuel Growth": 1577,
+        "Inactivity": 1449,
+        "Retail Growth + Adoption": 509,
+        "Adoption (Pure)": 0
+      },
+      "folds": [
+        {
+          "fold": "Winter_2025-06-01",
+          "cutoff_date": "Winter_2025-06-01",
+          "fuel_rmse": 0.5944,
+          "nonfuel_rmse": 0.7344,
+          "opp_f1": 0.5048,
+          "composite": 0.291
+        },
+        {
+          "fold": "Spring_2025-09-01",
+          "cutoff_date": "Spring_2025-09-01",
+          "fuel_rmse": 0.5968,
+          "nonfuel_rmse": 0.7447,
+          "opp_f1": 0.4984,
+          "composite": 0.2837
+        }
+      ],
+      "is_champion": false
     }
   ]
 }

@@ -1,6 +1,6 @@
 """Transaction loading, schema validation and row-level annotation.
 
-Parsing is delegated to :func:`label_rules.prepare` so that the exact integer
+Parsing is delegated to :func:`src.label_rules.prepare` so that the exact integer
 micro-unit amounts (``_quantity``/``_amount``) and timestamps used by the official
 label generator are reused verbatim — guaranteeing feature/label parity.
 """
@@ -8,14 +8,34 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
 
-import label_rules
+from src import label_rules
 from src.config import PipelineConfig
 
 logger = logging.getLogger(__name__)
+
+ZINDI_DATA_INSTRUCTIONS = (
+    "Download the Sasol CLV & Opportunity dataset from Zindi and place "
+    "`train.csv`, `test.csv`, and `SampleSubmission.csv` in the repository root "
+    "(or inside a local `data/` directory)."
+)
+
+
+def resolve_data_file(path: Path, description: str = "dataset file") -> Path:
+    """Return an existing local data file path or raise a clear FileNotFoundError."""
+    if path.exists():
+        return path
+    data_fallback = path.parent / "data" / path.name
+    if data_fallback.exists():
+        return data_fallback
+    raise FileNotFoundError(
+        f"Missing required {description}: '{path.name}' was not found at {path} "
+        f"or {data_fallback}. {ZINDI_DATA_INSTRUCTIONS}"
+    )
 
 SCHEMA_VERSION = "v2"
 REQUIRED_COLUMNS: tuple[str, ...] = (
@@ -81,7 +101,8 @@ def annotate(tx: pd.DataFrame, label_config: Mapping[str, Any]) -> pd.DataFrame:
 
 
 def _cache_key(cfg: PipelineConfig) -> str:
-    stat = cfg.paths.train_csv.stat()
+    train_path = resolve_data_file(cfg.paths.train_csv, "training transactions CSV")
+    stat = train_path.stat()
     payload = f"{SCHEMA_VERSION}|{stat.st_size}|{stat.st_mtime_ns}"
     return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
@@ -92,6 +113,7 @@ def load_transactions(cfg: PipelineConfig) -> pd.DataFrame:
     The cache key depends on the CSV size/mtime and ``SCHEMA_VERSION`` so a changed
     source file or parsing logic can never be served from a stale cache.
     """
+    train_path = resolve_data_file(cfg.paths.train_csv, "training transactions CSV")
     cache = cfg.paths.cache_dir / f"transactions_{_cache_key(cfg)}.parquet"
     if cfg.use_cache and cache.exists():
         logger.info("Loading cached transactions from %s", cache.name)
@@ -103,8 +125,8 @@ def load_transactions(cfg: PipelineConfig) -> pd.DataFrame:
                 tx["modifier_amount"] = 0.0
         return tx
 
-    logger.info("Parsing %s", cfg.paths.train_csv.name)
-    raw = pd.read_csv(cfg.paths.train_csv, dtype=str, keep_default_na=False)
+    logger.info("Parsing %s", train_path.name)
+    raw = pd.read_csv(train_path, dtype=str, keep_default_na=False)
     validate_raw_schema(raw, cfg.label_config)
     tx = annotate(label_rules.prepare(raw), cfg.label_config)
     cfg.paths.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -115,4 +137,5 @@ def load_transactions(cfg: PipelineConfig) -> pd.DataFrame:
 
 def load_test_ids(cfg: PipelineConfig) -> list[str]:
     """Test customer IDs as strings, in file order."""
-    return pd.read_csv(cfg.paths.test_csv, dtype=str)["ID"].tolist()
+    test_path = resolve_data_file(cfg.paths.test_csv, "test customer IDs CSV")
+    return pd.read_csv(test_path, dtype=str)["ID"].tolist()

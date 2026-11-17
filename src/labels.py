@@ -1,11 +1,11 @@
-"""Ground-truth label generation (thin, validated wrapper around ``label_rules``)."""
+"""Ground-truth label generation (thin, validated wrapper around ``src.label_rules``)."""
 from __future__ import annotations
 
 from typing import Any, Mapping
 
 import pandas as pd
 
-import label_rules
+from src import label_rules
 
 LABEL_COLUMNS: tuple[str, ...] = (
     "CLV_fuel", "CLV_nonfuel", "Opportunity", "fuel_litres", "nonfuel_rand",

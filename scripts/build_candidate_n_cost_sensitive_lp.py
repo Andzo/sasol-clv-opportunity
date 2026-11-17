@@ -27,6 +27,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.data import resolve_data_file
+
 from src.boundary import build_boundary_features, BinaryBoundaryClassifier
 from src.optimization import build_cost_sensitive_matrix, solve_optimal_transport_lp
 
@@ -35,7 +37,7 @@ logger = logging.getLogger("build_candidate_n")
 
 
 def main() -> None:
-    test_csv = PROJECT_ROOT / "test.csv"
+    test_csv = resolve_data_file(PROJECT_ROOT / "test.csv", "test customer IDs CSV")
     test_df = pd.read_csv(test_csv)
     test_ids = [str(x) for x in test_df["ID"]]
     N_test = len(test_ids)

@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 
 from src.data import included_categories
 
-FEATURE_VERSION = "4.0.0"
+FEATURE_VERSION = "5.0.0"
 DAY = pd.Timedelta(days=1)
 DAYS_PER_MONTH = 30.4375
 TENURE_CAP_DAYS = 180.0
@@ -80,9 +80,7 @@ WINDOWS: dict[str, tuple[int, int]] = {
 }
 TREND_MONTHS = 6
 
-DEAD_CATEGORIES: set[str] = {
-    "Frozen food", "Krispy Kreme", "Miscellaneous", "Promotional items", "Unknown"
-}
+DEAD_CATEGORIES: set[str] = set()
 ACTIVE_ADJUSTMENT_ITEMS: tuple[str, ...] = ("TOTAL/ROUNDING DISCO",)
 
 
@@ -101,7 +99,7 @@ def _days_since(t: pd.Timestamp, times: pd.Series) -> pd.Series:
 
 
 def _window_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start: pd.Timestamp) -> pd.DataFrame:
-    """Activity / spend / volume aggregates for each calendar window."""
+    """Activity / spend / volume aggregates for each calendar window plus d14/d45 sub-windows."""
     frames = []
 
     for name, (start, end) in WINDOWS.items():
@@ -121,8 +119,21 @@ def _window_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start
             block.loc[:, :] = np.nan
         frames.append(block)
 
-    return pd.concat(frames, axis=1)
+    for days_back, tag in [(14, "d14"), (45, "d45")]:
+        lo_d = t - pd.Timedelta(days=days_back)
+        w_d = hist[(hist["_time"] >= lo_d) & (hist["_time"] < t)]
+        q_d, s_d = w_d[w_d["is_qualifying"]], w_d[w_d["in_scope"]]
+        d_block = pd.DataFrame({
+            f"{tag}_baskets": q_d.groupby("ID")["TransactionId"].nunique(),
+            f"{tag}_fuel_litres": s_d[s_d["is_fuel_sale"]].groupby("ID")["qty"].sum(),
+            f"{tag}_fuel_rand": s_d[s_d["is_fuel_cat"]].groupby("ID")["amount"].sum(),
+            f"{tag}_nonfuel_rand": s_d[s_d["is_nonfuel"]].groupby("ID")["amount"].sum(),
+        }).reindex(ids).astype("float64").fillna(0.0)
+        if lo_d < data_start:
+            d_block.loc[:, :] = np.nan
+        frames.append(d_block)
 
+    return pd.concat(frames, axis=1)
 
 
 def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
@@ -130,6 +141,7 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out: dict[str, pd.Series] = {}
     for qty in ("baskets", "fuel_litres", "nonfuel_rand"):
         out[f"mom_m3_q2_{qty}"] = (win[f"m3_{qty}"] + 1.0) / (win[f"q2_{qty}"] + 1.0)
+    out["delta_m3_q2_fuel_litres"] = win["m3_fuel_litres"] - win["q2_fuel_litres"]
     out["delta_m3_q2_fuel_rand"] = win["m3_fuel_rand"] - win["q2_fuel_rand"]
     out["delta_m3_q2_nonfuel_rand"] = win["m3_nonfuel_rand"] - win["q2_nonfuel_rand"]
     out["m1_share_of_m3_baskets"] = win["m1_baskets"] / win["m3_baskets"].where(win["m3_baskets"] > 0)
@@ -139,6 +151,14 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     spend = win["m3_fuel_rand"] + win["m3_nonfuel_rand"]
     out["basket_value_m3"] = spend / win["m3_baskets"].where(win["m3_baskets"] > 0)
     out["fuel_share_m3"] = win["m3_fuel_rand"] / spend.where(spend > 0)
+
+    # Pure physical litres behavioural momentum (insulated from pump price changes)
+    out["fuel_litres_m1_m3_ratio"] = (win["m1_fuel_litres"] + 1.0) / (win["m3_fuel_litres"] / 3.0 + 1.0)
+    out["fuel_litres_reversion_ratio"] = (win["m3_fuel_litres"] / 3.0 + 1.0) / (win["m6_fuel_litres"] / 6.0 + 1.0)
+    out["fuel_d14_m1_litres_ratio"] = (win["d14_fuel_litres"] * (30.4375 / 14.0) + 1.0) / (win["m1_fuel_litres"] + 1.0)
+    out["nonfuel_d14_m1_rand_ratio"] = (win["d14_nonfuel_rand"] * (30.4375 / 14.0) + 5.0) / (win["m1_nonfuel_rand"] + 5.0)
+
+    # Nominal Rand ratios (for Rule 5 & 6 nominal hurdle comparison)
     out["fuel_m1_m3_ratio"] = (win["m1_fuel_rand"] + 1.0) / (win["m3_fuel_rand"] / 3.0 + 1.0)
     out["nonfuel_m1_m3_ratio"] = (win["m1_nonfuel_rand"] + 1.0) / (win["m3_nonfuel_rand"] / 3.0 + 1.0)
     out["fuel_reversion_ratio"] = (win["m3_fuel_rand"] / 3.0 + 1.0) / (win["m6_fuel_rand"] / 6.0 + 1.0)
@@ -150,7 +170,6 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     fuel_growth_hurdle = np.maximum(20.0, 0.25 * win["m3_fuel_rand"])
     out["fuel_hurdle_ratio"] = fuel_growth_hurdle / (win["m3_fuel_rand"] + 1.0)
     out["hurdle_growth_required_rand"] = fuel_growth_hurdle
-    # Distance between projected quarterly spend (3.0 * m1_rand) and hurdle H_C
     out["hurdle_fuel_rand_dist"] = 3.0 * win["m1_fuel_rand"] - H_fuel
     out["fuel_proj_m1_hurdle_ratio"] = (3.0 * win["m1_fuel_rand"] + 1.0) / (H_fuel + 1.0)
     out["fuel_proj_q2_hurdle_dist"] = win["q2_fuel_rand"] - H_fuel
@@ -175,11 +194,15 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
         1.25 * win["m3_fuel_litres"],
         win["m3_fuel_litres"] + 20.0 / pump_price_clamped,
     )
+    price_ratio_m3_m1 = float(np.clip(p_m3 / max(p_m1, 1e-4), 0.80, 1.25))
+    out["real_fuel_hurdle_litres_price_adj"] = np.maximum(
+        1.25 * win["m3_fuel_litres"] * price_ratio_m3_m1,
+        win["m3_fuel_litres"] * price_ratio_m3_m1 + 20.0 / max(p_m1, 15.0),
+    )
 
     out["store_attachment_rate"] = win["m3_nonfuel_baskets"] / (win["m3_baskets"] + 1.0)
     out["has_visited_m1"] = (win["m1_baskets"] > 0).astype("float64")
 
-    # Inverted YoY to m3 ratios (high yoy_q / m3 > 1.25 signals seasonal surge)
     if "yoy_q_baskets" in win.columns:
         for qty in ("baskets", "fuel_litres", "nonfuel_rand", "fuel_rand"):
             if f"yoy_q_{qty}" in win.columns and f"m3_{qty}" in win.columns:
@@ -265,9 +288,22 @@ def _trend_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp, data_start:
     out["active_months_6"] = (out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].to_numpy() > 0).sum(axis=1).astype("float64")
     out.loc[out[[f"baskets_lag{k}" for k in range(1, TREND_MONTHS + 1)]].isna().any(axis=1), "active_months_6"] = np.nan
 
-    # Drop redundant lag1 columns (already captured by m1_*) and fuel_rand_lag* columns
+    # Intra-quarter acceleration (Month -1 vs Month -2 vs Month -3)
+    out["baskets_m1_vs_m2"] = (out["baskets_lag1"] + 0.5) / (out["baskets_lag2"] + 0.5)
+    out["baskets_m2_vs_m3"] = (out["baskets_lag2"] + 0.5) / (out["baskets_lag3"] + 0.5)
+    out["fuel_litres_m1_vs_m2"] = (out["fuel_litres_lag1"] + 1.0) / (out["fuel_litres_lag2"] + 1.0)
+    out["fuel_litres_m2_vs_m3"] = (out["fuel_litres_lag2"] + 1.0) / (out["fuel_litres_lag3"] + 1.0)
+    out["nonfuel_rand_m1_vs_m2"] = (out["nonfuel_rand_lag1"] + 5.0) / (out["nonfuel_rand_lag2"] + 5.0)
+    out["nonfuel_rand_m2_vs_m3"] = (out["nonfuel_rand_lag2"] + 5.0) / (out["nonfuel_rand_lag3"] + 5.0)
+    out["active_months_m3"] = (
+        (out["baskets_lag1"] > 0).astype("float64")
+        + (out["baskets_lag2"] > 0).astype("float64")
+        + (out["baskets_lag3"] > 0).astype("float64")
+    )
+
+    # Drop lag1 duplicates (captured by m1_*) and older fuel_rand_lag4..6, keeping fuel_rand_lag2..3
     drop_cols = [f"{p}_lag1" for p in ("baskets", "fuel_rand", "fuel_litres", "nonfuel_rand")]
-    drop_cols += [f"fuel_rand_lag{k}" for k in range(2, TREND_MONTHS + 1)]
+    drop_cols += [f"fuel_rand_lag{k}" for k in range(4, TREND_MONTHS + 1)]
     out = out.drop(columns=[c for c in drop_cols if c in out.columns])
     return out
 
@@ -612,7 +648,7 @@ def _btyd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFr
 
 
 def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
-    """Statistical hurdle physics, tail exceedance Z-scores, and spend volatility."""
+    """Statistical hurdle physics, tail exceedance Z-scores, and Rule 6 category competition."""
     out = pd.DataFrame(index=feats.index)
 
     # 1. Fuel Lags & Volatility
@@ -666,16 +702,12 @@ def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
     out["nonfuel_headroom_rand"] = nf_hurdle - m3_nf_rand
 
     # 3. Major Retail Hurdles (Beverages & Food & beverage)
-    m3_bev = feats["m3spend_beverages"] if "m3spend_beverages" in feats.columns else (
-        feats["cat_m3_rand_beverages"] if "cat_m3_rand_beverages" in feats.columns else pd.Series(0.0, index=feats.index)
-    )
+    m3_bev = feats["m3spend_beverages"] if "m3spend_beverages" in feats.columns else pd.Series(0.0, index=feats.index)
     H_bev = np.maximum(m3_bev + 20.0, 1.25 * m3_bev)
     out["bev_hurdle_rand"] = H_bev
     out["bev_headroom_rand"] = H_bev - m3_bev
 
-    m3_food = feats["m3spend_food_beverage"] if "m3spend_food_beverage" in feats.columns else (
-        feats["cat_m3_rand_food_beverage"] if "cat_m3_rand_food_beverage" in feats.columns else pd.Series(0.0, index=feats.index)
-    )
+    m3_food = feats["m3spend_food_beverage"] if "m3spend_food_beverage" in feats.columns else pd.Series(0.0, index=feats.index)
     H_food = np.maximum(m3_food + 20.0, 1.25 * m3_food)
     out["food_hurdle_rand"] = H_food
     out["food_headroom_rand"] = H_food - m3_food
@@ -683,57 +715,128 @@ def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
     # 4. Relative Z-score competition (Rule 6 argmax)
     out["z_diff_fuel_nonfuel"] = z_f - z_nf
 
-    # 5. Rule 7 Other-mapped Sub-Category Order Statistics
+    # 5. Rule 6 & Rule 7 Individual Category Competition Across All 24 Included Categories
     other_cats = [
         "Automotive Products", "Braai & Ice", "Breads & rolls", "Car Wash", "Coffee",
         "Confectionary", "Frozen food", "Gas", "General merchandise", "Groceries",
         "Ice-cream", "Krispy Kreme", "Lubricants", "Miscellaneous", "NA",
         "Perishables", "Promotional items", "Seattle", "Snacking", "Tobacco", "Unknown",
     ]
+    all_24_cats = ["Fuel", "Beverages", "Food & beverage"] + other_cats
+
     max_delta_rand = np.zeros(len(feats), dtype=np.float64)
     max_hurdle_ratio = np.zeros(len(feats), dtype=np.float64)
-    for c in other_cats:
+    n_clearing = np.zeros(len(feats), dtype=np.float64)
+    n_visited = np.zeros(len(feats), dtype=np.float64)
+    cat_increments: dict[str, np.ndarray] = {}
+
+    for c in all_24_cats:
         c_safe = safe_name(c)
         col_m3 = f"m3spend_{c_safe}"
         if col_m3 in feats.columns:
-            m3_c = feats[col_m3].to_numpy(dtype=np.float64)
+            m3_c = feats[col_m3].fillna(0.0).to_numpy(dtype=np.float64)
             col_m1 = f"m1spend_{c_safe}"
-            m1_c = feats[col_m1].to_numpy(dtype=np.float64) if col_m1 in feats.columns else np.zeros(len(feats))
+            m1_c = feats[col_m1].fillna(0.0).to_numpy(dtype=np.float64) if col_m1 in feats.columns else np.zeros(len(feats))
             col_q2 = f"q2spend_{c_safe}"
-            q2_c = feats[col_q2].to_numpy(dtype=np.float64) if col_q2 in feats.columns else np.zeros(len(feats))
+            q2_c = feats[col_q2].fillna(3.0 * pd.Series(m1_c, index=feats.index)).to_numpy(dtype=np.float64) if col_q2 in feats.columns else (3.0 * m1_c)
             col_ever = f"ever_{c_safe}"
-            ever_c = (feats[col_ever].to_numpy() > 0) if col_ever in feats.columns else (m3_c > 0)
+            ever_c = (feats[col_ever].fillna(0.0).to_numpy() > 0) if col_ever in feats.columns else (m3_c > 0)
 
             H_c = np.maximum(1.25 * m3_c, m3_c + 20.0)
             proj_spend = np.maximum(3.0 * m1_c, 0.5 * (3.0 * m1_c + q2_c))
             delta_rand = np.where(ever_c & (proj_spend >= H_c), proj_spend - m3_c, 0.0)
             ratio_c = np.where(ever_c, (3.0 * m1_c + 1.0) / (H_c + 1.0), 0.0)
 
-            max_delta_rand = np.maximum(max_delta_rand, delta_rand)
-            max_hurdle_ratio = np.maximum(max_hurdle_ratio, ratio_c)
+            cat_increments[c] = delta_rand
+            n_clearing += (ever_c & (proj_spend >= H_c)).astype(np.float64)
+            n_visited += ever_c.astype(np.float64)
+
+            if c in other_cats:
+                max_delta_rand = np.maximum(max_delta_rand, delta_rand)
+                max_hurdle_ratio = np.maximum(max_hurdle_ratio, ratio_c)
+        else:
+            cat_increments[c] = np.zeros(len(feats), dtype=np.float64)
 
     out["max_other_subcat_expected_delta_rand"] = max_delta_rand
     out["max_other_subcat_hurdle_ratio"] = max_hurdle_ratio
+    out["rule6_exp_inc_fuel"] = cat_increments["Fuel"]
+    out["rule6_exp_inc_beverages"] = cat_increments["Beverages"]
+    out["rule6_exp_inc_food_beverage"] = cat_increments["Food & beverage"]
+    out["rule6_exp_inc_other_growth"] = max_delta_rand
+    best_retail_inc = np.maximum.reduce([
+        cat_increments["Beverages"],
+        cat_increments["Food & beverage"],
+        max_delta_rand,
+    ])
+    out["rule6_fuel_minus_best_retail_inc"] = cat_increments["Fuel"] - best_retail_inc
+    out["rule6_n_categories_clearing_hurdle"] = n_clearing
+    out["rule6_n_unvisited_categories"] = 24.0 - n_visited
+
+    if "is_summer_outcome_window" in feats.columns and "station_summer_fuel_index" in feats.columns:
+        is_sum = feats["is_summer_outcome_window"].to_numpy() > 0.5
+        out["seasonal_expected_fuel_litres"] = feats["m3_fuel_litres"].to_numpy() * np.where(
+            is_sum, feats["station_summer_fuel_index"].to_numpy(), 1.0
+        )
+        out["seasonal_expected_nf_rand"] = feats["m3_nonfuel_rand"].to_numpy() * np.where(
+            is_sum, feats["station_summer_nf_index"].to_numpy(), 1.0
+        )
 
     return out
 
 
 def _longitudinal_panel_block(win: pd.DataFrame, recency: pd.DataFrame, ids: pd.Index) -> pd.DataFrame:
-    """Longitudinal lagged outcomes, tenure censoring, and hurdle clearing dynamics."""
+    """Longitudinal lagged outcomes, target-space anchors, tenure censoring, and hurdle clearing dynamics."""
     out = pd.DataFrame(index=ids)
-    out["lag1_clv_fuel"] = np.log1p(win["m3_fuel_litres"]) / 2.352825386185113
-    out["lag1_clv_nonfuel"] = np.log1p(win["m3_nonfuel_rand"]) / 2.4200904988927476
-    out["lag2_clv_fuel"] = np.log1p(win["q2_fuel_litres"]) / 2.352825386185113
-    out["lag2_clv_nonfuel"] = np.log1p(win["q2_nonfuel_rand"]) / 2.4200904988927476
+    s_f = 2.352825386185113
+    s_nf = 2.4200904988927476
+
+    out["lag1_clv_fuel"] = np.log1p(win["m3_fuel_litres"].clip(lower=0.0)) / s_f
+    out["lag1_clv_nonfuel"] = np.log1p(win["m3_nonfuel_rand"].clip(lower=0.0)) / s_nf
+    out["lag2_clv_fuel"] = np.log1p(win["q2_fuel_litres"].clip(lower=0.0)) / s_f
+    out["lag2_clv_nonfuel"] = np.log1p(win["q2_nonfuel_rand"].clip(lower=0.0)) / s_nf
     out["delta_lag_clv_fuel"] = out["lag1_clv_fuel"] - out["lag2_clv_fuel"]
     out["delta_lag_clv_nonfuel"] = out["lag1_clv_nonfuel"] - out["lag2_clv_nonfuel"]
+
+    out["proj_m1_clv_fuel"] = np.log1p(3.0 * win["m1_fuel_litres"].clip(lower=0.0)) / s_f
+    out["proj_m1_clv_nonfuel"] = np.log1p(3.0 * win["m1_nonfuel_rand"].clip(lower=0.0)) / s_nf
+    out["proj_d45_clv_fuel"] = np.log1p(2.0 * win["d45_fuel_litres"].clip(lower=0.0)) / s_f
+    out["proj_d45_clv_nonfuel"] = np.log1p(2.0 * win["d45_nonfuel_rand"].clip(lower=0.0)) / s_nf
+    out["proj_m6_clv_fuel"] = np.log1p(0.5 * win["m6_fuel_litres"].clip(lower=0.0)) / s_f
+    out["proj_m6_clv_nonfuel"] = np.log1p(0.5 * win["m6_nonfuel_rand"].clip(lower=0.0)) / s_nf
+
+    l2_f_fill = out["lag2_clv_fuel"].fillna(out["lag1_clv_fuel"])
+    m6_f_fill = out["proj_m6_clv_fuel"].fillna(out["lag1_clv_fuel"])
+    out["z_anchor_fuel_mean"] = (
+        0.45 * out["lag1_clv_fuel"] + 0.25 * out["proj_m1_clv_fuel"] + 0.15 * l2_f_fill + 0.15 * m6_f_fill
+    )
+    z_f_mat = np.column_stack([
+        out["lag1_clv_fuel"].to_numpy(),
+        out["proj_m1_clv_fuel"].to_numpy(),
+        l2_f_fill.to_numpy(),
+        m6_f_fill.to_numpy(),
+    ])
+    out["z_anchor_fuel_std"] = np.nanstd(z_f_mat, axis=1)
+    out["blup_empirical_innov_fuel"] = out["lag1_clv_fuel"] - 0.75 * l2_f_fill
+
+    l2_nf_fill = out["lag2_clv_nonfuel"].fillna(out["lag1_clv_nonfuel"])
+    m6_nf_fill = out["proj_m6_clv_nonfuel"].fillna(out["lag1_clv_nonfuel"])
+    out["z_anchor_nf_mean"] = (
+        0.45 * out["lag1_clv_nonfuel"] + 0.25 * out["proj_m1_clv_nonfuel"] + 0.15 * l2_nf_fill + 0.15 * m6_nf_fill
+    )
+    z_nf_mat = np.column_stack([
+        out["lag1_clv_nonfuel"].to_numpy(),
+        out["proj_m1_clv_nonfuel"].to_numpy(),
+        l2_nf_fill.to_numpy(),
+        m6_nf_fill.to_numpy(),
+    ])
+    out["z_anchor_nf_std"] = np.nanstd(z_nf_mat, axis=1)
+    out["blup_empirical_innov_nf"] = out["lag1_clv_nonfuel"] - 0.70 * l2_nf_fill
 
     tenure = recency["days_since_first_seen_capped"]
     out["tenure_days_capped_90"] = np.minimum(tenure, 90.0)
     annual_mult = 90.0 / np.maximum(np.minimum(tenure, 90.0), 7.0)
     out["m3_annualized_rate_fuel"] = win["m3_fuel_litres"] * annual_mult
     out["m3_annualized_rate_nonfuel"] = win["m3_nonfuel_rand"] * annual_mult
-
 
     cleared = (
         (win["m3_fuel_litres"] > 1.25 * win["q2_fuel_litres"])
@@ -742,7 +845,6 @@ def _longitudinal_panel_block(win: pd.DataFrame, recency: pd.DataFrame, ids: pd.
     dip_f = (win["m3_fuel_litres"] + 5.0) / (np.maximum(win["q2_fuel_litres"], 5.0) + 5.0)
     dip_nf = (win["m3_nonfuel_rand"] + 50.0) / (np.maximum(win["q2_nonfuel_rand"], 50.0) + 50.0)
 
-    # Censor when q2 is NaN
     q2_nan_f = win["q2_fuel_litres"].isna()
     q2_nan_nf = win["q2_nonfuel_rand"].isna()
     cleared = cleared.where(~q2_nan_f, np.nan)
@@ -1077,6 +1179,11 @@ def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) 
     out["station_summer_fuel_index"] = primary_loc.map(f_idx).fillna(1.0).astype("float64")
     out["station_summer_nf_index"] = primary_loc.map(nf_idx).fillna(1.0).astype("float64")
     out["station_summer_fg_rate"] = primary_loc.map(fg_rate).fillna(0.5).astype("float64")
+
+    angle = 2.0 * np.pi * (t.month - 1) / 12.0
+    out["cutoff_sin_month"] = float(np.sin(angle))
+    out["cutoff_cos_month"] = float(np.cos(angle))
+    out["is_summer_outcome_window"] = float(1.0 if t.month in (11, 12, 1) else 0.0)
     return out
 
 
@@ -1166,7 +1273,7 @@ def _prior_quarter_official_label_block(
 
     # Reconstruct realized label at t_prior using official rules
     try:
-        import label_rules
+        from src import label_rules
         raw = label_rules.raw_labels(hist, str(t_prior.date()), label_config).set_index("ID")
     except Exception:
         raw = pd.DataFrame()

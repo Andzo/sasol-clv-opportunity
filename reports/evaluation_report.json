@@ -1,45 +1,33 @@
 {
   "status": "SUCCESS",
-  "elapsed_seconds": 4287.93,
+  "elapsed_seconds": 1305.54,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5963330941488986,
-    "rmse_nonfuel": 0.7434393285188453,
-    "weighted_f1": 0.4783348567555042,
-    "macro_f1": 0.13939595303907856
+    "rmse_fuel": 0.5976013049189304,
+    "rmse_nonfuel": 0.7434587242653403,
+    "weighted_f1": 0.5114217664388181,
+    "macro_f1": 0.1593670423598674
   },
-  "leaderboard_composite_score": 0.27625,
-  "proxy_composite_score": 0.27625,
+  "leaderboard_composite_score": 0.28897,
+  "proxy_composite_score": 0.28897,
   "leaderboard_breakdown": {
-    "score_fuel": 0.05824334020990598,
-    "score_nonfuel": 0.026676717456306863,
-    "score_opportunity": 0.1913339427022017,
-    "total_score": 0.2762540003684145
+    "score_fuel": 0.05772920070854175,
+    "score_nonfuel": 0.026669586667154275,
+    "score_opportunity": 0.20456870657552725,
+    "total_score": 0.2889674939512233
   },
   "tournament_folds": {
     "Winter_2025-06-01": {
-      "rmse_fuel": 0.594,
-      "rmse_nonfuel": 0.7356,
-      "weighted_f1": 0.502,
-      "leaderboard_composite": 0.2895
-    },
-    "MidWinter_2025-07-01": {
-      "rmse_fuel": 0.5938,
-      "rmse_nonfuel": 0.7395,
-      "weighted_f1": 0.4804,
-      "leaderboard_composite": 0.2795
-    },
-    "LateWinter_2025-08-01": {
-      "rmse_fuel": 0.6033,
-      "rmse_nonfuel": 0.7381,
-      "weighted_f1": 0.4904,
-      "leaderboard_composite": 0.2803
+      "rmse_fuel": 0.5944,
+      "rmse_nonfuel": 0.7344,
+      "weighted_f1": 0.5048,
+      "leaderboard_composite": 0.291
     },
     "Spring_2025-09-01": {
-      "rmse_fuel": 0.5981,
-      "rmse_nonfuel": 0.7471,
-      "weighted_f1": 0.5,
-      "leaderboard_composite": 0.2828
+      "rmse_fuel": 0.5968,
+      "rmse_nonfuel": 0.7447,
+      "weighted_f1": 0.4984,
+      "leaderboard_composite": 0.2837
     }
   },
   "baselines": {
@@ -58,53 +46,68 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1955,
-    "Existing-category growth: Fuel": 1692,
-    "Inactivity": 1358,
-    "Existing-category growth: Other": 208,
-    "Existing-category growth: Beverages": 139,
-    "Existing-category growth: Food & beverage": 130,
-    "New category adoption: Other": 6
+    "Stable": 1953,
+    "Existing-category growth: Fuel": 1577,
+    "Inactivity": 1449,
+    "Existing-category growth: Other": 254,
+    "Existing-category growth: Beverages": 182,
+    "Existing-category growth: Food & beverage": 73
   },
-  "fuel_mean": 1.4714,
-  "nonfuel_mean": 0.7333,
+  "fuel_mean": 1.4503,
+  "nonfuel_mean": 0.7159,
+  "metric_protocol": "count_aligned_holdout",
+  "legacy_oof_prior_leaderboard_score": 0.2896,
   "blend_weights": {
-    "fuel": {
-      "lgbm_mse": 0.0,
-      "lgbm_huber": 0.0,
-      "lgbm_tweedie": 0.2361,
-      "xgb_mse": 0.1223,
-      "xgb_huber": 0.0117,
-      "catboost": 0.0,
-      "catboost_huber": 0.0301,
-      "ridge": 0.1404,
-      "extratrees": 0.0393,
-      "mlp": 0.0082,
-      "hurdle_bagged": 0.0048,
-      "hurdle_quantile": 0.0979,
-      "phys_basket": 0.198
+    "fuel_target": {
+      "fuel:lgbm_tweedie": 0.0864,
+      "fuel:xgb_mse": 0.0685,
+      "fuel:xgb_huber": 0.1903,
+      "fuel:ridge": 0.0981,
+      "fuel:extratrees": 0.1503,
+      "fuel:hurdle_bagged": 0.1493,
+      "fuel:hurdle_quantile": 0.0323,
+      "fuel:phys_basket": 0.1921,
+      "nonfuel:lgbm_tweedie": 0.0,
+      "nonfuel:xgb_mse": 0.0,
+      "nonfuel:xgb_huber": 0.0069,
+      "nonfuel:ridge": 0.0,
+      "nonfuel:extratrees": 0.0,
+      "nonfuel:hurdle_bagged": 0.0,
+      "nonfuel:hurdle_quantile": 0.0,
+      "nonfuel:phys_basket": 0.0,
+      "p_fuel_active": 0.0,
+      "p_store_active": 0.0,
+      "exp_fuel_hurdle": 0.0325,
+      "exp_nf_hurdle": 0.0
     },
-    "nonfuel": {
-      "lgbm_mse": 0.0,
-      "lgbm_huber": 0.0,
-      "lgbm_tweedie": 0.0,
-      "xgb_mse": 0.0,
-      "xgb_huber": 0.0,
-      "catboost": 0.0,
-      "catboost_huber": 0.0,
-      "ridge": 0.0,
-      "extratrees": 0.0,
-      "mlp": 0.0,
-      "hurdle_bagged": 0.0,
-      "hurdle_quantile": 0.0,
-      "phys_basket": 0.0
+    "nonfuel_target": {
+      "fuel:lgbm_tweedie": 0.0,
+      "fuel:xgb_mse": 0.0,
+      "fuel:xgb_huber": 0.0,
+      "fuel:ridge": 0.0,
+      "fuel:extratrees": 0.0,
+      "fuel:hurdle_bagged": 0.0,
+      "fuel:hurdle_quantile": 0.0,
+      "fuel:phys_basket": 0.0,
+      "nonfuel:lgbm_tweedie": 0.148,
+      "nonfuel:xgb_mse": 0.0871,
+      "nonfuel:xgb_huber": 0.2105,
+      "nonfuel:ridge": 0.019,
+      "nonfuel:extratrees": 0.1602,
+      "nonfuel:hurdle_bagged": 0.3254,
+      "nonfuel:hurdle_quantile": 0.0123,
+      "nonfuel:phys_basket": 0.0,
+      "p_fuel_active": 0.0505,
+      "p_store_active": 0.0,
+      "exp_fuel_hurdle": 0.0,
+      "exp_nf_hurdle": 0.0123
     }
   },
-  "temperature": 1.1,
-  "inactivity_threshold": 0.05,
+  "temperature": 1.0,
+  "inactivity_threshold": 0.0,
   "shrinkage_powers": {
-    "fuel": 0.05,
-    "nonfuel_alpha": 0.05,
-    "nonfuel_beta": 0.05
+    "fuel": 0.0,
+    "nonfuel_alpha": 0.0,
+    "nonfuel_beta": 0.0
   }
 }
