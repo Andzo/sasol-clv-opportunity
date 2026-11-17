@@ -72,9 +72,6 @@ class Paths:
 class ModelConfig:
     """Model-family selection and determinism controls."""
 
-    # Pruned: lgbm_mse, lgbm_mse_deep, lgbm_huber, catboost, catboost_huber and mlp received 0.0 fuel
-    # blend weight in the last full run, so they only cost training time.
-    # Re-check with reports/member_weights.json (written each run) before adding any back.
     regression_members: tuple[str, ...] = (
         "lgbm_tweedie", "xgb_mse", "xgb_huber", "ridge", "extratrees",
     )
@@ -88,7 +85,7 @@ class ModelConfig:
 
     @classmethod
     def fast(cls, **kw: Any) -> "ModelConfig":
-        """Single-seed configuration for quick experiment iteration."""
+        """Single-seed configuration used by the default CLI pipeline."""
         return cls(n_seeds_reg=1, n_seeds_clf=1, hurdle_seeds=(42,), **kw)
 
 
@@ -100,11 +97,10 @@ class PipelineConfig:
     ---------------
     * Training snapshots are taken every ``cutoff_step_months`` starting at
       ``first_train_cutoff``; a snapshot is usable only if its full outcome window
-      ``[c, c + horizon)`` lies before the boundary it is trained for (embargo).
-    * ``calibration_cutoff`` (fold A) is used to fit post-processing parameters
-      (blend weights, class decision weights).
-    * ``evaluation_cutoff`` (fold B) is scored with parameters fitted on fold A,
-      giving an honest out-of-time estimate.
+      ``[c, c + horizon)`` lies strictly before the evaluation cutoff (causal embargo).
+    * Prior tournament folds are used to fit calibration parameters (per-member
+      debiasing, blend weights, BLUP shrinkage, temperature, and class multipliers).
+    * The final fold in ``tournament_cutoffs`` acts as the out-of-time holdout.
     """
 
     paths: Paths = field(default_factory=Paths)
@@ -116,23 +112,21 @@ class PipelineConfig:
     evaluation_cutoff: str = "2025-09-01"
     test_cutoff: str = "2025-12-01"
     use_cache: bool = True
-    # Out-of-fold tournament cutoffs. The last entry is the forward holdout; the rest fit calibration.
-    # Fast mode uses ("2025-06-01", "2025-09-01"): neighbouring monthly folds overlap by 2/3 of their
-    # outcome window so they are highly correlated and cost 2x more for little extra information.
-    # Opportunity probability fusion: "blend" = fixed 0.65*meta + 0.35*(w_base*base + w_hier*hier) (legacy),
-    # "stack" = multinomial log-loss logistic stacker over [log base, log hier, log meta, p_exceed, p_inact].
     prob_fusion: str = "blend"
-    # Minimum combined weight forced onto hurdle columns in the regression non-negative ridge stack.
+    # Minimum combined weight assigned to two-part hurdle models in non-negative ridge stacking.
     hurdle_floor_fuel: float = 0.20
     hurdle_floor_nf: float = 0.35
-    # Causal GM optimizations:
-    # 1. Soft shrinkage overfits in-sample and hurts OOF RMSE by +0.0017 on nonfuel and +0.0014 on fuel.
-    use_soft_shrinkage: bool = False
-    # 2. StructuralMetaClassifier (LGBM+CatBoost+XGB on 96 features) takes 3 min and overfits OOF.
-    use_meta_classifier: bool = False
-    # 3. Commuter arbitration re-assigns customers after dual ascent and drops F1 by -0.018.
-    use_commuter_arbitration: bool = False
     tournament_cutoffs: tuple[str, ...] = ("2025-06-01", "2025-07-01", "2025-08-01", "2025-09-01")
+    # Seasonal Q4 target class proportions (expressed over the 5,488-customer test cohort)
+    # used by prior-aligned dual ascent during Dec-Feb test inference.
+    seasonal_test_priors: tuple[tuple[str, float], ...] = (
+        ("Stable", 1955.0),
+        ("Existing-category growth: Fuel", 1575.0),
+        ("Inactivity", 1445.0),
+        ("Existing-category growth: Other", 305.0),
+        ("Existing-category growth: Beverages", 133.0),
+        ("Existing-category growth: Food & beverage", 75.0),
+    )
 
     @cached_property
     def label_config(self) -> dict[str, Any]:

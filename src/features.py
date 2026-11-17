@@ -158,7 +158,7 @@ def _derived_block(win: pd.DataFrame) -> pd.DataFrame:
     out["fuel_d14_m1_litres_ratio"] = (win["d14_fuel_litres"] * (30.4375 / 14.0) + 1.0) / (win["m1_fuel_litres"] + 1.0)
     out["nonfuel_d14_m1_rand_ratio"] = (win["d14_nonfuel_rand"] * (30.4375 / 14.0) + 5.0) / (win["m1_nonfuel_rand"] + 5.0)
 
-    # Nominal Rand ratios (for Rule 5 & 6 nominal hurdle comparison)
+    # Nominal Rand ratios relative to the historical growth hurdle
     out["fuel_m1_m3_ratio"] = (win["m1_fuel_rand"] + 1.0) / (win["m3_fuel_rand"] / 3.0 + 1.0)
     out["nonfuel_m1_m3_ratio"] = (win["m1_nonfuel_rand"] + 1.0) / (win["m3_nonfuel_rand"] / 3.0 + 1.0)
     out["fuel_reversion_ratio"] = (win["m3_fuel_rand"] / 3.0 + 1.0) / (win["m6_fuel_rand"] / 6.0 + 1.0)
@@ -648,7 +648,7 @@ def _btyd_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) -> pd.DataFr
 
 
 def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
-    """Statistical hurdle physics, tail exceedance Z-scores, and Rule 6 category competition."""
+    """Statistical hurdle physics, tail exceedance Z-scores, and category competition features."""
     out = pd.DataFrame(index=feats.index)
 
     # 1. Fuel Lags & Volatility
@@ -712,10 +712,10 @@ def _hurdle_physics_block(feats: pd.DataFrame) -> pd.DataFrame:
     out["food_hurdle_rand"] = H_food
     out["food_headroom_rand"] = H_food - m3_food
 
-    # 4. Relative Z-score competition (Rule 6 argmax)
+    # 4. Relative Z-score spread between fuel and non-fuel hurdles
     out["z_diff_fuel_nonfuel"] = z_f - z_nf
 
-    # 5. Rule 6 & Rule 7 Individual Category Competition Across All 24 Included Categories
+    # 5. Category Competition Across All 24 Included Spend Categories
     other_cats = [
         "Automotive Products", "Braai & Ice", "Breads & rolls", "Car Wash", "Coffee",
         "Confectionary", "Frozen food", "Gas", "General merchandise", "Groceries",
@@ -1119,7 +1119,7 @@ def _station_seasonal_block(hist: pd.DataFrame, ids: pd.Index, t: pd.Timestamp) 
     else:
         out["cat_top_nonfuel_level3"] = np.zeros(len(ids), dtype=np.int64)
 
-    # Station-level behavioral elasticity indicators (100% observable across all history)
+    # Station-level behavioral indicators derived solely from historical visits before cutoff
     fuel_tx = hist[hist["is_fuel_cat"]]
     if len(fuel_tx) > 0:
         is_weekend = fuel_tx["_time"].dt.weekday >= 5

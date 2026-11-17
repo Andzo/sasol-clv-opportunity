@@ -62,22 +62,14 @@ def save_benchmark_tracker(data: Dict[str, Any]) -> None:
             f"- Nonfuel Score Weight (30%): `{champ.get('score_breakdown', {}).get('nonfuel_component', 0.0):.5f}`",
             f"- Opportunity Score Weight (40%): `{champ.get('score_breakdown', {}).get('opp_component', 0.0):.5f}`",
             '',
-            '### Submission Class Seat Allocations (Sanity Gates)',
+            '### Submission Class Seat Allocations',
             '',
-            '| Opportunity Class | Count | Gate Range | Gate Status |',
-            '|---|---|---|---|',
+            '| Opportunity Class | Count |',
+            '|---|---|',
         ])
         gates = champ.get('seat_counts', {})
-        gate_ranges = {
-            'Stable': '1,930 – 1,980',
-            'Fuel Growth': '1,555 – 1,600',
-            'Inactivity': '1,420 – 1,460',
-            'Retail Growth + Adoption': '485 – 525',
-            'Adoption (Pure)': '≤ 50'
-        }
         for k, v in gates.items():
-            gr = gate_ranges.get(k, 'N/A')
-            lines.append(f"| {k} | {v} | {gr} | Valid |")
+            lines.append(f"| {k} | {v} |")
 
         lines.extend([
             '',
@@ -104,7 +96,7 @@ def save_benchmark_tracker(data: Dict[str, Any]) -> None:
     ])
 
     for r in reversed(data.get('runs_history', [])):
-        is_champ = '🏆 YES' if r.get('is_champion') else 'No'
+        is_champ = 'YES' if r.get('is_champion') else 'No'
         commit_short = str(r.get('git_commit', 'N/A'))[:7]
         lines.append(
             f"| {r.get('timestamp', 'N/A')} | `{commit_short}` | "

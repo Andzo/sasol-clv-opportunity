@@ -27,6 +27,8 @@ Retail fuel stations operate across two tightly coupled revenue streams: high-fr
 ├── requirements.txt                # Direct pip dependency list
 ├── pytest.ini                      # Pytest configuration
 ├── README.md                       # Project overview, architecture, and quickstart
+├── docs/
+│   └── METHODOLOGY.md              # Full methodology walkthrough & architectural rationale
 ├── MODEL_BENCHMARK_TRACKER.json    # Automated benchmark history & champion record
 ├── reports/
 │   └── evaluation_report.json      # Latest reproduced holdout evaluation report
@@ -106,52 +108,54 @@ pytest -q
 # Inspect all CLI flags
 python -m src.main --help
 
-# Verify holdout calibration & evaluation (0.28927 / comp0.2893) using cached L1 OOF predictions
-python -m src.main --reuse-l1 --stage calibrate
+# Reproduce holdout calibration & evaluation on GPU (~13 min from scratch, or ~5s with --reuse-l1)
+python -m src.main --gpu --stage calibrate
 
 # Run full end-to-end training, holdout evaluation, full-panel retraining, and test submission generation
-python -m src.main --save-predictions
-# or via installed console script:
-sasol-clv --save-predictions
+python -m src.main --gpu --save-predictions
+# or via installed console script (add --gpu for CUDA acceleration):
+sasol-clv --gpu --save-predictions
 ```
 
 ---
 
 ## Core Architecture & Mathematical Foundations
 
+*(For a complete technical walkthrough covering modeling intuition, design trade-offs, mathematical formulations, and code-level flow, see [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md).)*
+
 ### 1. Evaluation Metric
 
 The challenge optimizes a weighted composite across fuel volume regression, convenience store spend regression, and 17-class Opportunity classification:
 
 $$
-\text{Composite} = 0.3 \cdot \left(1 - \frac{\text{RMSE}_{\text{fuel}}}{0.740}\right) + 0.3 \cdot \left(1 - \frac{\text{RMSE}_{\text{nonfuel}}}{0.816}\right) + 0.4 \cdot \text{Opportunity F1}
+\text{Composite} = 0.3 \cdot \left(1 - \frac{\mathrm{RMSE_{fuel}}}{0.740}\right) + 0.3 \cdot \left(1 - \frac{\mathrm{RMSE_{nonfuel}}}{0.816}\right) + 0.4 \cdot \mathrm{F1_{opp}}
 $$
 
 ### 2. Multi-Cutoff Out-of-Fold Tournament & Cross-Target Stacking
 
 The pipeline ([`src/pipeline.py`](src/pipeline.py), [`src/tournament.py`](src/tournament.py), [`src/calibration.py`](src/calibration.py)) enforces a 3-month causal embargo so training outcome windows $[c, c + 3\text{m})$ never overlap evaluation cutoffs:
 
-- **Target-Specific Gain Pruning:** Selects the top 240 numeric features for `CLV_fuel` and `CLV_nonfuel` via LightGBM split gain and the top 220 features across the 3 macro Opportunity decision boundaries (`Inactivity`, `Fuel Growth`, and `Retail`), preserving all structural categorical features.
-- **Cross-Target Non-Negative Ridge Stacking:** Combines per-member linear-debiased predictions from `lgbm_tweedie`, `xgb_mse`, `xgb_huber`, `ridge`, `extratrees`, bagged two-part hurdles (`hurdle_bagged`), multi-quantile hurdles (`hurdle_quantile`), and physical basket-ticket regressors (`phys_basket`) over a 20-column cross-target meta-matrix:
+**Target-Specific Gain Pruning:** Selects the top 240 numeric features for `CLV_fuel` and `CLV_nonfuel` via LightGBM split gain and the top 220 features across the 3 macro Opportunity decision boundaries (`Inactivity`, `Fuel Growth`, and `Retail`), preserving all structural categorical features.
+
+**Cross-Target Non-Negative Ridge Stacking:** Combines per-member linear-debiased predictions from `lgbm_tweedie`, `xgb_mse`, `xgb_huber`, `ridge`, `extratrees`, bagged two-part hurdles (`hurdle_bagged`), multi-quantile hurdles (`hurdle_quantile`), and physical basket-ticket regressors (`phys_basket`) over a 20-column cross-target meta-matrix:
 
 $$
-\hat{y}_{\text{raw}} = M_{\text{reg}} w^{*}, \quad w^{*} = \arg\min_{w \ge 0,\, \mathbf{1}^{\top} w = 1} \lVert y - M_{\text{reg}} w \rVert_2^2 + \alpha \lVert w \rVert_2^2 \quad \text{s.t.} \quad \sum_{j \in \mathcal{H}} w_j \ge \tau_{\text{hurdle}}
+\hat y_{\text{raw}} = M_{\text{reg}} w^{\star}, \quad w^{\star} = \arg\min_{w \ge 0,\ \mathbf{1}^{\top} w = 1} \lVert y - M_{\text{reg}} w \rVert_2^2 + \alpha \lVert w \rVert_2^2 \quad \text{s.t.} \quad \sum_{j \in \mathcal{H}} w_j \ge \tau_{\text{hurdle}}
 $$
 
-- **Customer Empirical Bayes (BLUP):** Shrinks customer-level historical anchor residuals toward zero with active-cohort centering to capture persistent customer heterogeneity.
+**Customer Empirical Bayes (BLUP):** Shrinks customer-level historical anchor residuals toward zero with active-cohort centering to capture persistent customer heterogeneity.
 
 ### 3. Two-Part Hurdle Models & Zero Inflation
 
-- Non-fuel spend is **65.06% zero-inflated** and fuel consumption is **29.25% zero-inflated**.
-- Two-part hurdle models ([`src/hurdle.py`](src/hurdle.py)) decouple binary activity classification $P(\text{Active} > 0 \mid X)$ from conditional spend estimation $\mathbb{E}[\text{Spend} \mid \text{Active} > 0, X]$, incorporating Heckman Inverse Mills Ratio selection-bias correction:
+Non-fuel spend is **65.06% zero-inflated** and fuel consumption is **29.25% zero-inflated**. Two-part hurdle models ([`src/hurdle.py`](src/hurdle.py)) decouple binary activity classification $P(\text{Active} > 0 \mid X)$ from conditional spend estimation $\mathbb{E}[\text{Spend} \mid \text{Active} > 0, X]$, incorporating Heckman Inverse Mills Ratio selection-bias correction:
 
 $$
-\lambda(p) = \frac{\phi(\Phi^{-1}(p))}{p}, \quad \mathbb{E}[Y \mid X] = P(Y > 0 \mid X) \cdot \mathbb{E}[Y \mid X,\, Y > 0,\, \lambda(p)]
+\lambda(p) = \frac{\phi(\Phi^{-1}(p))}{p}, \quad \mathbb{E}[Y \mid X] = P(Y > 0 \mid X) \cdot \mathbb{E}[Y \mid X,\ Y > 0,\ \lambda(p)]
 $$
 
 ### 4. Hierarchical Opportunity Classification & 4-Partition Dual Ascent
 
-Opportunity probabilities fuse a 3-family multiclass [`ClassifierEnsemble`](src/models.py) (`lgbm`, `catboost`, `xgb`) with a 4-stage [`HierarchicalOpportunityClassifier`](src/models.py) (Inactivity gate, Active Retail gate, Fuel Growth vs. Stable boundary around the $+25\%$ and $\ge \text{R}20$ rule, and Retail multiclass) plus physical hurdle exceedance $P(\text{Exceed}_{\text{fuel}})$ and joint inactivity $(1 - p_{\text{fuel}})(1 - p_{\text{store}})$. Final class assignments are decoded via eligibility masking ([`src/eligibility.py`](src/eligibility.py)) and 4-partition dual coordinate ascent ([`decide_with_prior_alignment`](src/calibration.py)).
+Opportunity probabilities fuse a 3-family multiclass [`ClassifierEnsemble`](src/models.py) (`lgbm`, `catboost`, `xgb`) with a 4-stage [`HierarchicalOpportunityClassifier`](src/models.py) (Inactivity gate, Active Retail gate, Fuel Growth vs. Stable boundary around the +25% and ≥ R20 growth rule, and Retail multiclass) plus physical hurdle exceedance $P_{\text{exceed}}(\text{fuel})$ and joint inactivity $(1 - p_{\text{fuel}})(1 - p_{\text{store}})$. Final class assignments are decoded via eligibility masking ([`src/eligibility.py`](src/eligibility.py)) and 4-partition dual coordinate ascent ([`decide_with_prior_alignment`](src/calibration.py)).
 
 ---
 
@@ -169,6 +173,8 @@ Opportunity probabilities fuse a 3-family multiclass [`ClassifierEnsemble`](src/
 | *Reference: Zero Submission Baseline* | `2025-09-01` | `1.8345` | `1.2241` | `0.1133` | `0.04533` |
 
 **Test Submission Class Allocation (`N = 5,488`, `2025-12-01`):** `Stable`: `1,954`, `Existing-category growth: Fuel`: `1,575`, `Inactivity`: `1,449`, `Existing-category growth: Other`: `322`, `Existing-category growth: Beverages`: `150`, `Existing-category growth: Food & beverage`: `37`, `New category adoption: Other`: `1`.
+
+*Fresh GPU calibration check (`python -m src.main --gpu --stage calibrate` on cleaned `main`): Fuel RMSE `0.5976`, Nonfuel RMSE `0.7435`, Opportunity F1 `0.5116`, Composite Score `0.28903` (OOF-prior `0.28954`); folds `0.2910` (Winter) and `0.2836` (Spring). Regression RMSEs match `reports/evaluation_report.json` exactly, with `0.0006` multiclass F1 difference from non-deterministic CUDA tree histogram reductions.*
 
 ---
 

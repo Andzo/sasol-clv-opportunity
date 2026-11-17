@@ -3,11 +3,7 @@ import pandas as pd
 import pytest
 
 from src.config import PipelineConfig
-from src.tournament import (
-    TournamentEngine,
-    TournamentResult,
-    apply_boundary_arbitration,
-)
+from src.tournament import TournamentEngine
 
 
 def test_fold_definitions():
@@ -28,23 +24,6 @@ def test_fold_definitions():
             assert c <= eval_t - pd.DateOffset(months=3)
 
 
-
-def test_boundary_arbitration():
-    opp_labels = ["Inactivity", "Stable", "Inactivity"]
-    features = pd.DataFrame({
-        "m1_baskets": [2, 0, 0],
-        "days_since_last_purchase": [10.0, 60.0, 90.0],
-        "m3_fuel_litres": [10.0, 0.0, 0.0],
-    })
-    pred_fuel = np.array([1.5, 0.0, 0.0])
-
-    arbitrated = apply_boundary_arbitration(opp_labels, features, pred_fuel)
-    # Row 0: was Inactivity but has m1_baskets > 0 and days_last < 45 -> should be recovered
-    assert arbitrated[0] in ("Existing-category growth: Fuel", "Stable")
-    assert arbitrated[1] == "Stable"
-    assert arbitrated[2] == "Inactivity"
-
-
 def test_build_level2_structural_features():
     from src.tournament import build_level2_structural_features
     n = 10
@@ -59,7 +38,6 @@ def test_build_level2_structural_features():
     })
     probs_base = np.full((n, 8), 0.125)
     probs_hier = np.full((n, 8), 0.125)
-    probs_sim = np.full((n, 8), 0.125)
     pred_fuel = np.full(n, 1.2)
     pred_nf = np.full(n, 0.8)
     p_fuel_active = np.full(n, 0.9)
@@ -68,7 +46,7 @@ def test_build_level2_structural_features():
     sigma_fuel_pos = np.full(n, 0.3)
 
     level2_X = build_level2_structural_features(
-        X, probs_base, probs_hier, probs_sim,
+        X, probs_base, probs_hier,
         pred_fuel, pred_nf, p_fuel_active, p_store_active,
         mu_fuel_pos, sigma_fuel_pos,
     )

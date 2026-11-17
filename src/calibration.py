@@ -424,79 +424,6 @@ def fit_inactivity_threshold(
     return best_tau
 
 
-def fit_isotonic_hurdle_calibration(
-    y_pos_true: np.ndarray,
-    y_pos_pred: np.ndarray,
-) -> object:
-    """Fit monotonic Isotonic Regression mapping Huber/MAE positive predictions to conditional expectation E[Z|X, Z>0]."""
-    from sklearn.isotonic import IsotonicRegression
-    iso = IsotonicRegression(out_of_bounds="clip", increasing=True)
-    y_t = np.asarray(y_pos_true, dtype="float64")
-    y_p = np.asarray(y_pos_pred, dtype="float64")
-    iso.fit(y_p, y_t)
-    return iso
-
-
-def apply_isotonic_hurdle_calibration(
-    y_pos_pred: np.ndarray,
-    iso_model: object,
-) -> np.ndarray:
-    """Apply fitted isotonic recalibration model to positive spend predictions."""
-    y_p = np.asarray(y_pos_pred, dtype="float64")
-    return np.asarray(iso_model.predict(y_p), dtype="float64")
-
-
-def fit_decile_mean_multipliers(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    p_hurdle: np.ndarray,
-    n_bins: int = 10,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Fit monotonic decile multipliers to eliminate decile subgroup bias (y_true_bar - y_pred_bar)^2 = 0."""
-    quantiles = np.linspace(0.0, 1.0, n_bins + 1)
-    bin_edges = np.quantile(p_hurdle, quantiles)
-    bin_edges[0] = -1e-6
-    bin_edges[-1] = 1.0 + 1e-6
-
-    multipliers = np.ones(n_bins, dtype=np.float64)
-    for b in range(n_bins):
-        mask = (p_hurdle >= bin_edges[b]) & (p_hurdle < bin_edges[b + 1])
-        if mask.sum() > 0:
-            pred_mean = np.mean(y_pred[mask])
-            true_mean = np.mean(y_true[mask])
-            if pred_mean > 1e-6:
-                multipliers[b] = np.clip(true_mean / pred_mean, 0.70, 1.40)
-    return bin_edges, multipliers
-
-
-def apply_decile_mean_multipliers(
-    y_pred: np.ndarray,
-    p_hurdle: np.ndarray,
-    bin_edges: np.ndarray,
-    multipliers: np.ndarray,
-    target_global_mean: float | None = None,
-) -> np.ndarray:
-    """Apply decile multipliers and optionally re-normalize to lock the global target mean."""
-    out = np.asarray(y_pred, dtype="float64").copy()
-    n_bins = len(multipliers)
-    for b in range(n_bins):
-        mask = (p_hurdle >= bin_edges[b]) & (p_hurdle < bin_edges[b + 1])
-        out[mask] *= multipliers[b]
-
-    if target_global_mean is not None and target_global_mean > 0:
-        current_mean = np.mean(out)
-        if current_mean > 0:
-            out *= (target_global_mean / current_mean)
-
-    return out
-
-
-def apply_soft_zero_floor(p: np.ndarray, tau_0: float = 0.025) -> np.ndarray:
-    """Continuously zero out low probability tail without step-function discontinuity."""
-    p_arr = np.clip(np.asarray(p, dtype="float64"), 0.0, 1.0)
-    return np.maximum(0.0, (p_arr - tau_0) / (1.0 - tau_0))
-
-
 def fit_member_debiasing(member_preds: np.ndarray, y_true: np.ndarray) -> list[tuple[float, float]]:
     """Fits linear recalibration (a_m, b_m) per member on positive predictions with zero intercept."""
     params: list[tuple[float, float]] = []
@@ -530,7 +457,7 @@ def build_regression_meta_matrix(
     mu_fuel_pos: np.ndarray,
     mu_nf_pos: np.ndarray,
 ) -> np.ndarray:
-    """Constructs the unified cross-target regression meta-matrix M_reg (30 columns)."""
+    """Construct the cross-target regression meta-matrix M_reg (2 * n_members + 4 columns)."""
     p_fuel_act_col = np.asarray(p_fuel_active, dtype=np.float64).reshape(-1, 1)
     p_store_act_col = np.asarray(p_store_active, dtype=np.float64).reshape(-1, 1)
     mu_f_col = np.asarray(mu_fuel_pos, dtype=np.float64).reshape(-1, 1)
@@ -650,10 +577,9 @@ def compute_physical_hurdle_probabilities(
     sigma_pos: np.ndarray | None = None,
     p_store: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Computes exact probabilistic fuel hurdle inversion and joint inactivity probabilities.
+    """Compute probabilistic fuel hurdle exceedance and joint inactivity probabilities.
 
-    Under Rule 5 & Rule 6:
-        H_fuel = max(m3_fuel_rand + 20, 1.25 * m3_fuel_rand)
+    Given nominal growth hurdle H_fuel = max(m3_fuel_rand + 20, 1.25 * m3_fuel_rand):
         z_hurdle = (1 / norm_scale) * ln(1 + max(1.25 * m3_litres, m3_litres + 20 / P_pump))
         P_phys(Fuel Growth) = I(ever_fuel) * P_fuel * [1 - Phi((z_hurdle - (0.65*mu_pos + 0.35*Z_fuel)) / sigma_pos)]
         P_phys(Inactivity) = (1 - P_fuel) * (1 - P_store) * I(m1_baskets == 0)
@@ -866,7 +792,7 @@ def optimize_expected_f1_plug_in(
 
     Optimizes class multipliers w in R_+^K to maximize expected support-weighted F1:
         E[F1(w)] = sum_k pi_k * [2 * sum_{i: argmax(w*P)=k} P_ik] / [pi_k * N + sum_{i: argmax(w*P)=k} 1]
-    subject to penalty constraints ensuring class predictions land in the competition winning gates.
+    subject to soft penalty constraints on predicted macro-class counts.
     """
     n, k = probs.shape
     pi = np.asarray(target_priors, dtype=np.float64)
@@ -926,168 +852,6 @@ def optimize_expected_f1_plug_in(
 
     return best_w
 
-
-def arbitrate_commuter_pool(
-    opp_labels: np.ndarray,
-    features: pd.DataFrame,
-    pred_fuel: np.ndarray,
-    p_phys_fg: np.ndarray,
-    p_clf_fg: np.ndarray,
-    p_clf_stable: np.ndarray,
-    target_fg_capacity: int,
-    weights: tuple[float, float, float] = (0.0, 0.0, 1.0),
-    ever_fuel_mask: np.ndarray | None = None,
-) -> np.ndarray:
-    """Direct Physical Fuel Hurdle Arbitration between Existing-category growth: Fuel and Stable.
-
-    Computes unified Calibrated Physical Fuel Growth Score:
-        Score_i = w1 * rank_norm(R_phys_i) + w2 * P_exceed_i^fuel + w3 * P_clf(FG | Commuter)
-    and rank-assigns exactly target_fg_capacity to Fuel Growth.
-    """
-    labels = np.asarray(opp_labels, dtype=object).copy()
-    n = len(labels)
-    fg_label = "Existing-category growth: Fuel"
-    st_label = "Stable"
-
-    is_commuter = (labels == fg_label) | (labels == st_label)
-    commuter_indices = np.where(is_commuter)[0]
-    if len(commuter_indices) == 0:
-        return labels
-
-    m3_fuel_litres = features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in features.columns else np.zeros(n)
-    m3_fuel_rand = features["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in features.columns else np.zeros(n)
-    m1_fuel_baskets = features["m1_fuel_baskets"].to_numpy() if "m1_fuel_baskets" in features.columns else (
-        features["m1_baskets"].to_numpy() if "m1_baskets" in features.columns else np.zeros(n)
-    )
-    days_since_fuel = features["days_since_last_fuel"].to_numpy() if "days_since_last_fuel" in features.columns else np.full(n, 999.0)
-
-    if ever_fuel_mask is not None:
-        ever_fuel = np.asarray(ever_fuel_mask, dtype=bool)
-    elif "active_m6_fuel" in features.columns:
-        ever_fuel = features["active_m6_fuel"].to_numpy() > 0
-    elif "ever_fuel" in features.columns:
-        ever_fuel = features["ever_fuel"].to_numpy() > 0
-    else:
-        ever_fuel = np.ones(n, dtype=bool)
-
-    litres_pred = np.expm1(np.minimum(pred_fuel * 2.352825386185113, 15.0))
-    pump_price = np.clip(
-        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
-        20.5, 27.5,
-    )
-    h_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
-    r_phys = (litres_pred + 0.5) / (h_litres + 0.5)
-
-    from scipy.stats import rankdata
-    r_phys_commuter = r_phys[commuter_indices]
-    rank_r_phys = rankdata(r_phys_commuter) / len(r_phys_commuter)
-
-    p_exceed_commuter = p_phys_fg[commuter_indices]
-
-    denom_clf = p_clf_fg[commuter_indices] + p_clf_stable[commuter_indices] + 1e-12
-    p_cond_commuter = p_clf_fg[commuter_indices] / denom_clf
-
-    w1, w2, w3 = weights
-    blended_score = w1 * rank_r_phys + w2 * p_exceed_commuter + w3 * p_cond_commuter
-
-    dormant_penalty = (
-        (~ever_fuel[commuter_indices])
-        | ((m3_fuel_litres[commuter_indices] <= 5.0) & (m1_fuel_baskets[commuter_indices] == 0) & (days_since_fuel[commuter_indices] > 90))
-    )
-    blended_score[dormant_penalty] = -1.0
-
-    k_target = int(np.clip(target_fg_capacity, 0, len(commuter_indices)))
-    sorted_order = np.argsort(-blended_score)
-    top_fg_indices = commuter_indices[sorted_order[:k_target]]
-    stable_indices = commuter_indices[sorted_order[k_target:]]
-
-    labels[top_fg_indices] = fg_label
-    labels[stable_indices] = st_label
-    return labels
-
-
-def conformal_selective_arbitration(
-    probs: np.ndarray,
-    features: pd.DataFrame,
-    pred_fuel: np.ndarray,
-    class_weights: np.ndarray,
-    target_priors: np.ndarray,
-    macro_classes: tuple[int, ...] = (0, 1, 2),
-    fg_idx: int = 1,
-    stable_idx: int = 2,
-    inact_idx: int = 0,
-    mu_fuel_pos: np.ndarray | None = None,
-    sigma_fuel_pos: np.ndarray | None = None,
-    tau_conf: float = 0.40,
-) -> np.ndarray:
-    """Rank-Based Conformal Prediction Sets for Selective Boundary Arbitration.
-
-    Angelopoulos & Bates (2023).
-    Partitions customers into high-confidence Conformal Singletons (which are locked)
-    and boundary Ambiguous instances (on which prior alignment dual ascent is solved).
-    """
-    n, k = probs.shape
-    weighted_probs = (probs * class_weights) / np.maximum((probs * class_weights).sum(axis=1, keepdims=True), 1e-12)
-    sorted_probs = np.sort(weighted_probs, axis=1)[:, ::-1]
-    margins = sorted_probs[:, 0] - sorted_probs[:, 1]
-    top1_classes = np.argmax(weighted_probs, axis=1)
-
-    # Physical fuel hurdle threshold z_hurdle
-    m3_fuel_litres = features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in features.columns else np.zeros(n)
-    m3_fuel_rand = features["m3_fuel_rand"].to_numpy() if "m3_fuel_rand" in features.columns else np.zeros(n)
-    pump_price = np.clip(
-        np.where(m3_fuel_litres > 0.1, m3_fuel_rand / np.maximum(m3_fuel_litres, 0.1), 23.50),
-        20.5, 27.5,
-    )
-    h_litres = np.maximum(1.25 * m3_fuel_litres, m3_fuel_litres + 20.0 / pump_price)
-    z_hurdle = (1.0 / 2.352825386185113) * np.log1p(h_litres)
-
-    if mu_fuel_pos is None:
-        mu_fuel_pos = pred_fuel
-    if sigma_fuel_pos is None:
-        sigma_fuel_pos = np.full(n, 0.20)
-
-    # 80% conformal interval [mu - 1.28*sigma, mu + 1.28*sigma]
-    ci_low = mu_fuel_pos - 1.28 * sigma_fuel_pos
-    ci_high = mu_fuel_pos + 1.28 * sigma_fuel_pos
-
-    is_singleton = np.zeros(n, dtype=bool)
-    for i in range(n):
-        c = top1_classes[i]
-        if margins[i] > tau_conf:
-            if c == fg_idx:
-                if ci_low[i] > z_hurdle[i]:
-                    is_singleton[i] = True
-            elif c == stable_idx:
-                if ci_high[i] < z_hurdle[i]:
-                    is_singleton[i] = True
-            else:
-                is_singleton[i] = True
-
-    decisions = np.zeros(n, dtype=int)
-    decisions[is_singleton] = top1_classes[is_singleton]
-
-    ambiguous_idx = np.where(~is_singleton)[0]
-    if len(ambiguous_idx) > 0:
-        singleton_counts = np.bincount(decisions[is_singleton], minlength=k)
-        total_targets = target_priors * n
-        remaining_targets = np.maximum(total_targets - singleton_counts, 0.0)
-        rem_sum = remaining_targets.sum()
-        if rem_sum > 0:
-            sub_target_priors = remaining_targets / rem_sum
-        else:
-            sub_target_priors = target_priors
-
-        sub_probs = probs[ambiguous_idx]
-        sub_decisions = decide_with_prior_alignment(
-            sub_probs,
-            class_weights=class_weights,
-            target_priors=sub_target_priors,
-            macro_classes=macro_classes,
-        )
-        decisions[ambiguous_idx] = sub_decisions
-
-    return decisions
 
 
 

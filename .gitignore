@@ -22,9 +22,10 @@ catboost_info/
 # Submissions & generated outputs
 submissions/
 
-# Local documentation & report markdown files (keep README.md as sole Markdown file)
+# Local documentation & report markdown files (keep README.md and docs/METHODOLOGY.md tracked)
 *.md
 !README.md
+!docs/METHODOLOGY.md
 MODEL_BENCHMARK_TRACKER.md
 reports/**/*.md
 reports/*.md

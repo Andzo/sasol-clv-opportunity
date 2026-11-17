@@ -1,11 +1,11 @@
-"""End-to-end pipeline runner for the Sasol CLV & Opportunity challenge.
+"""End-to-end pipeline runner for Sasol CLV and Opportunity forecasting.
 
 Orchestrates:
-1. Multi-Cutoff Out-of-Fold Tournament & Stacking Engine (3 folds: Summer, Winter, Spring).
-2. Out-of-fold debiasing, blend weights, Customer BLUP, and prior-aligned calibration.
-3. Out-of-time evaluation on forward holdout cutoff (2025-09-01) and benchmark verification.
-4. Final model zoo retraining across all historical cutoffs with seasonal sample weighting.
-5. Test inference (2025-12-01), format validation, and submission generation.
+1. Rolling multi-cutoff out-of-fold tournament with a 3-month causal embargo.
+2. Out-of-fold calibration: debiasing, cross-target ridge stacking, customer BLUP, and dual ascent.
+3. Out-of-time evaluation on the forward holdout cutoff (2025-09-01).
+4. Full historical panel retraining with temporal decay and seasonal weighting.
+5. Test inference (2025-12-01), schema validation, and submission generation.
 """
 from __future__ import annotations
 
@@ -31,7 +31,6 @@ from src.hurdle import (
 )
 from src.models import (
     ClassifierEnsemble,
-    DecomposedRule7Simulator,
     HierarchicalOpportunityClassifier,
     RegressorEnsemble,
     StoreAttachmentClassifier,
@@ -39,8 +38,6 @@ from src.models import (
 from src.tournament import (
     CalibrationArtifacts,
     TournamentEngine,
-    TournamentResult,
-    apply_boundary_arbitration,
     build_level2_structural_features,
     fuse_opportunity_probabilities,
     refresh_level2_predictions,
@@ -49,6 +46,103 @@ from src.tournament import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_calibrated_inference(
+    *,
+    fuel_m: np.ndarray,
+    nf_m: np.ndarray,
+    probs_base: np.ndarray,
+    probs_hier: np.ndarray,
+    features: pd.DataFrame,
+    ids: list[str],
+    mask: np.ndarray,
+    cutoff: pd.Timestamp,
+    cal: CalibrationArtifacts,
+    p_fuel_act: np.ndarray,
+    p_store_act: np.ndarray,
+    mu_fuel_pos: np.ndarray,
+    mu_nf_pos: np.ndarray,
+    sigma_fuel_pos: np.ndarray,
+    fg_idx: int,
+    inact_idx: int,
+    existing_level2_X: pd.DataFrame | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Apply identical debiasing, stacking, BLUP, gating, and probability calibration across holdout and test."""
+    fuel_deb = calibration.apply_member_debiasing(fuel_m, cal.fuel_debias)
+    nf_deb = calibration.apply_member_debiasing(nf_m, cal.nf_debias)
+
+    meta_reg = calibration.build_regression_meta_matrix(
+        debiased_fuel_m=fuel_deb,
+        debiased_nf_m=nf_deb,
+        p_fuel_active=p_fuel_act,
+        p_store_active=p_store_act,
+        mu_fuel_pos=mu_fuel_pos,
+        mu_nf_pos=mu_nf_pos,
+    )
+    fuel_raw = meta_reg @ cal.fuel_blend_weights
+    nf_raw = meta_reg @ cal.nf_blend_weights
+
+    blup_f_map = calibration.compute_customer_blup(cal.cust_history_f, cutoff)
+    blup_f_vec = np.array([blup_f_map.get(cid, 0.0) for cid in ids])
+    blup_nf_map = calibration.compute_customer_blup(cal.cust_history_nf, cutoff)
+    blup_nf_vec = np.array([blup_nf_map.get(cid, 0.0) for cid in ids])
+
+    m3_b = features["m3_baskets"].to_numpy() if "m3_baskets" in features.columns else np.zeros(len(ids))
+    pred_fuel, pred_nf = calibration.finalize_regression_predictions(
+        raw_fuel=fuel_raw,
+        raw_nf=nf_raw,
+        p_fuel_act=p_fuel_act,
+        p_store_act=p_store_act,
+        m3_baskets=m3_b,
+        blup_f_vec=blup_f_vec,
+        blup_nf_vec=blup_nf_vec,
+        cal=cal,
+    )
+
+    m1_b = features["m1_baskets"].to_numpy() if "m1_baskets" in features.columns else np.zeros(len(features))
+    if existing_level2_X is None:
+        level2_X = build_level2_structural_features(
+            X=features,
+            probs_base=probs_base,
+            probs_hier=probs_hier,
+            pred_fuel=pred_fuel,
+            pred_nf=pred_nf,
+            p_fuel_active=p_fuel_act,
+            p_store_active=p_store_act,
+            mu_fuel_pos=mu_fuel_pos,
+            sigma_fuel_pos=sigma_fuel_pos,
+        )
+        p_phys_fg = level2_X["p_exceed_fuel"].to_numpy()
+        p_phys_inact = level2_X["joint_hurdle_inactivity"].to_numpy() * (m1_b == 0).astype(float)
+    elif len(existing_level2_X) > 0:
+        level2_X = refresh_level2_predictions(
+            df=existing_level2_X,
+            pred_fuel=pred_fuel,
+            pred_nf=pred_nf,
+            p_fuel_active=p_fuel_act,
+            p_store_active=p_store_act,
+            mu_fuel_pos=mu_fuel_pos,
+            sigma_fuel_pos=existing_level2_X["sigma_fuel_pos"].to_numpy(),
+        )
+        p_phys_fg = level2_X["p_exceed_fuel"].to_numpy()
+        p_phys_inact = level2_X["joint_hurdle_inactivity"].to_numpy() * (m1_b == 0).astype(float)
+    else:
+        p_phys_fg = np.zeros(len(ids), dtype=np.float64)
+        p_phys_inact = np.zeros(len(ids), dtype=np.float64)
+
+    probs_fused = fuse_opportunity_probabilities(
+        cal, probs_base, probs_hier, None, p_phys_fg, p_phys_inact, fg_idx, inact_idx,
+    )
+    probs_scaled = calibration.apply_temperature_scaling(probs_fused, cal.temperature)
+    probs_masked = calibration.apply_eligibility_mask(probs_scaled, mask)
+
+    p_active_raw = 1.0 - probs_masked[:, inact_idx].copy()
+    d_last = features["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in features.columns else np.full(len(features), 999.0)
+    active_veto = (m1_b >= 4) & (d_last <= 7)
+    probs_masked[active_veto, inact_idx] = 0.0
+    probs_masked = probs_masked / np.maximum(probs_masked.sum(axis=1, keepdims=True), 1e-12)
+    return pred_fuel, pred_nf, probs_masked, fuel_raw, nf_raw, p_active_raw
 
 
 def _get_git_info() -> dict[str, Any]:
@@ -119,123 +213,55 @@ def run_pipeline(
         eval_nf_m = tourney_res.pool_nf_m[eval_mask_indices]
         eval_probs_base = tourney_res.pool_probs_base[eval_mask_indices]
         eval_probs_hier = tourney_res.pool_probs_hier[eval_mask_indices]
-        eval_probs_sim = tourney_res.pool_probs_sim[eval_mask_indices]
-        eval_phys_fg = tourney_res.pool_phys_fg[eval_mask_indices]
-        eval_phys_inact = tourney_res.pool_phys_inact[eval_mask_indices]
         eval_p_fuel_act = tourney_res.pool_p_fuel_act[eval_mask_indices]
         eval_p_store_act = tourney_res.pool_p_store_act[eval_mask_indices]
         eval_mu_fuel_pos = tourney_res.pool_mu_fuel_pos[eval_mask_indices]
         eval_mu_nf_pos = tourney_res.pool_mu_nf_pos[eval_mask_indices]
         eval_level2_X = tourney_res.pool_level2_X.iloc[eval_mask_indices].copy()
+        eval_sigma_fuel_pos = eval_level2_X["sigma_fuel_pos"].to_numpy()
         eval_ids = [tourney_res.pool_ids[i] for i in eval_mask_indices]
     else:
-        # Fallback: predict using fold 3 models
         eval_ids = list(eval_snap.ids)
         eval_fuel_m = np.zeros((len(eval_ids), len(cal_eval.member_names)))
         eval_nf_m = np.zeros((len(eval_ids), len(cal_eval.member_names)))
         eval_probs_base = np.zeros((len(eval_ids), n_classes))
         eval_probs_hier = np.zeros((len(eval_ids), n_classes))
-        eval_probs_sim = np.zeros((len(eval_ids), n_classes))
-        eval_phys_fg = np.zeros(len(eval_ids))
-        eval_phys_inact = np.zeros(len(eval_ids))
         eval_p_fuel_act = np.zeros(len(eval_ids))
         eval_p_store_act = np.zeros(len(eval_ids))
         eval_mu_fuel_pos = np.zeros(len(eval_ids))
         eval_mu_nf_pos = np.zeros(len(eval_ids))
+        eval_sigma_fuel_pos = np.zeros(len(eval_ids))
         eval_level2_X = pd.DataFrame()
 
-    # Apply per-member debiasing
-    eval_fuel_debiased = calibration.apply_member_debiasing(eval_fuel_m, cal_eval.fuel_debias)
-    eval_nf_debiased = calibration.apply_member_debiasing(eval_nf_m, cal_eval.nf_debias)
-
-    # Build Cross-Target Regression Meta-Matrix
-    M_reg_eval = calibration.build_regression_meta_matrix(
-        debiased_fuel_m=eval_fuel_debiased,
-        debiased_nf_m=eval_nf_debiased,
-        p_fuel_active=eval_p_fuel_act,
-        p_store_active=eval_p_store_act,
-        mu_fuel_pos=eval_mu_fuel_pos,
-        mu_nf_pos=eval_mu_nf_pos,
-    )
-    eval_fuel_raw = M_reg_eval @ cal_eval.fuel_blend_weights
-    eval_nf_raw = M_reg_eval @ cal_eval.nf_blend_weights
-
-    eval_blup_f_map = calibration.compute_customer_blup(cal_eval.cust_history_f, eval_cutoff)
-    eval_blup_f_vec = np.array([eval_blup_f_map.get(cid, 0.0) for cid in eval_ids])
-    eval_blup_nf_map = calibration.compute_customer_blup(cal_eval.cust_history_nf, eval_cutoff)
-    eval_blup_nf_vec = np.array([eval_blup_nf_map.get(cid, 0.0) for cid in eval_ids])
-
-    eval_m3_b = eval_snap.features["m3_baskets"].to_numpy() if "m3_baskets" in eval_snap.features.columns else np.zeros(len(eval_ids))
-    eval_fuel_pred, eval_nf_pred = calibration.finalize_regression_predictions(
-        raw_fuel=eval_fuel_raw,
-        raw_nf=eval_nf_raw,
+    eval_fuel_pred, eval_nf_pred, eval_probs_masked, _, _, _ = _apply_calibrated_inference(
+        fuel_m=eval_fuel_m,
+        nf_m=eval_nf_m,
+        probs_base=eval_probs_base,
+        probs_hier=eval_probs_hier,
+        features=eval_snap.features,
+        ids=eval_ids,
+        mask=eval_snap.mask,
+        cutoff=eval_cutoff,
+        cal=cal_eval,
         p_fuel_act=eval_p_fuel_act,
         p_store_act=eval_p_store_act,
-        m3_baskets=eval_m3_b,
-        blup_f_vec=eval_blup_f_vec,
-        blup_nf_vec=eval_blup_nf_vec,
-        cal=cal_eval,
+        mu_fuel_pos=eval_mu_fuel_pos,
+        mu_nf_pos=eval_mu_nf_pos,
+        sigma_fuel_pos=eval_sigma_fuel_pos,
+        fg_idx=fg_idx,
+        inact_idx=inact_idx,
+        existing_level2_X=eval_level2_X,
     )
 
-    if len(eval_level2_X) > 0:
-        eval_level2_X = refresh_level2_predictions(
-            df=eval_level2_X,
-            pred_fuel=eval_fuel_pred,
-            pred_nf=eval_nf_pred,
-            p_fuel_active=eval_p_fuel_act,
-            p_store_active=eval_p_store_act,
-            mu_fuel_pos=eval_mu_fuel_pos,
-            sigma_fuel_pos=eval_level2_X["sigma_fuel_pos"].to_numpy(),
-        )
-        eval_phys_fg = eval_level2_X["p_exceed_fuel"].to_numpy()
-        m1_b_eval = eval_snap.features["m1_baskets"].to_numpy() if "m1_baskets" in eval_snap.features.columns else np.zeros(len(eval_snap.features))
-        eval_phys_inact = eval_level2_X["joint_hurdle_inactivity"].to_numpy() * (m1_b_eval == 0).astype(float)
-    else:
-        m1_b_eval = eval_snap.features["m1_baskets"].to_numpy() if "m1_baskets" in eval_snap.features.columns else np.zeros(len(eval_snap.features))
-
-    eval_probs_meta = (
-        cal_eval.level2_meta_classifier.predict_proba(eval_level2_X)
-        if cal_eval.level2_meta_classifier is not None and len(eval_level2_X) > 0 else None
-    )
-    eval_probs_fused = fuse_opportunity_probabilities(
-        cal_eval, eval_probs_base, eval_probs_hier, eval_probs_meta,
-        eval_phys_fg, eval_phys_inact, fg_idx, inact_idx,
-    )
-
-    eval_probs_scaled = calibration.apply_temperature_scaling(eval_probs_fused, cal_eval.temperature)
-    eval_probs_masked = calibration.apply_eligibility_mask(eval_probs_scaled, eval_snap.mask)
-
-    # 1. Hyper-active weekly sanity gate (consistent with fit_calibration)
-    d_last_eval = eval_snap.features["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in eval_snap.features.columns else np.full(len(eval_snap.features), 999.0)
-    eval_active_veto = (m1_b_eval >= 4) & (d_last_eval <= 7)
-    eval_probs_masked[eval_active_veto, inact_idx] = 0.0
-    eval_probs_masked = eval_probs_masked / np.maximum(eval_probs_masked.sum(axis=1, keepdims=True), 1e-12)
-
-    # 2. 4-Partition Prior Alignment via Dual Ascent
+    # Prior alignment via dual ascent (OOF-estimated priors vs holdout true priors)
     eval_opp_decisions = calibration.decide_with_prior_alignment(
         eval_probs_masked,
         class_weights=cal_eval.class_weights,
         target_priors=cal_eval.precision_weighted_target_priors,
         macro_classes=(inact_idx, stable_idx, fg_idx),
     )
-    eval_opp_labels = np.array([idx_to_label[i] for i in eval_opp_decisions], dtype=object)
+    eval_opp_labels = [idx_to_label[i] for i in eval_opp_decisions]
 
-    # 3. Commuter Pool Dormancy & Capacity Enforcement
-    target_fg_seats_eval = int(round(cal_eval.precision_weighted_target_priors[fg_idx] * len(eval_snap.features)))
-    if cfg.use_commuter_arbitration:
-        eval_opp_labels = calibration.arbitrate_commuter_pool(
-            opp_labels=eval_opp_labels,
-            features=eval_snap.features,
-            pred_fuel=eval_fuel_pred,
-            p_phys_fg=eval_phys_fg,
-            p_clf_fg=eval_probs_masked[:, fg_idx],
-            p_clf_stable=eval_probs_masked[:, stable_idx],
-            target_fg_capacity=target_fg_seats_eval,
-            weights=cal_eval.commuter_weights,
-        )
-    eval_opp_labels = list(eval_opp_labels)
-
-    # Legacy protocol: decisions aligned to OOF-derived priors (kept for continuity with older runs)
     eval_scores_legacy = metrics.score(
         eval_snap.labels,
         eval_fuel_pred,
@@ -244,8 +270,7 @@ def run_pipeline(
     )
     legacy_leaderboard = eval_scores_legacy.leaderboard_composite(0.740, 0.816)
 
-    # Headline protocol: mirror test-time inference, where labels are count-aligned to the known gate counts.
-    # Use the holdout's true class proportions so local F1 measures ranking quality only.
+    # Headline protocol: align predicted class counts to holdout proportions to isolate ranking quality
     y_eval_idx = eval_snap.labels["Opportunity"].map(label_to_idx).to_numpy()
     eval_true_priors = np.bincount(y_eval_idx, minlength=n_classes).astype(np.float64)
     eval_true_priors = eval_true_priors / eval_true_priors.sum()
@@ -255,18 +280,7 @@ def run_pipeline(
         target_priors=eval_true_priors,
         macro_classes=(inact_idx, stable_idx, fg_idx),
     )
-    eval_aligned_labels = np.array([idx_to_label[i] for i in eval_aligned_dec], dtype=object)
-    if cfg.use_commuter_arbitration:
-        eval_aligned_labels = calibration.arbitrate_commuter_pool(
-            opp_labels=eval_aligned_labels,
-            features=eval_snap.features,
-            pred_fuel=eval_fuel_pred,
-            p_phys_fg=eval_phys_fg,
-            p_clf_fg=eval_probs_masked[:, fg_idx],
-            p_clf_stable=eval_probs_masked[:, stable_idx],
-            target_fg_capacity=int(round(eval_true_priors[fg_idx] * len(eval_snap.features))),
-            weights=cal_eval.commuter_weights,
-        )
+    eval_aligned_labels = [idx_to_label[i] for i in eval_aligned_dec]
     eval_scores = metrics.score(
         eval_snap.labels,
         eval_fuel_pred,
@@ -484,93 +498,38 @@ def run_pipeline(
     test_pred_nf_phys = final_phys_nf.predict(test_feats[final_nf_features]).reshape(-1, 1)
     test_nf_m = np.column_stack([test_pred_nf_direct, test_pred_nf_hurdle, test_pred_nf_mq, test_pred_nf_phys])
 
-    # Per-member debiasing
-    test_fuel_debiased = calibration.apply_member_debiasing(test_fuel_m, cal.fuel_debias)
-    test_nf_debiased = calibration.apply_member_debiasing(test_nf_m, cal.nf_debias)
-
     p_fuel_active_test = final_hurdle_fuel.classifier.predict_proba(test_feats[final_fuel_features])
     p_store_active_test = final_hurdle_nf.classifier.predict_proba(test_feats[final_nf_features])
     mu_fuel_pos_test, sigma_fuel_pos_test = final_mq_fuel.predict_conditional_pos(test_feats[final_fuel_features])
     mu_nf_pos_test, sigma_nf_pos_test = final_mq_nf.predict_conditional_pos(test_feats[final_nf_features])
 
-    # Build Cross-Target Regression Meta-Matrix
-    M_reg_test = calibration.build_regression_meta_matrix(
-        debiased_fuel_m=test_fuel_debiased,
-        debiased_nf_m=test_nf_debiased,
-        p_fuel_active=p_fuel_active_test,
-        p_store_active=p_store_active_test,
-        mu_fuel_pos=mu_fuel_pos_test,
-        mu_nf_pos=mu_nf_pos_test,
-    )
-    test_fuel_raw = M_reg_test @ cal.fuel_blend_weights
-    test_nf_raw = M_reg_test @ cal.nf_blend_weights
-
-    test_blup_f_map = calibration.compute_customer_blup(cal.cust_history_f, test_cutoff)
-    test_blup_f_vec = np.array([test_blup_f_map.get(cid, 0.0) for cid in test_ids])
-    test_blup_nf_map = calibration.compute_customer_blup(cal.cust_history_nf, test_cutoff)
-    test_blup_nf_vec = np.array([test_blup_nf_map.get(cid, 0.0) for cid in test_ids])
-
-    test_m3_b = test_feats["m3_baskets"].to_numpy() if "m3_baskets" in test_feats.columns else np.zeros(len(test_ids))
-    test_pred_fuel, test_pred_nonfuel = calibration.finalize_regression_predictions(
-        raw_fuel=test_fuel_raw,
-        raw_nf=test_nf_raw,
-        p_fuel_act=p_fuel_active_test,
-        p_store_act=p_store_active_test,
-        m3_baskets=test_m3_b,
-        blup_f_vec=test_blup_f_vec,
-        blup_nf_vec=test_blup_nf_vec,
-        cal=cal,
+    test_pred_fuel, test_pred_nonfuel, test_probs_masked, test_fuel_raw, test_nf_raw, p_active_test = (
+        _apply_calibrated_inference(
+            fuel_m=test_fuel_m,
+            nf_m=test_nf_m,
+            probs_base=final_opp_model.predict_proba(test_feats[final_opp_features]),
+            probs_hier=final_hier_model.predict_proba(test_feats[final_opp_features]),
+            features=test_feats,
+            ids=test_ids,
+            mask=aligned_mask,
+            cutoff=test_cutoff,
+            cal=cal,
+            p_fuel_act=p_fuel_active_test,
+            p_store_act=p_store_active_test,
+            mu_fuel_pos=mu_fuel_pos_test,
+            mu_nf_pos=mu_nf_pos_test,
+            sigma_fuel_pos=sigma_fuel_pos_test,
+            fg_idx=fg_idx,
+            inact_idx=inact_idx,
+            existing_level2_X=None,
+        )
     )
 
-    test_probs_base = final_opp_model.predict_proba(test_feats[final_opp_features])
-    test_probs_hier = final_hier_model.predict_proba(test_feats[final_opp_features])
-
-    test_level2_X = build_level2_structural_features(
-        X=test_feats,
-        probs_base=test_probs_base,
-        probs_hier=test_probs_hier,
-        probs_sim=None,
-        pred_fuel=test_pred_fuel,
-        pred_nf=test_pred_nonfuel,
-        p_fuel_active=p_fuel_active_test,
-        p_store_active=p_store_active_test,
-        mu_fuel_pos=mu_fuel_pos_test,
-        sigma_fuel_pos=sigma_fuel_pos_test,
-    )
-    p_phys_fg_test = test_level2_X["p_exceed_fuel"].to_numpy()
-    m1_b = test_feats["m1_baskets"].to_numpy() if "m1_baskets" in test_feats.columns else np.zeros(len(test_feats))
-    p_phys_inact_test = test_level2_X["joint_hurdle_inactivity"].to_numpy() * (m1_b == 0).astype(float)
-
-    test_probs_meta = (
-        cal.level2_meta_classifier.predict_proba(test_level2_X) if cal.level2_meta_classifier is not None else None
-    )
-    test_probs_fused = fuse_opportunity_probabilities(
-        cal, test_probs_base, test_probs_hier, test_probs_meta,
-        p_phys_fg_test, p_phys_inact_test, fg_idx, inact_idx,
-    )
-
-    test_probs_scaled = calibration.apply_temperature_scaling(test_probs_fused, cal.temperature)
-    test_probs_masked = calibration.apply_eligibility_mask(test_probs_scaled, aligned_mask)
-
-    # 1. Hyper-active weekly sanity gate (consistent with fit_calibration and eval_snap)
-    d_last = test_feats["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in test_feats.columns else np.full(len(test_feats), 999.0)
-    test_active_veto = (m1_b >= 4) & (d_last <= 7)
-    p_active_test = 1.0 - test_probs_masked[:, inact_idx].copy()
-    test_probs_masked[test_active_veto, inact_idx] = 0.0
-    test_probs_masked = test_probs_masked / np.maximum(test_probs_masked.sum(axis=1, keepdims=True), 1e-12)
-
-    # 2. Prior alignment via dual ascent with exact competition capacity bounds
-    test_target_counts = {
-        stable_idx: 1955.0,
-        fg_idx: 1575.0,
-        inact_idx: 1445.0,
-        label_to_idx["Existing-category growth: Other"]: 305.0,
-        label_to_idx["Existing-category growth: Beverages"]: 133.0,
-        label_to_idx["Existing-category growth: Food & beverage"]: 75.0,
-    }
+    # Prior alignment via dual ascent using seasonal Q4 target class proportions
     test_target_priors = np.zeros(n_classes, dtype=np.float64)
-    for idx, count in test_target_counts.items():
-        test_target_priors[idx] = count
+    for lbl, count in cfg.seasonal_test_priors:
+        if lbl in label_to_idx:
+            test_target_priors[label_to_idx[lbl]] = count
     test_target_priors = test_target_priors / test_target_priors.sum()
 
     test_opp_decisions = calibration.decide_with_prior_alignment(
@@ -579,22 +538,7 @@ def run_pipeline(
         target_priors=test_target_priors,
         macro_classes=(inact_idx, stable_idx, fg_idx),
     )
-    test_opp_labels = np.array([idx_to_label[i] for i in test_opp_decisions], dtype=object)
-
-    # 3. Commuter Hurdle Arbitration
-    target_fg_seats = int(round(test_target_priors[fg_idx] * len(test_feats)))
-    if cfg.use_commuter_arbitration:
-        test_opp_labels = calibration.arbitrate_commuter_pool(
-            opp_labels=test_opp_labels,
-            features=test_feats,
-            pred_fuel=test_pred_fuel,
-            p_phys_fg=p_phys_fg_test,
-            p_clf_fg=test_probs_masked[:, fg_idx],
-            p_clf_stable=test_probs_masked[:, stable_idx],
-            target_fg_capacity=target_fg_seats,
-            weights=cal.commuter_weights,
-        )
-    test_opp_labels = list(test_opp_labels)
+    test_opp_labels = [idx_to_label[i] for i in test_opp_decisions]
 
     if save_predictions:
         eda_cache = cfg.paths.reports_dir / "eda" / "cache"
@@ -747,7 +691,7 @@ def run_pipeline(
             submission_counts=norm_seat_counts,
         )
         if is_new_champ:
-            logger.info("🏆 NEW CHAMPION MODEL BENCHMARK RECORDED: %.5f", leaderboard_score)
+            logger.info("New champion benchmark recorded: %.5f", leaderboard_score)
         else:
             logger.info("Run logged to benchmark tracker (Current champion remains superior)")
     except Exception as exc:

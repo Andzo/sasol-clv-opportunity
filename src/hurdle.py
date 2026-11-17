@@ -80,13 +80,13 @@ def _extract_anchor_matrix(X: pd.DataFrame | np.ndarray, target_type: str = "fue
     else:
         arr = np.asarray(X, dtype="float64")
         if arr.ndim == 1:
-            arr.reshape(-1, 1)
+            arr = arr.reshape(-1, 1)
         sub = arr[:, :min(6, arr.shape[1])]
         return np.log1p(np.maximum(np.nan_to_num(sub, nan=0.0), 0.0))
 
 
-class TwoPartNonfuelHurdle:
-    """Two-part hurdle model for nonfuel customer lifetime value."""
+class _BaseTwoPartHurdle:
+    """Two-part hurdle model: P(positive | X) * E[amount | positive, X]."""
 
     def __init__(self, seed: int = 42, n_jobs: int = -1, use_gpu: bool = False) -> None:
         self.seed = seed
@@ -95,7 +95,7 @@ class TwoPartNonfuelHurdle:
         self.classifier = StoreAttachmentClassifier(seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
         self.regressor = make_regressor("lgbm_huber", seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TwoPartNonfuelHurdle":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "_BaseTwoPartHurdle":
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
@@ -112,45 +112,23 @@ class TwoPartNonfuelHurdle:
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         X = _align_features(self, X)
-        p_store = self.classifier.predict_proba(X)
+        p_pos = self.classifier.predict_proba(X)
         pred_amount = np.clip(self.regressor.predict(X), 0.0, None)
-        return p_store * pred_amount
+        return p_pos * pred_amount
 
 
-class TwoPartFuelHurdle:
-    """Two-part hurdle model for fuel customer lifetime value."""
-
-    def __init__(self, seed: int = 42, n_jobs: int = -1, use_gpu: bool = False) -> None:
-        self.seed = seed
-        self.n_jobs = n_jobs
-        self.use_gpu = use_gpu
-        self.classifier = StoreAttachmentClassifier(seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
-        self.regressor = make_regressor("lgbm_huber", seed=seed, n_jobs=n_jobs, use_gpu=use_gpu)
-
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "TwoPartFuelHurdle":
-        if isinstance(X, pd.DataFrame):
-            self.feature_names_in_ = list(X.columns)
-        y_arr = np.asarray(y, dtype="float64")
-        pos_mask = y_arr > 0
-        self.classifier.fit(X, y_arr, sample_weight=sample_weight)
-        X_pos = X.iloc[pos_mask] if isinstance(X, pd.DataFrame) else X[pos_mask]
-        y_pos = y_arr[pos_mask]
-        if sample_weight is not None:
-            sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask]
-            self.regressor.fit(X_pos, y_pos, sample_weight=sw_pos)
-        else:
-            self.regressor.fit(X_pos, y_pos)
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        X = _align_features(self, X)
-        p_active = self.classifier.predict_proba(X)
-        pred_amount = np.clip(self.regressor.predict(X), 0.0, None)
-        return p_active * pred_amount
+class TwoPartNonfuelHurdle(_BaseTwoPartHurdle):
+    """Two-part hurdle model for non-fuel spend."""
 
 
-class BaggedTwoPartFuelHurdle:
-    """Multi-seed multi-model bagged two-part hurdle model for fuel CLV."""
+class TwoPartFuelHurdle(_BaseTwoPartHurdle):
+    """Two-part hurdle model for fuel spend."""
+
+
+class _BaseBaggedTwoPartHurdle:
+    """Multi-seed bagged two-part hurdle with linear anchor residualization and Heckman IMR."""
+
+    target_type: str = "fuel"
 
     def __init__(
         self,
@@ -175,15 +153,13 @@ class BaggedTwoPartFuelHurdle:
         self.regressors_lgb: list[Any] = []
         self.regressors_cb: list[Any] = []
         for s in seeds:
-            self.regressors_mse.append(
-                make_regressor("lgbm_mse", seed=s, n_jobs=n_jobs, use_gpu=use_gpu)
-            )
+            self.regressors_mse.append(make_regressor("lgbm_mse", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
             self.regressors_lgb.append(
                 make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
             )
             self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartFuelHurdle":
+    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "_BaseBaggedTwoPartHurdle":
         if isinstance(X, pd.DataFrame):
             self.feature_names_in_ = list(X.columns)
         y_arr = np.asarray(y, dtype="float64")
@@ -193,7 +169,7 @@ class BaggedTwoPartFuelHurdle:
         y_pos = y_arr[pos_mask]
         sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask] if sample_weight is not None else None
 
-        A_all = _extract_anchor_matrix(X, "fuel")
+        A_all = _extract_anchor_matrix(X, self.target_type)
         A_scaled = self.propensity_scaler.fit_transform(A_all)
         y_bin = (y_arr > 0).astype(int)
         if len(np.unique(y_bin)) >= 2:
@@ -202,7 +178,7 @@ class BaggedTwoPartFuelHurdle:
             else:
                 self.propensity_model.fit(A_scaled, y_bin)
 
-        A_pos = _extract_anchor_matrix(X_pos, "fuel")
+        A_pos = _extract_anchor_matrix(X_pos, self.target_type)
         if hasattr(self.propensity_model, "classes_") and len(self.propensity_model.classes_) >= 2:
             p_pos = self.propensity_model.predict_proba(self.propensity_scaler.transform(A_pos))[:, 1]
         else:
@@ -217,30 +193,26 @@ class BaggedTwoPartFuelHurdle:
         y_innov_pos = y_pos - z_anchor_pos
 
         for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
-            if sw_pos is not None:
-                reg_mse.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-                reg_lgb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-                reg_cb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-            else:
-                reg_mse.fit(X_pos_imr, y_innov_pos)
-                reg_lgb.fit(X_pos_imr, y_innov_pos)
-                reg_cb.fit(X_pos_imr, y_innov_pos)
+            fit_kw = {"sample_weight": sw_pos} if sw_pos is not None else {}
+            reg_mse.fit(X_pos_imr, y_innov_pos, **fit_kw)
+            reg_lgb.fit(X_pos_imr, y_innov_pos, **fit_kw)
+            reg_cb.fit(X_pos_imr, y_innov_pos, **fit_kw)
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         X = _align_features(self, X)
-        p_active = self.classifier.predict_proba(X)
+        p_pos = self.classifier.predict_proba(X)
         if self.power_shrinkage != 1.0:
-            p_active = p_active ** self.power_shrinkage
+            p_pos = p_pos ** self.power_shrinkage
         if self.zero_gate_threshold > 0.0:
-            p_active = np.where(p_active < self.zero_gate_threshold, 0.0, p_active)
+            p_pos = np.where(p_pos < self.zero_gate_threshold, 0.0, p_pos)
 
-        A = _extract_anchor_matrix(X, "fuel")
+        A = _extract_anchor_matrix(X, self.target_type)
         z_anchor = self.anchor_model.predict(A) if hasattr(self.anchor_model, "coef_") else 0.0
         if hasattr(self.propensity_model, "classes_") and len(self.propensity_model.classes_) >= 2:
             p_imr = self.propensity_model.predict_proba(self.propensity_scaler.transform(A))[:, 1]
         else:
-            p_imr = p_active
+            p_imr = p_pos
         X_imr = _with_imr(X, p_imr)
 
         pred_innov = np.zeros(len(X), dtype="float64")
@@ -251,112 +223,19 @@ class BaggedTwoPartFuelHurdle:
             p_cb = reg_cb.predict(X_imr)
             pred_innov += (0.35 * p_mse + 0.30 * p_lgb + 0.35 * p_cb) / n_bags
         pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
-        return p_active * pred_pos
+        return p_pos * pred_pos
 
 
-class BaggedTwoPartNonfuelHurdle:
-    """Multi-seed multi-model bagged two-part hurdle model for nonfuel CLV."""
+class BaggedTwoPartFuelHurdle(_BaseBaggedTwoPartHurdle):
+    """Multi-seed multi-model bagged two-part hurdle model for fuel spend."""
 
-    def __init__(
-        self,
-        seeds: tuple[int, ...] = (42, 100, 2024, 777, 314),
-        n_jobs: int = -1,
-        use_gpu: bool = False,
-        huber_alpha: float = 1.35,
-        power_shrinkage: float = 1.0,
-        zero_gate_threshold: float = 0.0,
-    ) -> None:
-        self.seeds = seeds
-        self.n_jobs = n_jobs
-        self.use_gpu = use_gpu
-        self.huber_alpha = huber_alpha
-        self.power_shrinkage = power_shrinkage
-        self.zero_gate_threshold = zero_gate_threshold
-        self.anchor_model = Ridge(alpha=50.0)
-        self.propensity_scaler = StandardScaler()
-        self.propensity_model = LogisticRegression(C=1.0, max_iter=200, random_state=seeds[0])
-        self.classifier = StoreAttachmentClassifier(seed=seeds[0], n_jobs=n_jobs, use_gpu=use_gpu)
-        self.regressors_mse: list[Any] = []
-        self.regressors_lgb: list[Any] = []
-        self.regressors_cb: list[Any] = []
-        for s in seeds:
-            self.regressors_mse.append(
-                make_regressor("lgbm_mse", seed=s, n_jobs=n_jobs, use_gpu=use_gpu)
-            )
-            self.regressors_lgb.append(
-                make_regressor("lgbm_huber", seed=s, n_jobs=n_jobs, use_gpu=use_gpu, huber_alpha=huber_alpha)
-            )
-            self.regressors_cb.append(make_regressor("catboost", seed=s, n_jobs=n_jobs, use_gpu=use_gpu))
+    target_type = "fuel"
 
-    def fit(self, X: pd.DataFrame, y: np.ndarray, sample_weight: np.ndarray | None = None) -> "BaggedTwoPartNonfuelHurdle":
-        if isinstance(X, pd.DataFrame):
-            self.feature_names_in_ = list(X.columns)
-        y_arr = np.asarray(y, dtype="float64")
-        pos_mask = y_arr > 0
-        self.classifier.fit(X, y_arr, sample_weight=sample_weight)
-        X_pos = X.iloc[pos_mask] if isinstance(X, pd.DataFrame) else X[pos_mask]
-        y_pos = y_arr[pos_mask]
-        sw_pos = np.asarray(sample_weight, dtype="float64")[pos_mask] if sample_weight is not None else None
 
-        A_all = _extract_anchor_matrix(X, "nonfuel")
-        A_scaled = self.propensity_scaler.fit_transform(A_all)
-        y_bin = (y_arr > 0).astype(int)
-        if len(np.unique(y_bin)) >= 2:
-            if sample_weight is not None:
-                self.propensity_model.fit(A_scaled, y_bin, sample_weight=np.asarray(sample_weight, dtype="float64"))
-            else:
-                self.propensity_model.fit(A_scaled, y_bin)
+class BaggedTwoPartNonfuelHurdle(_BaseBaggedTwoPartHurdle):
+    """Multi-seed multi-model bagged two-part hurdle model for non-fuel spend."""
 
-        A_pos = _extract_anchor_matrix(X_pos, "nonfuel")
-        if hasattr(self.propensity_model, "classes_") and len(self.propensity_model.classes_) >= 2:
-            p_pos = self.propensity_model.predict_proba(self.propensity_scaler.transform(A_pos))[:, 1]
-        else:
-            p_pos = np.full(len(X_pos), 0.5)
-        X_pos_imr = _with_imr(X_pos, p_pos)
-
-        if len(y_pos) >= 5:
-            self.anchor_model.fit(A_pos, y_pos, sample_weight=sw_pos)
-            z_anchor_pos = self.anchor_model.predict(A_pos)
-        else:
-            z_anchor_pos = np.zeros(len(y_pos), dtype="float64")
-        y_innov_pos = y_pos - z_anchor_pos
-
-        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
-            if sw_pos is not None:
-                reg_mse.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-                reg_lgb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-                reg_cb.fit(X_pos_imr, y_innov_pos, sample_weight=sw_pos)
-            else:
-                reg_mse.fit(X_pos_imr, y_innov_pos)
-                reg_lgb.fit(X_pos_imr, y_innov_pos)
-                reg_cb.fit(X_pos_imr, y_innov_pos)
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        X = _align_features(self, X)
-        p_store = self.classifier.predict_proba(X)
-        if self.power_shrinkage != 1.0:
-            p_store = p_store ** self.power_shrinkage
-        if self.zero_gate_threshold > 0.0:
-            p_store = np.where(p_store < self.zero_gate_threshold, 0.0, p_store)
-
-        A = _extract_anchor_matrix(X, "nonfuel")
-        z_anchor = self.anchor_model.predict(A) if hasattr(self.anchor_model, "coef_") else 0.0
-        if hasattr(self.propensity_model, "classes_") and len(self.propensity_model.classes_) >= 2:
-            p_imr = self.propensity_model.predict_proba(self.propensity_scaler.transform(A))[:, 1]
-        else:
-            p_imr = p_store
-        X_imr = _with_imr(X, p_imr)
-
-        pred_innov = np.zeros(len(X), dtype="float64")
-        n_bags = len(self.seeds)
-        for reg_mse, reg_lgb, reg_cb in zip(self.regressors_mse, self.regressors_lgb, self.regressors_cb):
-            p_mse = reg_mse.predict(X_imr)
-            p_lgb = reg_lgb.predict(X_imr)
-            p_cb = reg_cb.predict(X_imr)
-            pred_innov += (0.35 * p_mse + 0.30 * p_lgb + 0.35 * p_cb) / n_bags
-        pred_pos = np.clip(z_anchor + pred_innov, 0.0, None)
-        return p_store * pred_pos
+    target_type = "nonfuel"
 
 
 class MultiQuantileTwoPartHurdle:

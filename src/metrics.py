@@ -42,7 +42,7 @@ class Scores:
         )
 
     def leaderboard_composite(self, x_max_fuel: float = 0.740, x_max_nonfuel: float = 0.816) -> float:
-        """Decoded exact Zindi private leaderboard scoring formula verified to 10^-8 precision."""
+        """Zindi composite score normalized by competition reference scales."""
         return self.composite(x_max_fuel, x_max_nonfuel)
 
     def leaderboard_breakdown(self, x_max_fuel: float = 0.740, x_max_nonfuel: float = 0.816) -> dict[str, float]:

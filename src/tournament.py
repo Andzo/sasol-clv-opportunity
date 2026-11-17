@@ -1,20 +1,18 @@
-"""Multi-Cutoff Out-of-Fold Tournament & Stacking Engine.
+"""Multi-cutoff out-of-fold tournament and stacking engine.
 
 Orchestrates:
-1. 3-Fold Purged Temporal & Seasonal Out-of-Fold Matrix:
-   - Fold 1: Summer Benchmark (2024-12-01, weight 2.0x) via Leave-Summer-Out
-   - Fold 2: Winter Benchmark (2025-06-01, weight 1.0x)
-   - Fold 3: Spring Holdout (2025-09-01, weight 1.5x)
-2. Multi-Paradigm Model Zoo Competition:
-   - Multi-loss direct regressors (MSE, Huber, Tweedie, Ridge, ExtraTrees, MLP)
-   - Bagged & Multi-Quantile Two-Part Hurdles
-   - Physical Basket x Ticket Decomposed Regressors
-   - Probability Ensembles, Hierarchical Classifiers, Rule-7 Simulator
-3. Recency- & Season-Weighted Pooled Out-of-Fold Calibration:
-   - Per-member linear debiasing
-   - Non-negative least-squares blend weights
-   - Customer Empirical Bayes (BLUP) fixed effects with zero-mean active centering
-   - Physical hurdle exceedance & joint inactivity probability coupling
+1. Rolling temporal out-of-fold matrix with a 3-month causal embargo between
+   training cutoffs and each evaluation cutoff.
+2. Multi-family model suite:
+   - Direct regressors (Tweedie, Huber, MSE, Ridge, ExtraTrees)
+   - Bagged and multi-quantile two-part hurdles
+   - Basket x ticket decomposed regressors
+   - Flat multiclass ensembles and 4-stage hierarchical opportunity classifier
+3. Out-of-fold calibration:
+   - Zero-intercept per-member linear debiasing
+   - Cross-target non-negative ridge stacking
+   - Customer Empirical Bayes (BLUP) residual adjustment
+   - Physical hurdle exceedance and inactivity coupling
    - Prior-aligned expected-F1 decision solver via dual coordinate ascent
 """
 from __future__ import annotations
@@ -39,11 +37,9 @@ from src.hurdle import (
 )
 from src.models import (
     ClassifierEnsemble,
-    DecomposedRule7Simulator,
     HierarchicalOpportunityClassifier,
     RegressorEnsemble,
     StoreAttachmentClassifier,
-    StructuralMetaClassifier,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +49,6 @@ def build_level2_structural_features(
     X: pd.DataFrame,
     probs_base: np.ndarray,
     probs_hier: np.ndarray,
-    probs_sim: np.ndarray | None = None,
     pred_fuel: np.ndarray = None,
     pred_nf: np.ndarray = None,
     p_fuel_active: np.ndarray = None,
@@ -61,7 +56,7 @@ def build_level2_structural_features(
     mu_fuel_pos: np.ndarray = None,
     sigma_fuel_pos: np.ndarray = None,
 ) -> pd.DataFrame:
-    """Builds the Level-2 Structural Stacking Feature Matrix with zero train/test covariate shift."""
+    """Build level-2 structural meta-features combining model probabilities and regression outputs."""
     n = len(X)
     df = pd.DataFrame(index=X.index)
 
@@ -356,7 +351,6 @@ class TournamentResult:
     pool_nf_m: np.ndarray
     pool_probs_base: np.ndarray
     pool_probs_hier: np.ndarray
-    pool_probs_sim: np.ndarray
     pool_phys_fg: np.ndarray
     pool_phys_inact: np.ndarray
     pool_level2_X: pd.DataFrame
@@ -388,7 +382,6 @@ class TournamentResult:
             pool_nf_m=self.pool_nf_m[idx_arr],
             pool_probs_base=self.pool_probs_base[idx_arr],
             pool_probs_hier=self.pool_probs_hier[idx_arr],
-            pool_probs_sim=self.pool_probs_sim[idx_arr],
             pool_phys_fg=self.pool_phys_fg[idx_arr],
             pool_phys_inact=self.pool_phys_inact[idx_arr],
             pool_level2_X=self.pool_level2_X.iloc[idx_arr].reset_index(drop=True),
@@ -437,19 +430,19 @@ class CalibrationArtifacts:
     target_priors: np.ndarray
     precision_weighted_target_priors: np.ndarray
     commuter_weights: tuple[float, float, float]
-    level2_meta_classifier: Any = None
     prob_stacker: Any = None
 
 
 def build_prob_stack_features(
     probs_base: np.ndarray,
     probs_hier: np.ndarray,
-    probs_meta: np.ndarray,
+    probs_meta: np.ndarray | None,
     p_phys_fg: np.ndarray,
     p_phys_inact: np.ndarray,
 ) -> np.ndarray:
     """Feature matrix for the log-loss probability stacker (log-probabilities of each source + physics probabilities)."""
-    logs = [np.log(np.clip(np.asarray(p, dtype=np.float64), 1e-6, 1.0)) for p in (probs_base, probs_hier, probs_meta)]
+    sources = [probs_base, probs_hier] + ([probs_meta] if probs_meta is not None else [])
+    logs = [np.log(np.clip(np.asarray(p, dtype=np.float64), 1e-6, 1.0)) for p in sources]
     return np.column_stack(logs + [
         np.asarray(p_phys_fg, dtype=np.float64).reshape(-1, 1),
         np.asarray(p_phys_inact, dtype=np.float64).reshape(-1, 1),
@@ -580,7 +573,7 @@ class TournamentEngine:
         return result
 
     def _run_tournament_uncached(self) -> TournamentResult:
-        """Executes the 3-fold tournament generating strictly leak-free OOF predictions."""
+        """Execute temporal folds to generate causal out-of-fold predictions."""
         folds = self._get_fold_definitions()
         logger.info("=== Starting Multi-Horizon Out-of-Fold Tournament (%d folds) ===", len(folds))
 
@@ -588,7 +581,6 @@ class TournamentEngine:
         pool_nf_m_list = []
         pool_probs_base_list = []
         pool_probs_hier_list = []
-        pool_probs_sim_list = []
         pool_phys_fg_list = []
         pool_phys_inact_list = []
         pool_p_fuel_act_list = []
@@ -775,9 +767,6 @@ class TournamentEngine:
                 use_gpu=self.cfg.models.use_gpu,
             ).fit(train_panel.X[nf_features], train_panel.labels["CLV_nonfuel"].to_numpy(), sample_weight=sw)
 
-            # Skip DecomposedRule7Simulator fitting (w_sim = 0.0 in fusion, saves ~4 min/fold and prevents KeyError)
-            fold_probs_sim = np.zeros((len(eval_snap.features), self.n_classes), dtype=np.float64)
-
             # Predict OOF instances on eval_snap
             pred_fuel_direct = fuel_model.predict_members(eval_snap.features[fuel_features])
             pred_fuel_hurdle = hurdle_fuel.predict(eval_snap.features[fuel_features]).reshape(-1, 1)
@@ -794,7 +783,7 @@ class TournamentEngine:
             fold_probs_base = opp_model.predict_proba(eval_snap.features[opp_features])
             fold_probs_hier = hier_model.predict_proba(eval_snap.features[opp_features])
 
-            # Hurdle Physical CDF probabilities & Level-2 Structural Stacking Features
+            # Hurdle CDF exceedance probabilities and level-2 stacking features
             p_fuel_active = hurdle_fuel.classifier.predict_proba(eval_snap.features[fuel_features])
             p_store_active = hurdle_nf.classifier.predict_proba(eval_snap.features[nf_features])
             mu_fuel_pos, sigma_fuel_pos = mq_fuel.predict_conditional_pos(eval_snap.features[fuel_features])
@@ -819,7 +808,6 @@ class TournamentEngine:
                 X=eval_snap.features,
                 probs_base=fold_probs_base,
                 probs_hier=fold_probs_hier,
-                probs_sim=fold_probs_sim,
                 pred_fuel=np.mean(pred_fuel_direct, axis=1),
                 pred_nf=np.mean(pred_nf_direct, axis=1),
                 p_fuel_active=p_fuel_active,
@@ -834,7 +822,6 @@ class TournamentEngine:
             pool_nf_m_list.append(fold_nf_m)
             pool_probs_base_list.append(fold_probs_base)
             pool_probs_hier_list.append(fold_probs_hier)
-            pool_probs_sim_list.append(fold_probs_sim)
             pool_phys_fg_list.append(p_phys_fg)
             pool_phys_inact_list.append(p_phys_inact)
             pool_y_fuel_list.append(eval_snap.labels["CLV_fuel"].to_numpy())
@@ -867,7 +854,6 @@ class TournamentEngine:
             pool_nf_m=np.vstack(pool_nf_m_list),
             pool_probs_base=np.vstack(pool_probs_base_list),
             pool_probs_hier=np.vstack(pool_probs_hier_list),
-            pool_probs_sim=np.vstack(pool_probs_sim_list),
             pool_phys_fg=np.concatenate(pool_phys_fg_list),
             pool_phys_inact=np.concatenate(pool_phys_inact_list),
             pool_level2_X=pd.concat(pool_level2_X_list, axis=0, ignore_index=True),
@@ -982,18 +968,10 @@ class TournamentEngine:
         fuel_after_blup = calibration.apply_customer_blup(fuel_cal_lin, blup_f_vec, blup_eta_f, act_mask_f)
         nf_after_blup = calibration.apply_customer_blup(nf_cal_lin, blup_nf_vec, blup_eta_nf, act_mask_nf)
 
-        # 5. Fit Soft Probability Shrinkage & Extreme Dead Gate
-        if self.cfg.use_soft_shrinkage:
-            fuel_shrinkage = calibration.fit_shrinkage_power(tourney.pool_y_fuel, fuel_after_blup, tourney.pool_p_fuel_act)
-            nf_alpha, nf_beta = calibration.fit_dual_shrinkage_powers(
-                tourney.pool_y_nonfuel, nf_after_blup, tourney.pool_p_fuel_act, tourney.pool_p_store_act, base_active_power=fuel_shrinkage
-            )
-            f_shrunk = calibration.apply_shrinkage(fuel_after_blup, tourney.pool_p_fuel_act, fuel_shrinkage)
-            nf_shrunk = calibration.apply_dual_shrinkage(nf_after_blup, tourney.pool_p_fuel_act, tourney.pool_p_store_act, nf_alpha, nf_beta)
-        else:
-            fuel_shrinkage, nf_alpha, nf_beta = 0.0, 0.0, 0.0
-            f_shrunk = fuel_after_blup
-            nf_shrunk = nf_after_blup
+        # 5. Inactivity Floor Gate
+        fuel_shrinkage, nf_alpha, nf_beta = 0.0, 0.0, 0.0
+        f_shrunk = fuel_after_blup
+        nf_shrunk = nf_after_blup
         inact_thresh = calibration.fit_inactivity_threshold(
             tourney.pool_y_fuel, f_shrunk,
             tourney.pool_y_nonfuel, nf_shrunk,
@@ -1002,12 +980,9 @@ class TournamentEngine:
         m3_b_pool = tourney.pool_level2_X["m3_baskets"].to_numpy() if "m3_baskets" in tourney.pool_level2_X.columns else np.zeros(len(f_shrunk))
         cal_fuel_pred = calibration.apply_extreme_dead_gate(f_shrunk, tourney.pool_p_fuel_act, m3_b_pool, threshold=inact_thresh)
         cal_nf_pred = calibration.apply_extreme_dead_gate(nf_shrunk, tourney.pool_p_store_act, m3_b_pool, threshold=inact_thresh)
-        logger.info(
-            "Fitted shrinkage: fuel=%.2f, nf_alpha=%.2f, nf_beta=%.2f, inact_thresh=%.3f",
-            fuel_shrinkage, nf_alpha, nf_beta, inact_thresh,
-        )
+        logger.info("Fitted inactivity floor threshold: %.3f", inact_thresh)
 
-        # 6. Refresh Level-2 Structural Features with Final Calibrated Regression Predictions (Zero Covariate Shift)
+        # 6. Refresh Level-2 Structural Features with Calibrated Regression Predictions
         cal_level2_X = refresh_level2_predictions(
             df=tourney.pool_level2_X,
             pred_fuel=cal_fuel_pred,
@@ -1020,19 +995,6 @@ class TournamentEngine:
         p_phys_fg_cal = cal_level2_X["p_exceed_fuel"].to_numpy()
         m1_b_pool = cal_level2_X["m1_baskets"].to_numpy() if "m1_baskets" in cal_level2_X.columns else np.zeros(len(cal_fuel_pred))
         p_phys_inact_cal = cal_level2_X["joint_hurdle_inactivity"].to_numpy() * (m1_b_pool == 0).astype(float)
-
-        if self.cfg.use_meta_classifier:
-            logger.info("Training Level-2 StructuralMetaClassifier on causal forward-expanding splits (features=%d)...", cal_level2_X.shape[1])
-            level2_meta = StructuralMetaClassifier(n_classes=self.n_classes, seed=self.cfg.models.seed)
-            meta_probs = level2_meta.fit_predict_oof(
-                cal_level2_X,
-                tourney.pool_y_opp,
-                sample_weight=tourney.pool_weights,
-                groups=tourney.pool_cutoffs,
-            )
-        else:
-            level2_meta = None
-            meta_probs = None
 
         # 7. Base Opportunity Probability Fusion
         def sim_objective(weights: np.ndarray) -> float:
@@ -1052,8 +1014,7 @@ class TournamentEngine:
             options={"maxiter": 100},
         )
         wb, wh, b_fg, b_in = opt_blend.x
-        ws = 0.0
-        prob_blend = (float(wb), float(wh), float(ws), float(b_fg), float(b_in))
+        prob_blend = (float(wb), float(wh), 0.0, float(b_fg), float(b_in))
 
         fused_pool = wb * tourney.pool_probs_base + wh * tourney.pool_probs_hier
         fused_pool[:, self.fg_idx] += b_fg * p_phys_fg_cal
@@ -1062,16 +1023,13 @@ class TournamentEngine:
         prob_stacker = None
         if self.cfg.prob_fusion == "stack":
             stack_X = build_prob_stack_features(
-                tourney.pool_probs_base, tourney.pool_probs_hier, meta_probs, p_phys_fg_cal, p_phys_inact_cal,
+                tourney.pool_probs_base, tourney.pool_probs_hier, None, p_phys_fg_cal, p_phys_inact_cal,
             )
             prob_stacker = ProbStacker(self.n_classes).fit(stack_X, tourney.pool_y_opp, tourney.pool_weights)
             combined_pool = prob_stacker.predict_proba(stack_X)
             logger.info("Opportunity fusion: multinomial log-loss stacker (%d features)", stack_X.shape[1])
         else:
-            if meta_probs is not None:
-                combined_pool = 0.65 * meta_probs + 0.35 * fused_pool
-            else:
-                combined_pool = fused_pool
+            combined_pool = fused_pool
         combined_pool_masked = calibration.apply_eligibility_mask(combined_pool, tourney.pool_masks)
 
         # Apply hyper-active weekly sanity gate consistently in calibration
@@ -1164,30 +1122,6 @@ class TournamentEngine:
             target_priors=target_priors,
             precision_weighted_target_priors=priors_prec_shrunk,
             commuter_weights=commuter_weights,
-            level2_meta_classifier=level2_meta,
             prob_stacker=prob_stacker,
         )
 
-
-
-def apply_boundary_arbitration(
-    opp_labels: list[str],
-    features: pd.DataFrame,
-    pred_fuel: np.ndarray,
-) -> list[str]:
-    """Recovers false inactives with recent purchase activity via Rule-5 boundary arbitration."""
-    out = list(opp_labels)
-    m1_baskets = features["m1_baskets"].to_numpy() if "m1_baskets" in features.columns else np.zeros(len(features))
-    days_last = features["days_since_last_purchase"].to_numpy() if "days_since_last_purchase" in features.columns else np.full(len(features), 999.0)
-    m3_litres = features["m3_fuel_litres"].to_numpy() if "m3_fuel_litres" in features.columns else np.zeros(len(features))
-    pred_litres = np.expm1(np.clip(pred_fuel * 2.352825386185113, 0, 15.0))
-    is_physical_growth = (pred_litres > 1.25 * m3_litres) & ((pred_litres - m3_litres) >= 1.0)
-
-    is_inact = np.array(out) == "Inactivity"
-    active_veto = is_inact & ((m1_baskets > 0) | (days_last < 45))
-    vetoed_count = int(active_veto.sum())
-    if vetoed_count > 0:
-        logger.info("Boundary arbitration: recovered %d false inactive instances.", vetoed_count)
-        for idx in np.where(active_veto)[0]:
-            out[idx] = "Existing-category growth: Fuel" if is_physical_growth[idx] else "Stable"
-    return out
