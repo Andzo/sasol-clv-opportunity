@@ -12,7 +12,5 @@ pandas>=2.1
 pyarrow>=14.0
 scipy>=1.11
 
-# Visualization & testing
-matplotlib>=3.8
-plotly>=5.18
+# Testing
 pytest>=8.0

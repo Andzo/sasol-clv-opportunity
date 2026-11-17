@@ -37,8 +37,12 @@ def main() -> int:
         "--save-predictions", action="store_true", help="Cache evaluation and test predictions for EDA & diagnostics"
     )
     parser.add_argument(
-        "--fast", action="store_true",
-        help="Experiment mode: 2 folds, single seed (≈10x faster). Use the full run for final submissions.",
+        "--fast", action="store_true", default=True,
+        help="2-fold (2025-06-01, 2025-09-01) single-seed configuration used for the final submission (default).",
+    )
+    parser.add_argument(
+        "--full-grid", action="store_true",
+        help="Run the 4-fold multi-seed grid instead of the default 2-fold single-seed configuration.",
     )
     parser.add_argument(
         "--stage", choices=["full", "calibrate"], default="full",
@@ -57,12 +61,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    use_fast = args.fast and not args.full_grid
     model_cls = PipelineConfig().models.__class__
     models_cfg = (
         model_cls.fast(seed=args.seed, use_gpu=args.gpu)
-        if args.fast else model_cls(seed=args.seed, use_gpu=args.gpu)
+        if use_fast else model_cls(seed=args.seed, use_gpu=args.gpu)
     )
-    extra: dict = {"tournament_cutoffs": ("2025-06-01", "2025-09-01")} if args.fast else {}
+    extra: dict = {"tournament_cutoffs": ("2025-06-01", "2025-09-01")} if use_fast else {}
     if args.prob_fusion:
         extra["prob_fusion"] = args.prob_fusion
     cfg = PipelineConfig(

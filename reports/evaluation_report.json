@@ -3,31 +3,31 @@
   "elapsed_seconds": 1305.54,
   "evaluation_cutoff": "2025-09-01",
   "metrics": {
-    "rmse_fuel": 0.5976013049189304,
-    "rmse_nonfuel": 0.7434587242653403,
-    "weighted_f1": 0.5114217664388181,
-    "macro_f1": 0.1593670423598674
+    "rmse_fuel": 0.5976013051332529,
+    "rmse_nonfuel": 0.7434587285273906,
+    "weighted_f1": 0.5121656883803223,
+    "macro_f1": 0.15593350915906212
   },
-  "leaderboard_composite_score": 0.28897,
-  "proxy_composite_score": 0.28897,
+  "leaderboard_composite_score": 0.28927,
+  "proxy_composite_score": 0.28927,
   "leaderboard_breakdown": {
-    "score_fuel": 0.05772920070854175,
-    "score_nonfuel": 0.026669586667154275,
-    "score_opportunity": 0.20456870657552725,
-    "total_score": 0.2889674939512233
+    "score_fuel": 0.057729200621654216,
+    "score_nonfuel": 0.026669585100224023,
+    "score_opportunity": 0.20486627535212892,
+    "total_score": 0.2892650610740072
   },
   "tournament_folds": {
     "Winter_2025-06-01": {
       "rmse_fuel": 0.5944,
       "rmse_nonfuel": 0.7344,
-      "weighted_f1": 0.5048,
-      "leaderboard_composite": 0.291
+      "weighted_f1": 0.5031,
+      "leaderboard_composite": 0.2903
     },
     "Spring_2025-09-01": {
       "rmse_fuel": 0.5968,
       "rmse_nonfuel": 0.7447,
-      "weighted_f1": 0.4984,
-      "leaderboard_composite": 0.2837
+      "weighted_f1": 0.5018,
+      "leaderboard_composite": 0.285
     }
   },
   "baselines": {
@@ -46,17 +46,18 @@
     "majority_class": "Inactivity"
   },
   "class_distribution_submission": {
-    "Stable": 1953,
-    "Existing-category growth: Fuel": 1577,
+    "Stable": 1954,
+    "Existing-category growth: Fuel": 1575,
     "Inactivity": 1449,
-    "Existing-category growth: Other": 254,
-    "Existing-category growth: Beverages": 182,
-    "Existing-category growth: Food & beverage": 73
+    "Existing-category growth: Other": 322,
+    "Existing-category growth: Beverages": 150,
+    "Existing-category growth: Food & beverage": 37,
+    "New category adoption: Other": 1
   },
   "fuel_mean": 1.4503,
   "nonfuel_mean": 0.7159,
   "metric_protocol": "count_aligned_holdout",
-  "legacy_oof_prior_leaderboard_score": 0.2896,
+  "legacy_oof_prior_leaderboard_score": 0.29155,
   "blend_weights": {
     "fuel_target": {
       "fuel:lgbm_tweedie": 0.0864,
