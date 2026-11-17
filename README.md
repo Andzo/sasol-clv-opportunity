@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](#license)
 [![Leaderboard Peak](https://img.shields.io/badge/Zindi%20Peak-0.313644-brightgreen.svg)](#key-results--competition-milestones)
 
-Production-grade machine learning system developed for the **Sasol Customer Lifetime Value (CLV) & Opportunity Prediction Challenge** on [Zindi](https://zindi.africa/). The system forecasts quarterly customer volumetric fuel consumption, convenience store spend, and customer growth/adoption trajectories across Sasol forecourt service stations in South Africa.
+Model developed for the **Sasol Customer Lifetime Value (CLV) & Opportunity Prediction Challenge** on [Zindi](https://zindi.africa/). The system forecasts quarterly customer volumetric fuel consumption, convenience store spend, and customer growth/adoption trajectories across Sasol forecourt service stations in South Africa.
 
 ---
 
@@ -16,7 +16,7 @@ Retail fuel stations operate across two tightly coupled revenue streams: high-fr
 - **Proactive Churn Retention:** Identifies customers at risk of 90-day dormancy (`Inactivity`) early, enabling timely loyalty interventions before habitual visits lapse.
 - **Forecourt & Store Inventory Allocation:** Provides calibrated quarterly forecasts of volumetric fuel demand (`CLV_fuel`) and non-fuel retail spend (`CLV_nonfuel`) across zero-inflated customer histories (**65.06%** non-fuel zeros; **29.25%** fuel zeros).
 
-**Engineering Highlights:** Modular `src/` package architecture, leak-free purged multi-cutoff tournament validation, two-part zero-inflated hurdle modeling, Customer Empirical Bayes (BLUP) fixed effects, constrained optimal-transport/dual-ascent assignment, and an automated `pytest` unit test suite.
+**Highlights:** Modular `src/` package architecture, leak-free purged multi-cutoff tournament validation, two-part zero-inflated hurdle modeling, Customer Empirical Bayes (BLUP) fixed effects, constrained optimal-transport/dual-ascent assignment, and an automated `pytest` unit test suite.
 
 ---
 
@@ -24,6 +24,7 @@ Retail fuel stations operate across two tightly coupled revenue streams: high-fr
 
 ```text
 ├── pyproject.toml                  # Package metadata, dependencies, and CLI entry points
+├── requirements.txt                # Direct pip dependency list
 ├── pytest.ini                      # Pytest configuration
 ├── README.md                       # Project overview, architecture, and quickstart
 ├── src/                            # Core modular ML library & CLI
@@ -69,6 +70,7 @@ cd sasol-clv-opportunity
 
 python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 pip install -e ".[dev]"
 ```
 
